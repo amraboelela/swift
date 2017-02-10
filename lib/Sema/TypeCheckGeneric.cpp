@@ -28,11 +28,6 @@ Type DependentGenericTypeResolver::resolveGenericTypeParamType(
   auto gpDecl = gp->getDecl();
   assert(gpDecl && "Missing generic parameter declaration");
 
-  // Hack: See parseGenericParameters(). When the issue there is fixed,
-  // we won't need the isInvalid() check anymore.
-  if (gpDecl->isInvalid())
-    return ErrorType::get(gpDecl->getASTContext());
-
   // Don't resolve generic parameters.
   return gp;
 }
@@ -47,7 +42,7 @@ Type DependentGenericTypeResolver::resolveDependentMemberType(
 
   return archetype
            ->getNestedType(ref->getIdentifier(), Builder)
-           ->getDependentType(/*FIXME: */{ }, /*allowUnresolved=*/true);
+           ->getDependentType(GenericParams, /*allowUnresolved=*/true);
 }
 
 Type DependentGenericTypeResolver::resolveSelfAssociatedType(
@@ -57,7 +52,7 @@ Type DependentGenericTypeResolver::resolveSelfAssociatedType(
   
   return archetype
            ->getNestedType(assocType, Builder)
-           ->getDependentType(/*FIXME: */{ }, /*allowUnresolved=*/true);
+           ->getDependentType(GenericParams, /*allowUnresolved=*/true);
 }
 
 Type DependentGenericTypeResolver::resolveTypeOfContext(DeclContext *dc) {
@@ -68,20 +63,24 @@ Type DependentGenericTypeResolver::resolveTypeOfDecl(TypeDecl *decl) {
   return decl->getDeclaredInterfaceType();
 }
 
+bool DependentGenericTypeResolver::areSameType(Type type1, Type type2) {
+  if (!type1->hasTypeParameter() && !type2->hasTypeParameter())
+    return type1->isEqual(type2);
+
+  auto pa1 = Builder.resolveArchetype(type1);
+  auto pa2 = Builder.resolveArchetype(type2);
+  if (pa1 && pa2)
+    return pa1->getArchetypeAnchor(Builder) == pa2->getArchetypeAnchor(Builder);
+
+  return type1->isEqual(type2);
+}
+
 void DependentGenericTypeResolver::recordParamType(ParamDecl *decl, Type type) {
   // Do nothing
 }
 
 Type GenericTypeToArchetypeResolver::resolveGenericTypeParamType(
                                        GenericTypeParamType *gp) {
-  auto gpDecl = gp->getDecl();
-  assert(gpDecl && "Missing generic parameter declaration");
-
-  // Hack: See parseGenericParameters(). When the issue there is fixed,
-  // we won't need the isInvalid() check anymore.
-  if (gpDecl->isInvalid() || !GenericEnv)
-    return ErrorType::get(gpDecl->getASTContext());
-
   return GenericEnv->mapTypeIntoContext(gp);
 }
 
@@ -100,14 +99,16 @@ Type GenericTypeToArchetypeResolver::resolveSelfAssociatedType(
 
 Type GenericTypeToArchetypeResolver::resolveTypeOfContext(DeclContext *dc) {
   return GenericEnvironment::mapTypeIntoContext(
-      dc->getParentModule(), GenericEnv,
-      dc->getSelfInterfaceType());
+      GenericEnv, dc->getSelfInterfaceType());
 }
 
 Type GenericTypeToArchetypeResolver::resolveTypeOfDecl(TypeDecl *decl) {
   return GenericEnvironment::mapTypeIntoContext(
-      decl->getDeclContext()->getParentModule(), GenericEnv,
-      decl->getDeclaredInterfaceType());
+      GenericEnv, decl->getDeclaredInterfaceType());
+}
+
+bool GenericTypeToArchetypeResolver::areSameType(Type type1, Type type2) {
+  return type1->isEqual(type2);
 }
 
 void GenericTypeToArchetypeResolver::recordParamType(ParamDecl *decl, Type type) {
@@ -126,21 +127,7 @@ void GenericTypeToArchetypeResolver::recordParamType(ParamDecl *decl, Type type)
 
 Type CompleteGenericTypeResolver::resolveGenericTypeParamType(
                                               GenericTypeParamType *gp) {
-  auto gpDecl = gp->getDecl();
-  assert(gpDecl && "Missing generic parameter declaration");
-
-  // Hack: See parseGenericParameters(). When the issue there is fixed,
-  // we won't need the isInvalid() check anymore.
-  if (gpDecl->isInvalid())
-    return ErrorType::get(gpDecl->getASTContext());
-
-  // Retrieve the potential archetype corresponding to this generic type
-  // parameter.
-  // FIXME: When generic parameters can map down to specific types, do so
-  // here.
-  auto pa = Builder.resolveArchetype(gp);
-  (void)pa;
-
+  assert(gp->getDecl() && "Missing generic parameter declaration");
   return gp;
 }
 
@@ -160,7 +147,7 @@ Type CompleteGenericTypeResolver::resolveDependentMemberType(
   // If this potential archetype was renamed due to typo correction,
   // complain and fix it.
   if (nestedPA->wasRenamed()) {
-    auto newName = nestedPA->getName();
+    auto newName = nestedPA->getNestedName();
     TC.diagnose(ref->getIdLoc(), diag::invalid_member_type_suggest,
                 baseTy, ref->getIdentifier(), newName)
       .fixItReplace(ref->getIdLoc(), newName.str());
@@ -216,7 +203,7 @@ Type CompleteGenericTypeResolver::resolveSelfAssociatedType(
        Type selfTy, AssociatedTypeDecl *assocType) {
   return Builder.resolveArchetype(selfTy)
            ->getNestedType(assocType, Builder)
-           ->getDependentType(/*FIXME: */{ }, /*allowUnresolved=*/false);
+           ->getDependentType(GenericParams, /*allowUnresolved=*/false);
 }
 
 Type CompleteGenericTypeResolver::resolveTypeOfContext(DeclContext *dc) {
@@ -225,6 +212,18 @@ Type CompleteGenericTypeResolver::resolveTypeOfContext(DeclContext *dc) {
 
 Type CompleteGenericTypeResolver::resolveTypeOfDecl(TypeDecl *decl) {
   return decl->getDeclaredInterfaceType();
+}
+
+bool CompleteGenericTypeResolver::areSameType(Type type1, Type type2) {
+  if (!type1->hasTypeParameter() && !type2->hasTypeParameter())
+    return type1->isEqual(type2);
+
+  auto pa1 = Builder.resolveArchetype(type1);
+  auto pa2 = Builder.resolveArchetype(type2);
+  if (pa1 && pa2)
+    return pa1->getArchetypeAnchor(Builder) == pa2->getArchetypeAnchor(Builder);
+
+  return type1->isEqual(type2);
 }
 
 void
@@ -268,6 +267,8 @@ void TypeChecker::checkGenericParamList(ArchetypeBuilder *builder,
       builder->addGenericParameter(param);
   }
 
+  unsigned depth = genericParams->getDepth();
+
   // Now, check the inheritance clauses of each parameter.
   for (auto param : *genericParams) {
     checkInheritanceClause(param, resolver);
@@ -277,7 +278,9 @@ void TypeChecker::checkGenericParamList(ArchetypeBuilder *builder,
 
       // Infer requirements from the inherited types.
       for (const auto &inherited : param->getInherited()) {
-        builder->inferRequirements(inherited, genericParams);
+        builder->inferRequirements(inherited,
+                                   /*minDepth=*/depth,
+                                   /*maxDepth=*/depth);
       }
     }
   }
@@ -394,8 +397,12 @@ static bool checkGenericFuncSignature(TypeChecker &tc,
       }
 
       // Infer requirements from it.
-      if (builder && fn->getBodyResultTypeLoc().getTypeRepr()) {
-        builder->inferRequirements(fn->getBodyResultTypeLoc(), genericParams);
+      if (builder && genericParams &&
+          fn->getBodyResultTypeLoc().getTypeRepr()) {
+        unsigned depth = genericParams->getDepth();
+        builder->inferRequirements(fn->getBodyResultTypeLoc(),
+                                   /*minDepth=*/depth,
+                                   /*maxDepth=*/depth);
       }
     }
   }
@@ -441,6 +448,17 @@ TypeChecker::prepareGenericParamList(GenericParamList *gp,
   }
 }
 
+/// Add the generic parameter types from the given list to the vector.
+static void addGenericParamTypes(GenericParamList *gpList,
+                                 SmallVectorImpl<GenericTypeParamType *> &params) {
+  if (!gpList) return;
+
+  for (auto gpDecl : *gpList) {
+    params.push_back(
+            gpDecl->getDeclaredInterfaceType()->castTo<GenericTypeParamType>());
+  }
+}
+
 GenericSignature *
 TypeChecker::validateGenericFuncSignature(AbstractFunctionDecl *func) {
   bool invalid = false;
@@ -449,17 +467,25 @@ TypeChecker::validateGenericFuncSignature(AbstractFunctionDecl *func) {
   if (gp)
     prepareGenericParamList(gp, func);
 
+  // Collect the generic parameters.
+  SmallVector<GenericTypeParamType *, 4> allGenericParams;
+  if (auto parentSig = func->getDeclContext()->getGenericSignatureOfContext())
+    allGenericParams.append(parentSig->getGenericParams().begin(),
+                            parentSig->getGenericParams().end());
+  addGenericParamTypes(gp, allGenericParams);
+
   // Create the archetype builder.
-  ArchetypeBuilder builder = createArchetypeBuilder(func->getParentModule());
+  ArchetypeBuilder builder(Context,
+                           LookUpConformanceInModule(func->getParentModule()));
 
   // Type check the function declaration, treating all generic type
   // parameters as dependent, unresolved.
-  DependentGenericTypeResolver dependentResolver(builder);
+  DependentGenericTypeResolver dependentResolver(builder, allGenericParams);
   if (checkGenericFuncSignature(*this, &builder, func, dependentResolver))
     invalid = true;
 
   // Finalize the generic requirements.
-  (void)builder.finalize(func->getLoc());
+  (void)builder.finalize(func->getLoc(), allGenericParams);
 
   // The archetype builder now has all of the requirements, although there might
   // still be errors that have not yet been diagnosed. Revert the generic
@@ -468,10 +494,11 @@ TypeChecker::validateGenericFuncSignature(AbstractFunctionDecl *func) {
   if (gp)
     revertGenericParamList(gp);
 
-  CompleteGenericTypeResolver completeResolver(*this, builder);
+  CompleteGenericTypeResolver completeResolver(*this, builder,
+                                               allGenericParams);
   if (checkGenericFuncSignature(*this, nullptr, func, completeResolver))
     invalid = true;
-  if (builder.diagnoseRemainingRenames(func->getLoc()))
+  if (builder.diagnoseRemainingRenames(func->getLoc(), allGenericParams))
     invalid = true;
 
   // The generic function signature is complete and well-formed. Determine
@@ -692,13 +719,29 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
   bool recursivelyVisitGenericParams =
     genericParams->getOuterParameters() && !parentSig;
 
+  // Collect the generic parameters.
+  SmallVector<GenericTypeParamType *, 4> allGenericParams;
+  if (recursivelyVisitGenericParams) {
+    visitOuterToInner(genericParams,
+                      [&](GenericParamList *gpList) {
+      addGenericParamTypes(gpList, allGenericParams);
+    });
+  } else {
+    if (parentSig) {
+      allGenericParams.append(parentSig->getGenericParams().begin(),
+                              parentSig->getGenericParams().end());
+    }
+
+    addGenericParamTypes(genericParams, allGenericParams);
+  }
+
   // Create the archetype builder.
   ModuleDecl *module = dc->getParentModule();
-  ArchetypeBuilder builder = createArchetypeBuilder(module);
+  ArchetypeBuilder builder(Context, LookUpConformanceInModule(module));
 
   // Type check the generic parameters, treating all generic type
   // parameters as dependent, unresolved.
-  DependentGenericTypeResolver dependentResolver(builder);
+  DependentGenericTypeResolver dependentResolver(builder, allGenericParams);
   if (recursivelyVisitGenericParams) {
     visitOuterToInner(genericParams,
                       [&](GenericParamList *gpList) {
@@ -714,6 +757,7 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
 
   // Finalize the generic requirements.
   (void)builder.finalize(genericParams->getSourceRange().Start,
+                         allGenericParams,
                          allowConcreteGenericParams);
 
   // The archetype builder now has all of the requirements, although there might
@@ -727,7 +771,9 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
   } else {
     revertGenericParamList(genericParams);
   }
-  CompleteGenericTypeResolver completeResolver(*this, builder);
+
+  CompleteGenericTypeResolver completeResolver(*this, builder,
+                                               allGenericParams);
   if (recursivelyVisitGenericParams) {
     visitOuterToInner(genericParams,
                       [&](GenericParamList *gpList) {
@@ -738,13 +784,9 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
                           &completeResolver);
   }
 
-  /// Perform any necessary requirement inference.
-  inferRequirements(builder);
-
-  // Finalize the generic requirements.
-  (void)builder.finalize(genericParams->getSourceRange().Start,
-                         allowConcreteGenericParams);
-  (void)builder.diagnoseRemainingRenames(genericParams->getSourceRange().Start);
+  // Complain about any other renamed references.
+  (void)builder.diagnoseRemainingRenames(genericParams->getSourceRange().Start,
+                                         allGenericParams);
 
   // Record the generic type parameter types and the requirements.
   auto sig = builder.getGenericSignature();
@@ -763,7 +805,7 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
   }
 
   // Form the generic environment.
-  return builder.getGenericEnvironment(sig);
+  return sig->createGenericEnvironment(*module);
 }
 
 static void revertDependentTypeLoc(TypeLoc &tl) {
@@ -853,7 +895,9 @@ std::pair<bool, bool> TypeChecker::checkGenericArguments(
   // Check each of the requirements.
   ModuleDecl *module = dc->getParentModule();
   for (const auto &req : genericSig->getRequirements()) {
-    Type firstType = req.getFirstType().subst(module, substitutions);
+    Type firstType = req.getFirstType().subst(
+        QueryTypeSubstitutionMap{substitutions},
+        LookUpConformanceInModule(module));
     if (firstType.isNull()) {
       // Another requirement will fail later; just continue.
       continue;
@@ -863,7 +907,8 @@ std::pair<bool, bool> TypeChecker::checkGenericArguments(
     if (req.getKind() != RequirementKind::Layout)
       secondType = req.getSecondType();
     if (secondType) {
-      secondType = secondType.subst(module, substitutions);
+      secondType = secondType.subst(QueryTypeSubstitutionMap{substitutions},
+                                    LookUpConformanceInModule(module));
       if (secondType.isNull()) {
         // Another requirement will fail later; just continue.
         continue;
@@ -891,12 +936,8 @@ std::pair<bool, bool> TypeChecker::checkGenericArguments(
         return std::make_pair(true, false);
 
       // Conformance check failure case.
-      if (!result.second) {
-        if (listener && loc.isValid())
-          listener->diagnosed(&req);
-
+      if (!result.second)
         return std::make_pair(false, false);
-      }
 
       continue;
     }
@@ -920,9 +961,6 @@ std::pair<bool, bool> TypeChecker::checkGenericArguments(
                  genericSig->gatherGenericParamBindingsText(
                      {req.getFirstType(), req.getSecondType()}, substitutions));
 
-        if (listener)
-          listener->diagnosed(&req);
-
         return std::make_pair(false, false);
       }
       continue;
@@ -937,9 +975,6 @@ std::pair<bool, bool> TypeChecker::checkGenericArguments(
                  genericSig->gatherGenericParamBindingsText(
                      {req.getFirstType(), req.getSecondType()}, substitutions));
 
-        if (listener)
-          listener->diagnosed(&req);
-
         return std::make_pair(false, false);
       }
       continue;
@@ -953,8 +988,8 @@ Type TypeChecker::getWitnessType(Type type, ProtocolDecl *protocol,
                                  ProtocolConformanceRef conformance,
                                  Identifier name,
                                  Diag<> brokenProtocolDiag) {
-  Type ty = ProtocolConformance::getTypeWitnessByName(type, conformance,
-                                                      name, this);
+  Type ty = ProtocolConformanceRef::getTypeWitnessByName(type, conformance,
+                                                         name, this);
   if (!ty &&
       !(conformance.isConcrete() && conformance.getConcrete()->isInvalid()))
     diagnose(protocol->getLoc(), brokenProtocolDiag);

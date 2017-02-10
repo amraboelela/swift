@@ -693,11 +693,6 @@ static void setBoundVarsTypeError(Pattern *pattern, ASTContext &ctx) {
   });
 }
 
-/// Create a fresh archetype builder.
-ArchetypeBuilder TypeChecker::createArchetypeBuilder(ModuleDecl *mod) {
-  return ArchetypeBuilder(Context, LookUpConformanceInModule(mod));
-}
-
 /// Expose TypeChecker's handling of GenericParamList to SIL parsing.
 GenericEnvironment *
 TypeChecker::handleSILGenericParams(GenericParamList *genericParams,
@@ -2789,6 +2784,10 @@ static void checkEnumRawValues(TypeChecker &TC, EnumDecl *ED) {
   llvm::SmallDenseMap<RawValueKey, RawValueSource, 8> uniqueRawValues;
 
   for (auto elt : ED->getAllElements()) {
+    // Skip if the raw value expr has already been checked.
+    if (elt->getTypeCheckedRawValueExpr())
+      continue;
+
     // Make sure the element is checked out before we poke at it.
     TC.validateDecl(elt);
     
@@ -3065,11 +3064,11 @@ static void checkVarBehavior(VarDecl *decl, TypeChecker &TC) {
     Substitution(decl->getType(), valueSub.getConformances()),
   };
 
-  ArrayRef<Substitution> interfaceSubs = allInterfaceSubs;
+  SubstitutionList interfaceSubs = allInterfaceSubs;
   if (interfaceSubs.back().getConformances().empty())
     interfaceSubs = interfaceSubs.drop_back();
 
-  ArrayRef<Substitution> contextSubs = allContextSubs;
+  SubstitutionList contextSubs = allContextSubs;
   if (contextSubs.back().getConformances().empty())
     contextSubs = contextSubs.drop_back();
 
@@ -4797,6 +4796,7 @@ public:
           auto *newValueParam = firstParamPattern->get(0);
           newValueParam->setType(valueTy);
           newValueParam->setInterfaceType(valueIfaceTy);
+          newValueParam->getTypeLoc().setType(valueTy);
         } else if (FD->isGetter() && FD->isImplicit()) {
           FD->getBodyResultTypeLoc().setType(valueIfaceTy, true);
         }
@@ -4814,8 +4814,9 @@ public:
       auto *sig = TC.validateGenericFuncSignature(FD);
 
       // Create a fresh archetype builder.
-      ArchetypeBuilder builder =
-        TC.createArchetypeBuilder(FD->getModuleContext());
+      ArchetypeBuilder builder(
+                             FD->getASTContext(),
+                             LookUpConformanceInModule(FD->getModuleContext()));
       auto *parentSig = FD->getDeclContext()->getGenericSignatureOfContext();
       TC.checkGenericParamList(&builder, gp, parentSig, nullptr);
 
@@ -4826,7 +4827,10 @@ public:
 
       // Infer requirements from the result type.
       if (!FD->getBodyResultTypeLoc().isNull()) {
-        builder.inferRequirements(FD->getBodyResultTypeLoc(), gp);
+        unsigned depth = gp->getDepth();
+        builder.inferRequirements(FD->getBodyResultTypeLoc(),
+                                  /*minDepth=*/depth,
+                                  /*maxDepth=*/depth);
       }
 
       // Revert the types within the signature so it can be type-checked with
@@ -4834,7 +4838,8 @@ public:
       TC.revertGenericFuncSignature(FD);
 
       // Assign archetypes.
-      auto *env = builder.getGenericEnvironment(sig);
+      builder.finalize(FD->getLoc(), sig->getGenericParams());
+      auto *env = sig->createGenericEnvironment(*FD->getModuleContext());
       FD->setGenericEnvironment(env);
     } else if (FD->getDeclContext()->getGenericSignatureOfContext()) {
       (void)TC.validateGenericFuncSignature(FD);
@@ -6310,6 +6315,12 @@ public:
       if (auto extendedTy = ED->getExtendedType()) {
         if (auto nominal = extendedTy->getAnyNominal()) {
           TC.validateDecl(nominal);
+          // Check the raw values of an enum, since we might synthesize
+          // RawRepresentable while checking conformances on this extension.
+          if (auto enumDecl = dyn_cast<EnumDecl>(nominal)) {
+            if (enumDecl->hasRawType())
+              checkEnumRawValues(TC, enumDecl);
+          }
         }
       }
 
@@ -6368,12 +6379,6 @@ public:
   }
 
   void visitConstructorDecl(ConstructorDecl *CD) {
-    if (CD->isInvalid()) {
-      CD->setInterfaceType(ErrorType::get(TC.Context));
-      CD->setInvalid();
-      return;
-    }
-
     if (!IsFirstPass) {
       if (CD->getBody()) {
         TC.definedFunctions.push_back(CD);
@@ -6394,9 +6399,6 @@ public:
 
     TC.checkDeclAttributesEarly(CD);
     TC.computeAccessibility(CD);
-
-    assert(CD->getDeclContext()->isTypeContext()
-           && "Decl parsing must prevent constructors outside of types!");
 
     // convenience initializers are only allowed on classes and in
     // extensions thereof.
@@ -6448,7 +6450,8 @@ public:
       }
     }
 
-    configureImplicitSelf(TC, CD);
+    if (CD->getDeclContext()->isTypeContext())
+      configureImplicitSelf(TC, CD);
 
     if (auto gp = CD->getGenericParams()) {
       // Write up generic parameters and check the generic parameter list.
@@ -6456,7 +6459,9 @@ public:
 
       auto *sig = TC.validateGenericFuncSignature(CD);
 
-      auto builder = TC.createArchetypeBuilder(CD->getModuleContext());
+      ArchetypeBuilder builder(
+                             CD->getASTContext(),
+                             LookUpConformanceInModule(CD->getModuleContext()));
       auto *parentSig = CD->getDeclContext()->getGenericSignatureOfContext();
       TC.checkGenericParamList(&builder, gp, parentSig, nullptr);
 
@@ -6468,7 +6473,8 @@ public:
       TC.revertGenericFuncSignature(CD);
 
       // Assign archetypes.
-      auto *env = builder.getGenericEnvironment(sig);
+      builder.finalize(CD->getLoc(), sig->getGenericParams());
+      auto *env = sig->createGenericEnvironment(*CD->getModuleContext());
       CD->setGenericEnvironment(env);
     } else if (CD->getDeclContext()->getGenericSignatureOfContext()) {
       (void)TC.validateGenericFuncSignature(CD);
@@ -6481,11 +6487,12 @@ public:
     }
 
     // Set the context type of 'self'.
-    recordSelfContextType(CD);
+    if (CD->getDeclContext()->isTypeContext())
+      recordSelfContextType(CD);
 
     // Type check the constructor parameters.
     GenericTypeToArchetypeResolver resolver(CD);
-    if (CD->isInvalid() || semaFuncParamPatterns(CD, resolver)) {
+    if (semaFuncParamPatterns(CD, resolver) || CD->isInvalid()) {
       CD->setInterfaceType(ErrorType::get(TC.Context));
       CD->setInvalid();
     } else {
@@ -6867,7 +6874,7 @@ static bool checkEnumDeclCircularity(EnumDecl *E, NominalDeclSet &known,
       continue;
 
     auto eltType = baseType->getTypeOfMember(E->getModuleContext(), elt,
-      nullptr, elt->getArgumentInterfaceType());
+      elt->getArgumentInterfaceType());
 
     if (deconstructTypeForDeclCircularity(eltType, known))
       return true;
@@ -7086,6 +7093,8 @@ void TypeChecker::validateDecl(ValueDecl *D) {
 
       markAsObjC(*this, proto, isObjC);
     }
+
+    proto->computeRequirementSignature();
 
     ValidatedTypes.insert(proto);
     break;
@@ -7390,15 +7399,9 @@ checkExtensionGenericParams(TypeChecker &tc, ExtensionDecl *ext, Type type,
 
   // Local function used to infer requirements from the extended type.
   auto inferExtendedTypeReqs = [&](ArchetypeBuilder &builder) {
-    // Find the outermost generic parameter list. This tricks the inference
-    // into performing inference for all levels of generic parameters.
-    // FIXME: This is a hack. The inference shouldn't arbitrarily limit what it
-    // can infer.
-    GenericParamList *outermostList = genericParams;
-    while (auto next = outermostList->getOuterParameters())
-      outermostList = next;
-
-    builder.inferRequirements(TypeLoc::withoutLoc(extInterfaceType), outermostList);
+    builder.inferRequirements(TypeLoc::withoutLoc(extInterfaceType),
+                              /*minDepth=*/0,
+                              /*maxDepth=*/genericParams->getDepth());
   };
 
   // Validate the generic type signature.
@@ -7418,7 +7421,7 @@ checkExtensionGenericParams(TypeChecker &tc, ExtensionDecl *ext, Type type,
   });
 
   Type extContextType =
-    env->mapTypeIntoContext(ext->getModuleContext(), extInterfaceType);
+    env->mapTypeIntoContext(extInterfaceType);
   return { env, extContextType };
 }
 
@@ -7479,7 +7482,7 @@ void TypeChecker::validateExtension(ExtensionDecl *ext) {
     ext->setGenericEnvironment(env);
     return;
   }
-
+  
   // If we're extending a protocol, check the generic parameters.
   //
   // Canonicalize the type to work around the fact that getAs<> cannot

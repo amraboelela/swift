@@ -549,6 +549,11 @@ Parser::StructureMarkerRAII::StructureMarkerRAII(Parser &parser,
   }
 }
 
+void Parser::StructureMarkerRAII::diagnoseOverflow() {
+  auto Loc = P.StructureMarkers.back().Loc;
+  P.diagnose(Loc, diag::structure_overflow, MaxDepth);
+}
+
 //===----------------------------------------------------------------------===//
 // Primitive Parsing
 //===----------------------------------------------------------------------===//
@@ -735,27 +740,6 @@ void Parser::diagnoseRedefinition(ValueDecl *Prev, ValueDecl *New) {
   diagnose(New->getLoc(), diag::decl_redefinition, New->isDefinition());
   diagnose(Prev->getLoc(), diag::previous_decldef, Prev->isDefinition(),
              Prev->getName());
-}
-
-/// True if Tok is the second consecutive identifier in a variable decl.
-bool Parser::isSecondVarIdentifier() {
-  auto PreviousTok = L->getTokenAt(PreviousLoc);
-  if (Tok.isNot(tok::identifier) || PreviousTok.isNot(tok::identifier)) {
-    return false;
-  }
-  auto LineStart = L->getLocForStartOfLine(SourceMgr, Tok.getLoc());
-  auto FirstTok = L->getTokenAt(LineStart);
-  Lexer::State FirstTokState = L->getStateForBeginningOfToken(FirstTok);
-  auto StartPos = ParserPosition(FirstTokState, LineStart);
-  auto RestorePos = getParserPosition();
-  backtrackToPosition(StartPos);
-  while (Tok.isNot(tok::kw_let) && Tok.isNot(tok::kw_var)
-         && Tok.getLoc() != PreviousTok.getLoc()) {
-    consumeToken();
-  }
-  bool IsConsecutiveLoc = peekToken().getLoc() == PreviousTok.getLoc();
-  restoreParserPosition(RestorePos);
-  return IsConsecutiveLoc;
 }
 
 struct ParserUnit::Implementation {

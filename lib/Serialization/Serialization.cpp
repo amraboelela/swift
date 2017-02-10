@@ -1110,7 +1110,6 @@ void Serializer::writeGenericEnvironment(const GenericEnvironment *env) {
     }
 
     rawParamIDs.push_back(addTypeRef(paramTy));
-    rawParamIDs.push_back(addTypeRef(env->mapTypeIntoContext(paramTy)));
   }
 
   if (SILMode) {
@@ -1407,7 +1406,7 @@ Serializer::writeConformances(ArrayRef<ProtocolConformance*> conformances,
 }
 
 void
-Serializer::writeSubstitutions(ArrayRef<Substitution> substitutions,
+Serializer::writeSubstitutions(SubstitutionList substitutions,
                                const std::array<unsigned, 256> &abbrCodes,
                                GenericEnvironment *genericEnv) {
   using namespace decls_block;
@@ -1635,7 +1634,8 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
     XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                          addTypeRef(ty),
                                          addIdentifierRef(SD->getName()),
-                                         isProtocolExt);
+                                         isProtocolExt,
+                                         SD->isStatic());
     break;
   }
       
@@ -1650,7 +1650,8 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
         abbrCode = DeclTypeAbbrCodes[XRefValuePathPieceLayout::Code];
         XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                              addTypeRef(ty), nameID,
-                                             isProtocolExt);
+                                             isProtocolExt,
+                                             storage->isStatic());
 
         abbrCode =
           DeclTypeAbbrCodes[XRefOperatorOrAccessorPathPieceLayout::Code];
@@ -1684,7 +1685,8 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
     XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                          addTypeRef(ty),
                                          addIdentifierRef(fn->getName()),
-                                         isProtocolExt);
+                                         isProtocolExt,
+                                         fn->isStatic());
 
     if (fn->isOperator()) {
       // Encode the fixity as a filter on the func decls, to distinguish prefix
@@ -1765,7 +1767,8 @@ void Serializer::writeCrossReference(const Decl *D) {
   XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                        addTypeRef(ty),
                                        addIdentifierRef(val->getName()),
-                                       isProtocolExt);
+                                       isProtocolExt,
+                                       val->isStatic());
 }
 
 /// Translate from the AST associativity enum to the Serialization enum
@@ -2657,6 +2660,8 @@ void Serializer::writeDecl(const Decl *D) {
                                protocolsAndInherited);
 
     writeGenericParams(proto->getGenericParams());
+    writeGenericRequirements(
+        proto->getRequirementSignature()->getRequirements(), DeclTypeAbbrCodes);
     writeMembers(proto->getMembers(), true);
     writeDefaultWitnessTable(proto, DeclTypeAbbrCodes);
     break;
@@ -2713,6 +2718,12 @@ void Serializer::writeDecl(const Decl *D) {
                             contextID,
                             param->isLet(),
                             addTypeRef(interfaceType));
+
+    if (interfaceType->hasError()) {
+      param->getDeclContext()->dumpContext();
+      interfaceType->dump();
+      llvm_unreachable("error in interface type of parameter");
+    }
     break;
   }
 
@@ -3133,44 +3144,15 @@ void Serializer::writeType(Type ty) {
       break;
     }
 
-    SmallVector<DeclID, 4> conformances;
-    for (auto proto : archetypeTy->getConformsTo())
-      conformances.push_back(addDeclRef(proto));
+    auto env = archetypeTy->getGenericEnvironment();
+    assert(env && "Primary archetype without generic environment?");
 
-    TypeID parentOrGenericEnv;
-    DeclID assocTypeOrNameID;
-    if (archetypeTy->getParent()) {
-      parentOrGenericEnv = addTypeRef(archetypeTy->getParent());
-      assocTypeOrNameID = addDeclRef(archetypeTy->getAssocType());
-    } else {
-      parentOrGenericEnv =
-        addGenericEnvironmentRef(archetypeTy->getGenericEnvironment());
-      assocTypeOrNameID = addIdentifierRef(archetypeTy->getName());
-    }
+    GenericEnvironmentID envID = addGenericEnvironmentRef(env);
+    Type interfaceType = env->mapTypeOutOfContext(archetypeTy);
 
     unsigned abbrCode = DeclTypeAbbrCodes[ArchetypeTypeLayout::Code];
     ArchetypeTypeLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                    archetypeTy->isPrimary(),
-                                    parentOrGenericEnv,
-                                    assocTypeOrNameID,
-                                    addTypeRef(archetypeTy->getSuperclass()),
-                                    conformances);
-
-    SmallVector<IdentifierID, 4> nestedTypeNames;
-    SmallVector<TypeID, 4> nestedTypes;
-    for (auto next : archetypeTy->getAllNestedTypes()) {
-      nestedTypeNames.push_back(addIdentifierRef(next.first));
-      nestedTypes.push_back(addTypeRef(next.second));
-    }
-
-    abbrCode = DeclTypeAbbrCodes[ArchetypeNestedTypeNamesLayout::Code];
-    ArchetypeNestedTypeNamesLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                               nestedTypeNames);
-
-    abbrCode = DeclTypeAbbrCodes[ArchetypeNestedTypesLayout::Code];
-    ArchetypeNestedTypesLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                           nestedTypes);
-
+                                    envID, addTypeRef(interfaceType));
     break;
   }
 
@@ -3179,7 +3161,9 @@ void Serializer::writeType(Type ty) {
     unsigned abbrCode = DeclTypeAbbrCodes[GenericTypeParamTypeLayout::Code];
     DeclID declIDOrDepth;
     unsigned indexPlusOne;
-    if (genericParam->getDecl()) {
+    if (genericParam->getDecl() &&
+        !(genericParam->getDecl()->getDeclContext()->isModuleScopeContext() &&
+          isDeclXRef(genericParam->getDecl()))) {
       declIDOrDepth = addDeclRef(genericParam->getDecl());
       indexPlusOne = 0;
     } else {
@@ -3444,8 +3428,6 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<LValueTypeLayout>();
   registerDeclTypeAbbr<InOutTypeLayout>();
   registerDeclTypeAbbr<ArchetypeTypeLayout>();
-  registerDeclTypeAbbr<ArchetypeNestedTypeNamesLayout>();
-  registerDeclTypeAbbr<ArchetypeNestedTypesLayout>();
   registerDeclTypeAbbr<ProtocolCompositionTypeLayout>();
   registerDeclTypeAbbr<BoundGenericTypeLayout>();
   registerDeclTypeAbbr<BoundGenericSubstitutionLayout>();
@@ -3922,9 +3904,8 @@ static void writeGroupNames(const comment_block::GroupNamesLayout &GroupNames,
     Writer.write<uint32_t>(N.size());
     BlobStream << N;
   }
-  BlobStream.str();
   SmallVector<uint64_t, 8> Scratch;
-  GroupNames.emit(Scratch, Blob);
+  GroupNames.emit(Scratch, BlobStream.str());
 }
 
 static void writeDeclCommentTable(

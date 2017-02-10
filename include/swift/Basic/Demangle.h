@@ -207,6 +207,17 @@ public:
   }
 };
 
+/// Returns true if the mangledName starts with the swift mangling prefix.
+///
+/// \param mangledName A null-terminated string containing a mangled name.
+bool isSwiftSymbol(const char *mangledName);
+
+/// Returns true if the mangledName refers to a thunk function.
+///
+/// Thunk functions are either (ObjC) partial apply forwarder, swift-as-ObjC or
+/// ObjC-as-swift thunks.
+bool isThunkSymbol(const char *mangledName, size_t mangledNameLength);
+
 /// \brief Demangle the given string as a Swift symbol.
 ///
 /// Typical usage:

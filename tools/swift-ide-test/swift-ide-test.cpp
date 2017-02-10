@@ -23,7 +23,6 @@
 #include "swift/AST/RawComment.h"
 #include "swift/AST/SourceEntityWalker.h"
 #include "swift/AST/USRGeneration.h"
-#include "swift/AST/ASTMangler.h"
 #include "swift/Basic/Demangle.h"
 #include "swift/Basic/DemangleWrappers.h"
 #include "swift/Basic/DiagnosticConsumer.h"
@@ -1151,7 +1150,7 @@ private:
   }
 
   bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
-                          TypeDecl *CtorTyRef, Type Ty,
+                          TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type Ty,
                           SemaReferenceKind Kind) override {
     annotateSourceEntity({ Range, D, CtorTyRef, /*IsRef=*/true });
     return true;
@@ -1159,7 +1158,7 @@ private:
 
   bool visitSubscriptReference(ValueDecl *D, CharSourceRange Range,
                                bool IsOpenBracket) override {
-    return visitDeclReference(D, Range, nullptr, Type(),
+    return visitDeclReference(D, Range, nullptr, nullptr, Type(),
                               SemaReferenceKind::SubscriptRef);
   }
 
@@ -2546,7 +2545,7 @@ public:
   }
 
   bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
-                          TypeDecl *CtorTyRef, Type T,
+                          TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type T,
                           SemaReferenceKind Kind) override {
     if (SeenDecls.insert(D).second)
       tryDemangleDecl(D, Range, /*isRef=*/true);

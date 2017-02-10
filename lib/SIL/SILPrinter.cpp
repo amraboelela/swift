@@ -926,7 +926,7 @@ public:
     printDebugVar(ABI->getVarInfo());
   }
 
-  void printSubstitutions(ArrayRef<Substitution> Subs) {
+  void printSubstitutions(SubstitutionList Subs) {
     if (Subs.empty())
       return;
     
@@ -1487,6 +1487,9 @@ public:
     *this << getIDAndType(OI->getOperand()) << " to " << OI->getType();
   }
   void visitOpenExistentialBoxInst(OpenExistentialBoxInst *OI) {
+    *this << getIDAndType(OI->getOperand()) << " to " << OI->getType();
+  }
+  void visitOpenExistentialOpaqueInst(OpenExistentialOpaqueInst *OI) {
     *this << getIDAndType(OI->getOperand()) << " to " << OI->getType();
   }
   void visitInitExistentialAddrInst(InitExistentialAddrInst *AEI) {

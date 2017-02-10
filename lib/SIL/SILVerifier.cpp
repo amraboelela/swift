@@ -748,7 +748,7 @@ public:
   }
 
   /// Check the substitutions passed to an apply or partial_apply.
-  CanSILFunctionType checkApplySubstitutions(ArrayRef<Substitution> subs,
+  CanSILFunctionType checkApplySubstitutions(SubstitutionList subs,
                                              SILType calleeTy) {
     auto fnTy = requireObjectType(SILFunctionType, calleeTy, "callee operand");
 
@@ -1940,9 +1940,17 @@ public:
     require(selfGenericParam->getDepth() == 0
             && selfGenericParam->getIndex() == 0,
             "method should be polymorphic on Self parameter at depth 0 index 0");
-    auto selfRequirement = genericSig->getRequirements()[0];
-    require(selfRequirement.getKind() == RequirementKind::Conformance,
-            "first requirement should be conformance requirement");
+    Optional<Requirement> selfRequirement;
+    for (auto req : genericSig->getRequirements()) {
+      if (req.getKind() != RequirementKind::SameType) {
+        selfRequirement = req;
+        break;
+      }
+    }
+
+    require(selfRequirement &&
+            selfRequirement->getKind() == RequirementKind::Conformance,
+            "first non-same-typerequirement should be conformance requirement");
     auto conformsTo = genericSig->getConformsTo(selfGenericParam,
                                                 *F.getModule().getSwiftModule());
     require(conformsTo.size() == 1,
@@ -2214,6 +2222,25 @@ public:
         OpenedArchetypes.getOpenedArchetypeDef(archetype) == I,
         "Archetype opened by open_existential_metatype should be registered in "
         "SILFunction");
+  }
+
+  void checkOpenExistentialOpaqueInst(OpenExistentialOpaqueInst *OEI) {
+    SILType operandType = OEI->getOperand()->getType();
+    require(!operandType.isAddress(),
+            "open_existential_opaque must not be applied to address");
+    require(operandType.canUseExistentialRepresentation(
+                F.getModule(), ExistentialRepresentation::Opaque),
+            "open_existential_opaque must be applied to opaque existential");
+
+    require(!OEI->getType().isAddress(),
+            "open_existential_opaque result must not be an address");
+
+    auto archetype = getOpenedArchetypeOf(OEI->getType().getSwiftRValueType());
+    require(archetype, "open_existential_opaque result must be an opened "
+                       "existential archetype");
+    require(OpenedArchetypes.getOpenedArchetypeDef(archetype) == OEI,
+            "Archetype opened by open_existential should be registered in "
+            "SILFunction");
   }
 
   void checkAllocExistentialBoxInst(AllocExistentialBoxInst *AEBI) {
