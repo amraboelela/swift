@@ -1285,9 +1285,7 @@ private:
     return TypeCounter++;
   }
 
-  void incrementScopeCounter() {
-    CountScopes++;
-  }
+  void incrementScopeCounter();
 
 public:
   /// \brief Introduces a new solver scope, which any changes to the
@@ -1758,10 +1756,6 @@ public:
 
     /// Indicates we're matching an operator parameter.
     TMF_ApplyingOperatorParameter = 0x4,
-
-    /// Indicates we're unwrapping an optional type for a value-to-optional
-    /// conversion.
-    TMF_UnwrappingOptional = 0x8,
   };
 
   /// Options that govern how type matching should proceed.
@@ -2065,6 +2059,10 @@ public:
   ///
   /// \returns a possibly-sanitized initializer, or null if an error occurred.
   Type generateConstraints(Pattern *P, ConstraintLocatorBuilder locator);
+
+  /// \brief Propagate constraints in an effort to enforce local
+  /// consistency to reduce the time to solve the system.
+  void propagateConstraints();
 
   /// \brief The result of attempting to resolve a constraint or set of
   /// constraints.

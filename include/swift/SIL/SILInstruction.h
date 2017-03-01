@@ -18,6 +18,7 @@
 #define SWIFT_SIL_INSTRUCTION_H
 
 #include "swift/AST/Builtins.h"
+#include "swift/AST/Expr.h"
 #include "swift/AST/ProtocolConformanceRef.h"
 #include "swift/Basic/Compiler.h"
 #include "swift/SIL/Consumption.h"
@@ -2835,6 +2836,26 @@ public:
   }
 };
 
+/// Perform an unconditional checked cast that aborts if the cast fails.
+/// The result of the checked cast is left in the destination.
+class UnconditionalCheckedCastOpaqueInst final
+    : public UnaryInstructionWithTypeDependentOperandsBase<
+          ValueKind::UnconditionalCheckedCastOpaqueInst,
+          UnconditionalCheckedCastOpaqueInst, ConversionInst, true> {
+  friend SILBuilder;
+
+  UnconditionalCheckedCastOpaqueInst(SILDebugLocation DebugLoc,
+                                     SILValue Operand,
+                                     ArrayRef<SILValue> TypeDependentOperands,
+                                     SILType DestTy)
+      : UnaryInstructionWithTypeDependentOperandsBase(
+            DebugLoc, Operand, TypeDependentOperands, DestTy) {}
+
+  static UnconditionalCheckedCastOpaqueInst *
+  create(SILDebugLocation DebugLoc, SILValue Operand, SILType DestTy,
+         SILFunction &F, SILOpenedArchetypesState &OpenedArchetypes);
+};
+
 /// StructInst - Represents a constructed loadable struct.
 class StructInst : public SILInstruction {
   friend SILBuilder;
@@ -3000,8 +3021,11 @@ class UnmanagedRetainValueInst
                                   /*HasValue*/ false> {
   friend SILBuilder;
 
-  UnmanagedRetainValueInst(SILDebugLocation DebugLoc, SILValue operand)
-      : UnaryInstructionBase(DebugLoc, operand) {}
+  UnmanagedRetainValueInst(SILDebugLocation DebugLoc, SILValue operand,
+                           Atomicity atomicity)
+      : UnaryInstructionBase(DebugLoc, operand) {
+    setAtomicity(atomicity);
+  }
 };
 
 /// Destroys a loadable value in an unmanaged, unbalanced way. Only meant for
@@ -3013,8 +3037,11 @@ class UnmanagedReleaseValueInst
                                   /*HasValue*/ false> {
   friend SILBuilder;
 
-  UnmanagedReleaseValueInst(SILDebugLocation DebugLoc, SILValue operand)
-      : UnaryInstructionBase(DebugLoc, operand) {}
+  UnmanagedReleaseValueInst(SILDebugLocation DebugLoc, SILValue operand,
+                            Atomicity atomicity)
+      : UnaryInstructionBase(DebugLoc, operand) {
+    setAtomicity(atomicity);
+  }
 };
 
 /// Transfers ownership of a loadable value to the current autorelease
@@ -3025,8 +3052,11 @@ class UnmanagedAutoreleaseValueInst
                                                 /*HasValue*/ false> {
   friend SILBuilder;
 
-  UnmanagedAutoreleaseValueInst(SILDebugLocation DebugLoc, SILValue operand)
-      : UnaryInstructionBase(DebugLoc, operand) {}
+  UnmanagedAutoreleaseValueInst(SILDebugLocation DebugLoc, SILValue operand,
+                                Atomicity atomicity)
+      : UnaryInstructionBase(DebugLoc, operand) {
+    setAtomicity(atomicity);
+  }
 };
 
 /// Transfers ownership of a loadable value to the current autorelease pool.
@@ -3892,6 +3922,13 @@ class DynamicMethodInst final
          SILOpenedArchetypesState &OpenedArchetypes);
 };
 
+/// Access allowed to the opened value by the open_existential_addr instruction.
+/// Allowing mutable access to the opened existential requires a boxed
+/// existential value's box to be unique.
+enum class OpenedExistentialAccess { Immutable, Mutable };
+
+OpenedExistentialAccess getOpenedExistentialAccessFor(AccessKind access);
+
 /// Given the address of an existential, "opens" the
 /// existential by returning a pointer to a fresh archetype T, which also
 /// captures the (dynamic) conformances.
@@ -3899,12 +3936,16 @@ class OpenExistentialAddrInst
   : public UnaryInstructionBase<ValueKind::OpenExistentialAddrInst>
 {
   friend SILBuilder;
+  OpenedExistentialAccess ForAccess;
 
   OpenExistentialAddrInst(SILDebugLocation DebugLoc, SILValue Operand,
-                          SILType SelfTy);
+                          SILType SelfTy, OpenedExistentialAccess AccessKind);
+
+public:
+  OpenedExistentialAccess getAccessKind() const { return ForAccess; }
 };
 
-/// Given an opaque value refering to an existential, "opens" the
+/// Given an opaque value referring to an existential, "opens" the
 /// existential by returning a pointer to a fresh archetype T, which also
 /// captures the (dynamic) conformances.
 class OpenExistentialOpaqueInst
@@ -3994,6 +4035,41 @@ public:
 
   SILType getLoweredConcreteType() const {
     return getType();
+  }
+};
+
+/// Given an uninitialized buffer of a protocol type,
+/// initializes its existential container to contain a concrete
+/// value of the given type, and returns the uninitialized
+/// concrete value inside the existential container.
+class InitExistentialOpaqueInst final
+    : public UnaryInstructionWithTypeDependentOperandsBase<
+          ValueKind::InitExistentialOpaqueInst, InitExistentialOpaqueInst,
+          SILInstruction, true> {
+  friend SILBuilder;
+
+  CanType ConcreteType;
+  ArrayRef<ProtocolConformanceRef> Conformances;
+
+  InitExistentialOpaqueInst(SILDebugLocation DebugLoc, SILType ExistentialType,
+                            CanType FormalConcreteType, SILValue Instance,
+                            ArrayRef<SILValue> TypeDependentOperands,
+                            ArrayRef<ProtocolConformanceRef> Conformances)
+      : UnaryInstructionWithTypeDependentOperandsBase(
+            DebugLoc, Instance, TypeDependentOperands, ExistentialType),
+        ConcreteType(FormalConcreteType), Conformances(Conformances) {}
+
+  static InitExistentialOpaqueInst *
+  create(SILDebugLocation DebugLoc, SILType ExistentialType,
+         CanType ConcreteType, SILValue Instance,
+         ArrayRef<ProtocolConformanceRef> Conformances, SILFunction *Parent,
+         SILOpenedArchetypesState &OpenedArchetypes);
+
+public:
+  CanType getFormalConcreteType() const { return ConcreteType; }
+
+  ArrayRef<ProtocolConformanceRef> getConformances() const {
+    return Conformances;
   }
 };
 
@@ -4097,6 +4173,15 @@ class DeinitExistentialAddrInst
   friend SILBuilder;
 
   DeinitExistentialAddrInst(SILDebugLocation DebugLoc, SILValue Existential)
+      : UnaryInstructionBase(DebugLoc, Existential) {}
+};
+
+class DeinitExistentialOpaqueInst
+    : public UnaryInstructionBase<ValueKind::DeinitExistentialOpaqueInst,
+                                  SILInstruction, /*HAS_RESULT*/ false> {
+  friend SILBuilder;
+
+  DeinitExistentialOpaqueInst(SILDebugLocation DebugLoc, SILValue Existential)
       : UnaryInstructionBase(DebugLoc, Existential) {}
 };
 
@@ -4889,7 +4974,7 @@ public:
 
     auto Operands = getTrueOperands();
     return Operands.front().getOperandNumber() <= OpIndex &&
-           Operands.back().getOperandNumber() <= OpIndex;
+           OpIndex <= Operands.back().getOperandNumber();
   }
 
   /// Is \p OpIndex an operand associated with the false case?
@@ -4901,7 +4986,7 @@ public:
 
     auto Operands = getFalseOperands();
     return Operands.front().getOperandNumber() <= OpIndex &&
-           Operands.back().getOperandNumber() <= OpIndex;
+           OpIndex <= Operands.back().getOperandNumber();
   }
 
   /// Returns the argument on the cond_br terminator that will be passed to

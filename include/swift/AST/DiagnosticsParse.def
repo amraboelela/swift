@@ -65,6 +65,8 @@ ERROR(incomplete_conditional_compilation_directive,none,
       "incomplete condition in conditional compilation directive", ())
 ERROR(extra_tokens_conditional_compilation_directive,none,
       "extra tokens following conditional compilation directive", ())
+ERROR(unexpected_rbrace_in_conditional_compilation_block,none,
+      "unexpected '}' in conditional compilation block", ())
 
 ERROR(sourceLocation_expected,none,
       "expected '%0' in #sourceLocation directive", (StringRef))
@@ -205,6 +207,9 @@ ERROR(decl_already_static,none,
 
 ERROR(enum_case_dot_prefix,none,
       "extraneous '.' in enum 'case' declaration", ())
+
+ERROR(associatedtype_where_swift_3,none,
+      "where clauses on associated types are fragile; use '-swift-version 4' to experiment.", ())
 
 
 // Variable getters/setters
@@ -971,10 +976,6 @@ ERROR(stmt_in_switch_not_covered_by_case,none,
       ())
 ERROR(case_after_default,none,
       "additional 'case' blocks cannot appear after the 'default' block of a 'switch'",
-      ())
-
-ERROR(empty_switch_stmt,none,
-      "'switch' statement body must have at least one 'case' or 'default' block",
       ())
 
 // Case Stmt

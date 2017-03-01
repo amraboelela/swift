@@ -17,13 +17,13 @@
 #include "Linking.h"
 #include "IRGenMangler.h"
 #include "llvm/Support/raw_ostream.h"
-#include "swift/Basic/Fallthrough.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/SIL/SILGlobalVariable.h"
 #include "swift/AST/Mangle.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
+#include "llvm/Support/Compiler.h"
 
 using namespace swift;
 using namespace irgen;
@@ -96,12 +96,6 @@ std::string LinkEntity::mangleOld() const {
   //   global ::= 'WV' type                       // value witness
   case Kind::ValueWitnessTable:
     mangler.append("_TWV");
-    mangler.mangleType(getType(), 0);
-    return mangler.finalize();
-
-  //   global ::= 't' type
-  // Abstract type manglings just follow <type>.
-  case Kind::TypeMangling:
     mangler.mangleType(getType(), 0);
     return mangler.finalize();
 
@@ -235,7 +229,7 @@ std::string LinkEntity::mangleOld() const {
     }
 
     // Otherwise, fall through into the 'other decl' case.
-    SWIFT_FALLTHROUGH;
+    LLVM_FALLTHROUGH;
 
   case Kind::Other:
     // As a special case, Clang functions and globals don't get mangled at all.
@@ -339,11 +333,6 @@ std::string LinkEntity::mangleNew() const {
     case Kind::ValueWitnessTable:
       return mangler.mangleValueWitnessTable(getType());
 
-      //   global ::= 't' type
-      // Abstract type manglings just follow <type>.
-    case Kind::TypeMangling:
-      return mangleOld();
-
       //   global ::= 'Ma' type               // type metadata access function
     case Kind::TypeMetadataAccessFunction:
       return mangler.mangleTypeMetadataAccessFunction(getType());
@@ -440,7 +429,7 @@ std::string LinkEntity::mangleNew() const {
       }
 
       // Otherwise, fall through into the 'other decl' case.
-      SWIFT_FALLTHROUGH;
+      LLVM_FALLTHROUGH;
 
     case Kind::Other:
       // As a special case, Clang functions and globals don't get mangled at all.

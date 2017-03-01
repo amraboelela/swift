@@ -25,7 +25,7 @@
 
 namespace swift {
 
-class ArchetypeBuilder;
+class GenericSignatureBuilder;
 class ProtocolConformanceRef;
 class ProtocolType;
 class Substitution;
@@ -74,8 +74,10 @@ class alignas(1 << TypeAlignInBits) GenericSignature final
   static ASTContext &getASTContext(ArrayRef<GenericTypeParamType *> params,
                                    ArrayRef<Requirement> requirements);
 
-  /// Retrieve the archetype builder for the given generic signature.
-  ArchetypeBuilder *getArchetypeBuilder(ModuleDecl &mod);
+  /// Retrieve the generic signature builder for the given generic signature.
+  GenericSignatureBuilder *getGenericSignatureBuilder(ModuleDecl &mod);
+
+  void populateParentMap(SubstitutionMap &subMap) const;
 
   friend class ArchetypeType;
 
@@ -112,8 +114,9 @@ public:
   /// \param substitutions The generic parameter -> generic argument
   /// substitutions that will have been applied to these types.
   /// These are used to produce the "parameter = argument" bindings in the test.
-  std::string gatherGenericParamBindingsText(
-      ArrayRef<Type> types, const TypeSubstitutionMap &substitutions) const;
+  std::string
+  gatherGenericParamBindingsText(ArrayRef<Type> types,
+                                 TypeSubstitutionFn substitutions) const;
 
   /// Retrieve the requirements.
   ArrayRef<Requirement> getRequirements() const {
@@ -142,6 +145,12 @@ public:
   SubstitutionMap
   getSubstitutionMap(TypeSubstitutionFn subs,
                      LookupConformanceFn lookupConformance) const;
+
+  /// Look up a stored conformance in the generic signature. These are formed
+  /// from same-type constraints placed on associated types of generic
+  /// parameters which have conformance constraints on them.
+  Optional<ProtocolConformanceRef>
+  lookupConformance(CanType depTy, ProtocolDecl *proto) const;
 
   using GenericFunction = auto(CanType canType, Type conformingReplacementType,
     ProtocolType *conformedProtocol)
@@ -237,8 +246,8 @@ public:
 
   /// Return the canonical version of the given type under this generic
   /// signature.
-  CanType getCanonicalTypeInContext(Type type, ArchetypeBuilder &builder);
-  bool isCanonicalTypeInContext(Type type, ArchetypeBuilder &builder);
+  CanType getCanonicalTypeInContext(Type type, GenericSignatureBuilder &builder);
+  bool isCanonicalTypeInContext(Type type, GenericSignatureBuilder &builder);
 
   static void Profile(llvm::FoldingSetNodeID &ID,
                       ArrayRef<GenericTypeParamType *> genericParams,

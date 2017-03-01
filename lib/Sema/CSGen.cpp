@@ -20,6 +20,7 @@
 #include "swift/AST/Expr.h"
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/PrettyStackTrace.h"
+#include "swift/AST/SubstitutionMap.h"
 #include "swift/Sema/IDETypeChecking.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringExtras.h"
@@ -2669,8 +2670,13 @@ namespace {
     
     Type visitUnresolvedPatternExpr(UnresolvedPatternExpr *expr) {
       // If there are UnresolvedPatterns floating around after name binding,
-      // they are pattern productions in invalid positions.
-      return ErrorType::get(CS.getASTContext());
+      // they are pattern productions in invalid positions. However, we will
+      // diagnose that condition elsewhere; to avoid unnecessary noise errors,
+      // just plop an open type variable here.
+      
+      auto locator = CS.getConstraintLocator(expr);
+      auto typeVar = CS.createTypeVariable(locator, TVO_CanBindToLValue);
+      return typeVar;
     }
 
     /// Get the type T?
@@ -3055,7 +3061,11 @@ Expr *ConstraintSystem::generateConstraints(Expr *expr) {
   
   if (result)
     this->optimizeConstraints(result);
-  
+
+  // If the experimental constraint propagation pass is enabled, run it.
+  if (TC.Context.LangOpts.EnableConstraintPropagation)
+    propagateConstraints();
+
   return result;
 }
 

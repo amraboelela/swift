@@ -13,8 +13,8 @@
 // This file implements the protocol conformance data structures.
 //
 //===----------------------------------------------------------------------===//
+
 #include "ConformanceLookupTable.h"
-#include "swift/Basic/Fallthrough.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/LazyResolver.h"
@@ -32,13 +32,14 @@ using namespace swift;
 
 Witness::Witness(ValueDecl *decl, SubstitutionList substitutions,
                  GenericEnvironment *syntheticEnv,
-                 SubstitutionMap reqToSynthesizedEnvMap) {
+                 SubstitutionList reqToSynthesizedEnvSubs) {
   auto &ctx = decl->getASTContext();
 
   auto declRef = ConcreteDeclRef(ctx, decl, substitutions);
   auto storedMem = ctx.Allocate(sizeof(StoredWitness), alignof(StoredWitness));
   auto stored = new (storedMem)
-      StoredWitness{declRef, syntheticEnv, std::move(reqToSynthesizedEnvMap)};
+      StoredWitness{declRef, syntheticEnv,
+                    ctx.AllocateCopy(reqToSynthesizedEnvSubs)};
   ctx.addDestructorCleanup(*stored);
 
   storage = stored;
@@ -320,6 +321,8 @@ void NormalProtocolConformance::setTypeWitness(
 Witness NormalProtocolConformance::getWitness(ValueDecl *requirement,
                                               LazyResolver *resolver) const {
   assert(!isa<AssociatedTypeDecl>(requirement) && "Request type witness");
+  assert(requirement->isProtocolRequirement() && "Not a requirement");
+
   if (Resolver)
     resolveLazyInfo();
 
@@ -394,7 +397,7 @@ SpecializedProtocolConformance::getTypeWitnessSubstAndDecl(
 
   // Apply the substitution we computed above
   auto specializedType
-    = genericWitness.getReplacement().subst(substitutionMap, None);
+    = genericWitness.getReplacement().subst(substitutionMap);
   if (!specializedType)
     specializedType = ErrorType::get(genericWitness.getReplacement());
 

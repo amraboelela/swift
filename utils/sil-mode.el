@@ -51,7 +51,7 @@
                     font-lock-keyword-face)
 
    ;; Highlight attributes written in [...].
-   '("\\[\\(.+\\)\\]" 1 font-lock-keyword-face)
+   '("\\[\\(.+?\\)\\]" 1 font-lock-keyword-face)
 
    ;; SIL Instructions - Allocation/Deallocation.
    `(,(regexp-opt '("alloc_stack" "alloc_ref" "alloc_ref_dynamic" "alloc_box"
@@ -120,7 +120,9 @@
                   'words) . font-lock-keyword-face)
    ;; Protocol and Protocol Composition Types
    `(,(regexp-opt '("init_existential_addr" "deinit_existential_addr"
-                    "open_existential_addr" "open_existential_opaque"
+                    "open_existential_addr"
+                    "init_existential_opaque" "deinit_existential_opaque"
+                    "open_existential_opaque"
                     "alloc_existential_box" "project_existential_box"
                     "open_existential_box" "dealloc_existential_box"
                     "init_existential_ref" "open_existential_ref"
@@ -152,7 +154,8 @@
                   'words) . font-lock-keyword-face)
 
    ;; Checked Conversions
-   `(,(regexp-opt '("unconditional_checked_cast" "unconditional_checked_cast_addr")
+   `(,(regexp-opt '("unconditional_checked_cast" "unconditional_checked_cast_addr"
+                    "unconditional_checked_cast_opaque")
                   'words) . font-lock-keyword-face)
    ;; Runtime Failures
    `(,(regexp-opt '("cond_fail")

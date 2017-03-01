@@ -17,7 +17,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/Strings.h"
-#include "swift/Basic/DemangleWrappers.h"
+#include "swift/Basic/Demangle.h"
 #include "swift/Basic/QuotedString.h"
 #include "swift/SIL/SILPrintContext.h"
 #include "swift/SIL/CFG.h"
@@ -49,7 +49,6 @@
 
 
 using namespace swift;
-using namespace demangle_wrappers;
 
 llvm::cl::opt<bool>
 SILPrintNoColor("sil-print-no-color", llvm::cl::init(""),
@@ -61,8 +60,8 @@ SILFullDemangle("sil-full-demangle", llvm::cl::init(false),
 
 static std::string demangleSymbol(StringRef Name) {
   if (SILFullDemangle)
-    return demangleSymbolAsString(Name);
-  return demangleSymbolAsString(Name,
+    return Demangle::demangleSymbolAsString(Name);
+  return Demangle::demangleSymbolAsString(Name,
                     Demangle::DemangleOptions::SimplifiedUIDemangleOptions());
 }
 
@@ -1217,7 +1216,12 @@ public:
           << " to " << CI->getTargetType() << " in "
           << getIDAndType(CI->getDest());
   }
-  
+
+  void visitUnconditionalCheckedCastOpaqueInst(
+      UnconditionalCheckedCastOpaqueInst *CI) {
+    *this << getIDAndType(CI->getOperand()) << " to " << CI->getType();
+  }
+
   void visitCheckedCastAddrBranchInst(CheckedCastAddrBranchInst *CI) {
     *this << getCastConsumptionKindName(CI->getConsumptionKind()) << ' '
           << CI->getSourceType() << " in " << getIDAndType(CI->getSrc())
@@ -1478,6 +1482,10 @@ public:
     *this << DMI->getType();
   }
   void visitOpenExistentialAddrInst(OpenExistentialAddrInst *OI) {
+    if (OI->getAccessKind() == OpenedExistentialAccess::Immutable)
+      *this << "immutable_access ";
+    else
+      *this << "mutable_access ";
     *this << getIDAndType(OI->getOperand()) << " to " << OI->getType();
   }
   void visitOpenExistentialRefInst(OpenExistentialRefInst *OI) {
@@ -1496,6 +1504,10 @@ public:
     *this << getIDAndType(AEI->getOperand()) << ", $"
           << AEI->getFormalConcreteType();
   }
+  void visitInitExistentialOpaqueInst(InitExistentialOpaqueInst *AEI) {
+    *this << getIDAndType(AEI->getOperand()) << ", $"
+          << AEI->getFormalConcreteType() << ", " << AEI->getType();
+  }
   void visitInitExistentialRefInst(InitExistentialRefInst *AEI) {
     *this << getIDAndType(AEI->getOperand()) << " : $"
           << AEI->getFormalConcreteType() << ", " << AEI->getType();
@@ -1508,6 +1520,9 @@ public:
           << AEBI->getFormalConcreteType();
   }
   void visitDeinitExistentialAddrInst(DeinitExistentialAddrInst *DEI) {
+    *this << getIDAndType(DEI->getOperand());
+  }
+  void visitDeinitExistentialOpaqueInst(DeinitExistentialOpaqueInst *DEI) {
     *this << getIDAndType(DEI->getOperand());
   }
   void visitDeallocExistentialBoxInst(DeallocExistentialBoxInst *DEI) {
@@ -2137,6 +2152,9 @@ void SILModule::print(SILPrintContext &PrintCtx, ModuleDecl *M,
   case SILStage::Canonical:
     OS << "canonical";
     break;
+  case SILStage::Lowered:
+    OS << "lowered";
+    break;
   }
   
   OS << "\n\nimport Builtin\nimport " << STDLIB_NAME
@@ -2342,7 +2360,7 @@ void SILDefaultWitnessTable::print(llvm::raw_ostream &OS, bool Verbose) const {
     OS << " : ";
     witness.getWitness()->printName(OS);
     OS << "\t// "
-       << demangleSymbolAsString(witness.getWitness()->getName());
+       << Demangle::demangleSymbolAsString(witness.getWitness()->getName());
     OS << '\n';
   }
   

@@ -315,7 +315,7 @@ void SILSerializer::writeSILFunction(const SILFunction &F, bool DeclOnly) {
   FuncTable[Ctx.getIdentifier(F.getName())] = NextFuncID++;
   Funcs.push_back(Out.GetCurrentBitNo());
   unsigned abbrCode = SILAbbrCodes[SILFunctionLayout::Code];
-  TypeID FnID = S.addTypeRef(F.getLoweredType().getSwiftType());
+  TypeID FnID = S.addTypeRef(F.getLoweredType().getSwiftRValueType());
   DEBUG(llvm::dbgs() << "SILFunction " << F.getName() << " @ BitNo "
                      << Out.GetCurrentBitNo() << " abbrCode " << abbrCode
                      << " FnID " << FnID << "\n");
@@ -562,6 +562,7 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
   }
   case ValueKind::AllocExistentialBoxInst:
   case ValueKind::InitExistentialAddrInst:
+  case ValueKind::InitExistentialOpaqueInst:
   case ValueKind::InitExistentialMetatypeInst:
   case ValueKind::InitExistentialRefInst: {
     SILValue operand;
@@ -577,6 +578,14 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
       Ty = IEI.getLoweredConcreteType();
       FormalConcreteType = IEI.getFormalConcreteType();
       conformances = IEI.getConformances();
+      break;
+    }
+    case ValueKind::InitExistentialOpaqueInst: {
+      auto &IEOI = cast<InitExistentialOpaqueInst>(SI);
+      operand = IEOI.getOperand();
+      Ty = IEOI.getType();
+      FormalConcreteType = IEOI.getFormalConcreteType();
+      conformances = IEOI.getConformances();
       break;
     }
     case ValueKind::InitExistentialRefInst: {
@@ -1038,6 +1047,7 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
   case ValueKind::DeallocStackInst:
   case ValueKind::DeallocRefInst:
   case ValueKind::DeinitExistentialAddrInst:
+  case ValueKind::DeinitExistentialOpaqueInst:
   case ValueKind::DestroyAddrInst:
   case ValueKind::IsNonnullInst:
   case ValueKind::LoadInst:
@@ -1201,8 +1211,16 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
                               S.addDeclRef(PI->getProtocol()));
     break;
   }
+  case ValueKind::OpenExistentialAddrInst: {
+    assert(SI.getNumOperands() - SI.getTypeDependentOperands().size() == 1);
+    unsigned attrs = cast<OpenExistentialAddrInst>(SI).getAccessKind() ==
+                             OpenedExistentialAccess::Immutable
+                         ? 0 : 1;
+    writeOneTypeOneOperandLayout(SI.getKind(), attrs, SI.getType(),
+                                 SI.getOperand(0));
+    break;
+  }
   // Conversion instructions (and others of similar form).
-  case ValueKind::OpenExistentialAddrInst:
   case ValueKind::OpenExistentialRefInst:
   case ValueKind::OpenExistentialMetatypeInst:
   case ValueKind::OpenExistentialBoxInst:
@@ -1282,6 +1300,18 @@ void SILSerializer::writeSILInstruction(const SILInstruction &SI) {
              S.addTypeRef(CI->getDest()->getType().getSwiftRValueType()),
              (unsigned)CI->getDest()->getType().getCategory(),
              llvm::makeArrayRef(listOfValues));
+    break;
+  }
+  case ValueKind::UnconditionalCheckedCastOpaqueInst: {
+    auto CI = cast<UnconditionalCheckedCastOpaqueInst>(&SI);
+    SILInstCastLayout::emitRecord(
+        Out, ScratchRecord, SILAbbrCodes[SILInstCastLayout::Code],
+        (unsigned)SI.getKind(), /*attr*/ 0,
+        S.addTypeRef(CI->getType().getSwiftRValueType()),
+        (unsigned)CI->getType().getCategory(),
+        S.addTypeRef(CI->getOperand()->getType().getSwiftRValueType()),
+        (unsigned)CI->getOperand()->getType().getCategory(),
+        addValueRef(CI->getOperand()));
     break;
   }
   case ValueKind::UncheckedRefCastAddrInst: {
@@ -1756,7 +1786,7 @@ void SILSerializer::writeIndexTables() {
 void SILSerializer::writeSILGlobalVar(const SILGlobalVariable &g) {
   GlobalVarList[Ctx.getIdentifier(g.getName())] = NextGlobalVarID++;
   GlobalVarOffset.push_back(Out.GetCurrentBitNo());
-  TypeID TyID = S.addTypeRef(g.getLoweredType().getSwiftType());
+  TypeID TyID = S.addTypeRef(g.getLoweredType().getSwiftRValueType());
   DeclID dID = S.addDeclRef(g.getDecl());
   SILGlobalVarLayout::emitRecord(Out, ScratchRecord,
                                  SILAbbrCodes[SILGlobalVarLayout::Code],

@@ -43,6 +43,8 @@ def _register(name, *tool):
         return self.find_tool(*tool)
     _getter.__name__ = name
     setattr(Toolchain, name, cache_util.reify(_getter))
+
+
 _register("cc", "clang")
 _register("cxx", "clang++")
 _register("ninja", "ninja", "ninja-build")
@@ -182,5 +184,5 @@ def host_toolchain(**kwargs):
     elif sys.startswith('CYGWIN'):
         return Cygwin()
     else:
-        raise NotImplementedError(
-            'toolchain() is not supported in this platform')
+        raise NotImplementedError('The platform "%s" does not have a defined '
+                                  'toolchain.' % sys)

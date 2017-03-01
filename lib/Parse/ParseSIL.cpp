@@ -15,7 +15,6 @@
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/Basic/Defer.h"
-#include "swift/Basic/Fallthrough.h"
 #include "swift/Parse/Lexer.h"
 #include "swift/Parse/Parser.h"
 #include "swift/SIL/AbstractionPattern.h"
@@ -1744,7 +1743,24 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
     P.diagnose(loc, diag::expected_tok_in_sil_instr, "cast consumption kind");
     return true;
   };
-  
+
+  auto parseOpenExistAddrKind = [&](Identifier name, SourceLoc loc,
+                                    OpenedExistentialAccess &out) -> bool {
+    auto kind =
+        llvm::StringSwitch<Optional<OpenedExistentialAccess>>(name.str())
+            .Case("mutable_access", OpenedExistentialAccess::Mutable)
+            .Case("immutable_access", OpenedExistentialAccess::Immutable)
+            .Default(None);
+
+    if (kind) {
+      out = kind.getValue();
+      return false;
+    }
+    P.diagnose(loc, diag::expected_tok_in_sil_instr,
+               "opened existential access kind");
+    return true;
+  };
+
   // Validate the opcode name, and do opcode-specific parsing logic based on the
   // opcode we find.
   SILInstruction *ResultVal;
@@ -2031,7 +2047,18 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
     SILType Ty;
     Identifier ToToken;
     SourceLoc ToLoc;
-    
+
+    OpenedExistentialAccess accessKind;
+    Identifier accessKindToken;
+    SourceLoc accessKindLoc;
+    if (Opcode == ValueKind::OpenExistentialAddrInst) {
+      if (parseSILIdentifier(accessKindToken, accessKindLoc,
+                             diag::expected_tok_in_sil_instr,
+                             "opened existential access kind") ||
+          parseOpenExistAddrKind(accessKindToken, accessKindLoc, accessKind))
+        return true;
+    }
+
     if (parseTypedValueRef(Val, B) ||
         parseSILIdentifier(ToToken, ToLoc,
                            diag::expected_tok_in_sil_instr, "to") ||
@@ -2048,7 +2075,7 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
 
     switch (Opcode) {
     case ValueKind::OpenExistentialAddrInst:
-      ResultVal = B.createOpenExistentialAddr(InstLoc, Val, Ty);
+      ResultVal = B.createOpenExistentialAddr(InstLoc, Val, Ty, accessKind);
       break;
 
     case ValueKind::OpenExistentialMetatypeInst:
@@ -2106,9 +2133,9 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
     UNARY_INSTRUCTION(DestroyValue)
     UNARY_INSTRUCTION(CondFail)
     UNARY_INSTRUCTION(EndBorrowArgument)
-    UNARY_INSTRUCTION(UnmanagedReleaseValue)
-    UNARY_INSTRUCTION(UnmanagedRetainValue)
-    UNARY_INSTRUCTION(UnmanagedAutoreleaseValue)
+    REFCOUNTING_INSTRUCTION(UnmanagedReleaseValue)
+    REFCOUNTING_INSTRUCTION(UnmanagedRetainValue)
+    REFCOUNTING_INSTRUCTION(UnmanagedAutoreleaseValue)
     REFCOUNTING_INSTRUCTION(StrongPin)
     REFCOUNTING_INSTRUCTION(StrongRetain)
     REFCOUNTING_INSTRUCTION(StrongRelease)
@@ -2421,6 +2448,7 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
 
   // Checked Conversion instructions.
   case ValueKind::UnconditionalCheckedCastInst:
+  case ValueKind::UnconditionalCheckedCastOpaqueInst:
   case ValueKind::CheckedCastBranchInst: {
     SILType ty;
     SILValue destVal;
@@ -2443,7 +2471,12 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
         return true;
       ResultVal = B.createUnconditionalCheckedCast(InstLoc, Val, ty);
       break;
-    }    
+    } else if (Opcode == ValueKind::UnconditionalCheckedCastOpaqueInst) {
+      if (parseSILDebugLocation(InstLoc, B))
+        return true;
+      ResultVal = B.createUnconditionalCheckedCastOpaque(InstLoc, Val, ty);
+      break;
+    }
     // The conditional cast still needs its branch destinations.
     Identifier successBBName, failureBBName;
     SourceLoc successBBLoc, failureBBLoc;
@@ -3691,6 +3724,12 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
     ResultVal = B.createDeinitExistentialAddr(InstLoc, Val);
     break;
   }
+  case ValueKind::DeinitExistentialOpaqueInst: {
+    if (parseTypedValueRef(Val, B) || parseSILDebugLocation(InstLoc, B))
+      return true;
+    ResultVal = B.createDeinitExistentialOpaque(InstLoc, Val);
+    break;
+  }
   case ValueKind::InitExistentialAddrInst: {
     CanType Ty;
     SourceLoc TyLoc;
@@ -3717,6 +3756,27 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
     
     ResultVal = B.createInitExistentialAddr(InstLoc, Val, Ty, LoweredTy,
                                         conformances);
+    break;
+  }
+  case ValueKind::InitExistentialOpaqueInst: {
+    CanType FormalConcreteTy;
+    SILType ExistentialTy;
+    SourceLoc TyLoc;
+
+    if (parseTypedValueRef(Val, B) ||
+        P.parseToken(tok::comma, diag::expected_tok_in_sil_instr, ",") ||
+        P.parseToken(tok::sil_dollar, diag::expected_tok_in_sil_instr, "$") ||
+        parseASTType(FormalConcreteTy, TyLoc) ||
+        P.parseToken(tok::comma, diag::expected_tok_in_sil_instr, ",") ||
+        parseSILType(ExistentialTy) || parseSILDebugLocation(InstLoc, B))
+      return true;
+
+    ArrayRef<ProtocolConformanceRef> conformances =
+        collectExistentialConformances(P, FormalConcreteTy, TyLoc,
+                                       ExistentialTy.getSwiftRValueType());
+
+    ResultVal = B.createInitExistentialOpaque(
+        InstLoc, ExistentialTy, FormalConcreteTy, Val, conformances);
     break;
   }
   case ValueKind::AllocExistentialBoxInst: {
@@ -4329,6 +4389,9 @@ bool Parser::parseDeclSILStage() {
     consumeToken();
   } else if (Tok.isContextualKeyword("canonical")) {
     stage = SILStage::Canonical;
+    consumeToken();
+  } else if (Tok.isContextualKeyword("lowered")) {
+    stage = SILStage::Lowered;
     consumeToken();
   } else {
     diagnose(Tok, diag::expected_sil_stage_name);

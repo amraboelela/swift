@@ -32,6 +32,7 @@
 #include "swift/AST/Types.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/IRGenOptions.h"
+#include "swift/AST/SubstitutionMap.h"
 #include "swift/SIL/SILDeclRef.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILValue.h"
@@ -763,7 +764,7 @@ namespace {
       // Keep track of whether we found a better path than the
       // previous best.
       bool foundBetter = false;
-      for (auto base : proto->getInheritedProtocols(nullptr)) {
+      for (auto base : proto->getInheritedProtocols()) {
         // ObjC protocols do not have witnesses.
         if (!Lowering::TypeConverter::protocolRequiresWitnessTable(base))
           continue;
@@ -2053,7 +2054,7 @@ llvm::Value *MetadataPath::followComponent(IRGenFunction &IGF,
     auto conformance = sourceKey.Kind.getProtocolConformance();
     auto protocol = conformance.getRequirement();
     auto inheritedProtocol =
-      protocol->getInheritedProtocols(nullptr)[component.getPrimaryIndex()];
+      protocol->getInheritedProtocols()[component.getPrimaryIndex()];
 
     sourceKey.Kind =
       LocalTypeDataKind::forAbstractProtocolWitnessTable(inheritedProtocol);
@@ -2258,10 +2259,23 @@ llvm::Value *irgen::emitWitnessTableRef(IRGenFunction &IGF,
   if (concreteConformance->getProtocol() != proto) {
     concreteConformance = concreteConformance->getInheritedConformance(proto);
   }
+
+  // Check immediately for an existing cache entry.
+  auto wtable = IGF.tryGetLocalTypeData(
+    srcType,
+    LocalTypeDataKind::forConcreteProtocolWitnessTable(concreteConformance));
+  if (wtable) return wtable;
+
   auto &protoI = IGF.IGM.getProtocolInfo(proto);
   auto &conformanceI =
     protoI.getConformance(IGF.IGM, proto, concreteConformance);
-  return conformanceI.getTable(IGF, srcType, srcMetadataCache);
+  wtable = conformanceI.getTable(IGF, srcType, srcMetadataCache);
+
+  IGF.setScopedLocalTypeData(
+    srcType,
+    LocalTypeDataKind::forConcreteProtocolWitnessTable(concreteConformance),
+    wtable);
+  return wtable;
 }
 
 /// Emit the witness table references required for the given type
@@ -2746,7 +2760,6 @@ irgen::emitWitnessMethodValue(IRGenFunction &IGF,
   
   // Build the value.
   out.add(witness);
-  out.add(wtable);
 }
 
 llvm::FunctionType *IRGenModule::getAssociatedTypeMetadataAccessFunctionTy() {
