@@ -289,6 +289,20 @@ public:
   /// or ObjC-as-swift thunks.
   bool isThunkSymbol(llvm::StringRef MangledName);
 
+  /// Returns the mangled name of the target of a thunk.
+  ///
+  /// \returns Returns the remaining name after removing the thunk mangling
+  /// characters from \p MangledName. If \p MangledName is not a thunk symbol,
+  /// an empty string is returned.
+  std::string getThunkTarget(llvm::StringRef MangledName);
+
+  /// Returns true if the \p mangledName refers to a function which conforms to
+  /// the Swift calling convention.
+  ///
+  /// The return value is unspecified if the \p MangledName does not refer to a
+  /// function symbol.
+  bool hasSwiftCallingConvention(llvm::StringRef MangledName);
+
   /// Deallocates all nodes.
   ///
   /// The memory which is used for nodes is not freed but recycled for the next

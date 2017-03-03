@@ -16,6 +16,7 @@
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILVisitor.h"
+#include "llvm/ADT/StringSwitch.h"
 
 using namespace swift;
 
@@ -141,6 +142,19 @@ ValueOwnershipKind::merge(ValueOwnershipKind RHS) const {
   }
 
   return (LHSVal == RHSVal) ? Optional<ValueOwnershipKind>(*this) : None;
+}
+
+ValueOwnershipKind::ValueOwnershipKind(StringRef S) {
+  auto Result = llvm::StringSwitch<Optional<ValueOwnershipKind::innerty>>(S)
+                    .Case("trivial", ValueOwnershipKind::Trivial)
+                    .Case("unowned", ValueOwnershipKind::Unowned)
+                    .Case("owned", ValueOwnershipKind::Owned)
+                    .Case("guaranteed", ValueOwnershipKind::Guaranteed)
+                    .Case("any", ValueOwnershipKind::Any)
+                    .Default(None);
+  if (!Result.hasValue())
+    llvm_unreachable("Invalid string representation of ValueOwnershipKind");
+  Value = Result.getValue();
 }
 
 //===----------------------------------------------------------------------===//
@@ -333,6 +347,7 @@ NO_RESULT_OWNERSHIP_INST(InjectEnumAddr)
 NO_RESULT_OWNERSHIP_INST(DeinitExistentialAddr)
 NO_RESULT_OWNERSHIP_INST(DeinitExistentialOpaque)
 NO_RESULT_OWNERSHIP_INST(CondFail)
+NO_RESULT_OWNERSHIP_INST(EndLifetime)
 
 // Terminators. These do not produce SILValue, so they do not have a
 // ValueOwnershipKind. They do have ownership implications in terms of the
@@ -457,6 +472,12 @@ ValueOwnershipKind ValueOwnershipKindVisitor::visitUncheckedBitwiseCastInst(
 
   // Otherwise, we forward our ownership.
   return visitForwardingInst(UBCI);
+}
+
+ValueOwnershipKind
+ValueOwnershipKindVisitor::visitUncheckedOwnershipConversionInst(
+    UncheckedOwnershipConversionInst *I) {
+  return I->getConversionOwnershipKind();
 }
 
 // An enum without payload is trivial. One with non-trivial payload is

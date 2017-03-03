@@ -137,7 +137,10 @@ void Context::clear() {
 
 NodePointer Context::demangleSymbolAsNode(llvm::StringRef MangledName) {
 #ifndef NO_NEW_DEMANGLING
-  if (MangledName.startswith(MANGLING_PREFIX_STR)) {
+  if (MangledName.startswith(MANGLING_PREFIX_STR)
+      // Also accept the future mangling prefix.
+      // TODO: remove this line as soon as MANGLING_PREFIX_STR gets "_S".
+      || MangledName.startswith("_S")) {
     return D->demangleSymbol(MangledName);
   }
 #endif
@@ -171,7 +174,10 @@ std::string Context::demangleTypeAsString(llvm::StringRef MangledName,
 }
 
 bool Context::isThunkSymbol(llvm::StringRef MangledName) {
-  if (MangledName.startswith(MANGLING_PREFIX_STR)) {
+  if (MangledName.startswith(MANGLING_PREFIX_STR)
+      // Also accept the future mangling prefix.
+      // TODO: remove this line as soon as MANGLING_PREFIX_STR gets "_S".
+      || MangledName.startswith("_S")) {
     // First do a quick check
     if (MangledName.endswith("TA") ||  // partial application forwarder
         MangledName.endswith("Ta") ||  // ObjC partial application forwarder
@@ -202,13 +208,60 @@ bool Context::isThunkSymbol(llvm::StringRef MangledName) {
     StringRef Remaining = MangledName.substr(2);
     if (Remaining.startswith("To") ||   // swift-as-ObjC thunk
         Remaining.startswith("TO") ||   // ObjC-as-swift thunk
-        Remaining.startswith("PA")) {  // (ObjC) partial application forwarder
+        Remaining.startswith("PA_") ||  // partial application forwarder
+        Remaining.startswith("PAo_")) { // ObjC partial application forwarder
       return true;
     }
   }
   return false;
 }
-  
+
+std::string Context::getThunkTarget(llvm::StringRef MangledName) {
+  if (!isThunkSymbol(MangledName))
+    return std::string();
+
+  if (MangledName.startswith(MANGLING_PREFIX_STR)
+      // Also accept the future mangling prefix.
+      // TODO: remove this line as soon as MANGLING_PREFIX_STR gets "_S".
+      || MangledName.startswith("_S")) {
+
+    return MangledName.substr(0, MangledName.size() - 2).str();
+  }
+  // Old mangling.
+  assert(MangledName.startswith("_T"));
+  StringRef Remaining = MangledName.substr(2);
+  if (Remaining.startswith("PA_"))
+    return Remaining.substr(3).str();
+  if (Remaining.startswith("PAo_"))
+    return Remaining.substr(4).str();
+  assert(Remaining.startswith("To") || Remaining.startswith("TO"));
+  return std::string("_T") + Remaining.substr(2).str();
+}
+
+bool Context::hasSwiftCallingConvention(llvm::StringRef MangledName) {
+  Node *Global = demangleSymbolAsNode(MangledName);
+  if (!Global || Global->getKind() != Node::Kind::Global ||
+      Global->getNumChildren() == 0)
+    return false;
+
+  Node *TopLevel = Global->getFirstChild();
+  switch (TopLevel->getKind()) {
+    // Functions, which don't have the swift calling conventions:
+    case Node::Kind::TypeMetadataAccessFunction:
+    case Node::Kind::ValueWitness:
+    case Node::Kind::ProtocolWitnessTableAccessor:
+    case Node::Kind::GenericProtocolWitnessTableInstantiationFunction:
+    case Node::Kind::LazyProtocolWitnessTableAccessor:
+    case Node::Kind::AssociatedTypeMetadataAccessor:
+    case Node::Kind::AssociatedTypeWitnessTableAccessor:
+    case Node::Kind::ObjCAttribute:
+      return false;
+    default:
+      break;
+  }
+  return true;
+}
+
 NodePointer Context::createNode(Node::Kind K) {
   return D->createNode(K);
 }
@@ -317,7 +370,10 @@ void Demangler::init(StringRef MangledName) {
 NodePointer Demangler::demangleSymbol(StringRef MangledName) {
   init(MangledName);
 
-  if (!nextIf(MANGLING_PREFIX_STR))
+  if (!nextIf(MANGLING_PREFIX_STR)
+      // Also accept the future mangling prefix.
+      // TODO: remove this line as soon as MANGLING_PREFIX_STR gets "_S".
+      && !nextIf("_S"))
     return nullptr;
 
   NodePointer topLevel = createNode(Node::Kind::Global);
