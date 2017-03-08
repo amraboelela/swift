@@ -7,7 +7,7 @@ cd $SWIFT_PATH
 
 if [ ${PARAM} = "x-c" ] ; then
 echo ========== Cleaning ===========
-PARAM="x-u"
+#PARAM="x-u"
 rm -rf build
 rm -f swift/*.tar.gz
 fi
