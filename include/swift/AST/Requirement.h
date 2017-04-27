@@ -19,6 +19,7 @@
 
 #include "swift/AST/Type.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/Support/ErrorHandling.h"
 
 namespace swift {
 
@@ -97,18 +98,19 @@ public:
       return None;
 
     switch (getKind()) {
+    case RequirementKind::Conformance:
+    case RequirementKind::Superclass:
     case RequirementKind::SameType: {
       auto newSecond = getSecondType().subst(std::forward<Args>(args)...);
       if (!newSecond)
         return None;
       return Requirement(getKind(), newFirst, newSecond);
     }
-    case RequirementKind::Conformance:
-    case RequirementKind::Superclass:
-      return Requirement(getKind(), newFirst, getSecondType());
     case RequirementKind::Layout:
       return Requirement(getKind(), newFirst, getLayoutConstraint());
     }
+
+    llvm_unreachable("Unhandled RequirementKind in switch.");
   }
 
   /// \brief Retrieve the layout constraint.

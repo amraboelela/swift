@@ -1,3 +1,15 @@
+//===--- SyntaxCollection.h -------------------------------------*- C++ -*-===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef SWIFT_SYNTAX_SYNTAXCOLLECTION_H
 #define SWIFT_SYNTAX_SYNTAXCOLLECTION_H
 
@@ -41,6 +53,18 @@ class SyntaxCollection : public Syntax {
   friend class SyntaxData;
   friend class Syntax;
   using DataType = SyntaxCollectionData<CollectionKind, Element>;
+
+private:
+  static RC<DataType>
+  makeData(std::vector<Element> &Elements) {
+    RawSyntax::LayoutList List;
+    for (auto &Elt : Elements) {
+      List.push_back(Elt.getRaw());
+    }
+    auto Raw = RawSyntax::make(CollectionKind, List,
+                               SourcePresence::Present);
+    return DataType::make(Raw);
+  }
 
 protected:
   SyntaxCollection(const RC<SyntaxData> Root, const DataType *Data)

@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen %s | %FileCheck %s
 class C {}
 
 enum Foo {
@@ -47,10 +47,12 @@ func testShuffleOpaque() {
   // CHECK-NEXT: [[T0:%.*]] = function_ref @_T06tuples7make_xySi1x_AA1P_p1ytyF
   // CHECK-NEXT: [[TEMP:%.*]] = alloc_stack $P
   // CHECK-NEXT: [[T1:%.*]] = apply [[T0]]([[TEMP]])
-  // CHECK-NEXT: [[PAIR_0:%.*]] = tuple_element_addr [[PBPAIR]] : $*(y: P, x: Int), 0
+  // CHECK-NEXT: [[WRITE:%.*]] = begin_access [modify] [unknown] [[PBPAIR]] : $*(y: P, x: Int)
+  // CHECK-NEXT: [[PAIR_0:%.*]] = tuple_element_addr [[WRITE]] : $*(y: P, x: Int), 0
   // CHECK-NEXT: copy_addr [take] [[TEMP]] to [[PAIR_0]]
-  // CHECK-NEXT: [[PAIR_1:%.*]] = tuple_element_addr [[PBPAIR]] : $*(y: P, x: Int), 1
+  // CHECK-NEXT: [[PAIR_1:%.*]] = tuple_element_addr [[WRITE]] : $*(y: P, x: Int), 1
   // CHECK-NEXT: assign [[T1]] to [[PAIR_1]]
+  // CHECK-NEXT: end_access [[WRITE]] : $*(y: P, x: Int)
   // CHECK-NEXT: dealloc_stack [[TEMP]]
   pair = make_xy()
 }
@@ -92,10 +94,12 @@ func testShuffleTuple() {
   // CHECK-NEXT: [[T0:%.*]] = function_ref @_T06tuples6make_pAA1P_pyF 
   // CHECK-NEXT: [[TEMP:%.*]] = alloc_stack $P
   // CHECK-NEXT: apply [[T0]]([[TEMP]])
-  // CHECK-NEXT: [[PAIR_0:%.*]] = tuple_element_addr [[PBPAIR]] : $*(y: P, x: Int), 0
+  // CHECK-NEXT: [[WRITE:%.*]] = begin_access [modify] [unknown] [[PBPAIR]] : $*(y: P, x: Int)
+  // CHECK-NEXT: [[PAIR_0:%.*]] = tuple_element_addr [[WRITE]] : $*(y: P, x: Int), 0
   // CHECK-NEXT: copy_addr [take] [[TEMP]] to [[PAIR_0]]
-  // CHECK-NEXT: [[PAIR_1:%.*]] = tuple_element_addr [[PBPAIR]] : $*(y: P, x: Int), 1
+  // CHECK-NEXT: [[PAIR_1:%.*]] = tuple_element_addr [[WRITE]] : $*(y: P, x: Int), 1
   // CHECK-NEXT: assign [[INT]] to [[PAIR_1]]
+  // CHECK-NEXT: end_access [[WRITE]] : $*(y: P, x: Int)
   // CHECK-NEXT: dealloc_stack [[TEMP]]
   pair = (x: make_int(), y: make_p())
 }
@@ -119,11 +123,11 @@ func testTupleUnsplat() {
   // CHECK: enum $GenericEnum<(Int, Int)>, #GenericEnum.one!enumelt.1, [[TUPLE]]
   _ = GenericEnum<(Int, Int)>.one(x, y)
 
-  // CHECK: [[THUNK:%.+]] = function_ref @_T0Si_SitIxi_SiSiIxyy_TR
+  // CHECK: [[THUNK:%.+]] = function_ref @_T0Si_SitIxi_S2iIxyy_TR
   // CHECK: [[REABSTRACTED:%.+]] = partial_apply [[THUNK]]({{%.+}})
   // CHECK: apply [[REABSTRACTED]]([[X]], [[Y]])
   _ = GenericEnum<(Int, Int)>.callback((x, y))
-  // CHECK: [[THUNK:%.+]] = function_ref @_T0Si_SitIxi_SiSiIxyy_TR
+  // CHECK: [[THUNK:%.+]] = function_ref @_T0Si_SitIxi_S2iIxyy_TR
   // CHECK: [[REABSTRACTED:%.+]] = partial_apply [[THUNK]]({{%.+}})
   // CHECK: apply [[REABSTRACTED]]([[X]], [[Y]])
   _ = GenericEnum<(Int, Int)>.callback(x, y)

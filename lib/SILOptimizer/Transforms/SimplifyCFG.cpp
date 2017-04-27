@@ -160,6 +160,7 @@ namespace {
     bool simplifyBranchBlock(BranchInst *BI);
     bool simplifyCondBrBlock(CondBranchInst *BI);
     bool simplifyCheckedCastBranchBlock(CheckedCastBranchInst *CCBI);
+    bool simplifyCheckedCastValueBranchBlock(CheckedCastValueBranchInst *CCBI);
     bool simplifyCheckedCastAddrBranchBlock(CheckedCastAddrBranchInst *CCABI);
     bool simplifyTryApplyBlock(TryApplyInst *TAI);
     bool simplifySwitchValueBlock(SwitchValueInst *SVI);
@@ -1809,6 +1810,35 @@ bool SimplifyCFG::simplifyCheckedCastBranchBlock(CheckedCastBranchInst *CCBI) {
   return MadeChange;
 }
 
+bool SimplifyCFG::simplifyCheckedCastValueBranchBlock(
+    CheckedCastValueBranchInst *CCBI) {
+  auto SuccessBB = CCBI->getSuccessBB();
+  auto FailureBB = CCBI->getFailureBB();
+  auto ThisBB = CCBI->getParent();
+
+  bool MadeChange = false;
+  CastOptimizer CastOpt(
+      [&MadeChange](SILInstruction *I,
+                    ValueBase *V) { /* ReplaceInstUsesAction */
+                                    MadeChange = true;
+      },
+      [&MadeChange](SILInstruction *I) { /* EraseInstAction */
+                                         MadeChange = true;
+                                         I->eraseFromParent();
+      },
+      [&]() { /* WillSucceedAction */
+              MadeChange |= removeIfDead(FailureBB);
+              addToWorklist(ThisBB);
+      },
+      [&]() { /* WillFailAction */
+              MadeChange |= removeIfDead(SuccessBB);
+              addToWorklist(ThisBB);
+      });
+
+  MadeChange |= bool(CastOpt.simplifyCheckedCastValueBranchInst(CCBI));
+  return MadeChange;
+}
+
 bool
 SimplifyCFG::
 simplifyCheckedCastAddrBranchBlock(CheckedCastAddrBranchInst *CCABI) {
@@ -1865,13 +1895,11 @@ static bool isTryApplyOfConvertFunction(TryApplyInst *TAI,
   // Check if it is a conversion of a non-throwing function into
   // a throwing function. If this is the case, replace by a
   // simple apply.
-  auto OrigFnTy = dyn_cast<SILFunctionType>(CFI->getConverted()->getType().
-                                            getSwiftRValueType());
+  auto OrigFnTy = CFI->getConverted()->getType().getAs<SILFunctionType>();
   if (!OrigFnTy || OrigFnTy->hasErrorResult())
     return false;
   
-  auto TargetFnTy = dyn_cast<SILFunctionType>(CFI->getType().
-                                              getSwiftRValueType());
+  auto TargetFnTy = CFI->getType().getAs<SILFunctionType>();
   if (!TargetFnTy || !TargetFnTy->hasErrorResult())
     return false;
 
@@ -1880,7 +1908,7 @@ static bool isTryApplyOfConvertFunction(TryApplyInst *TAI,
   CalleeType = Callee->getType();
   
   // If it a call of a throwing callee, bail.
-  auto CalleeFnTy = dyn_cast<SILFunctionType>(CalleeType.getSwiftRValueType());
+  auto CalleeFnTy = CalleeType.getAs<SILFunctionType>();
   if (!CalleeFnTy || CalleeFnTy->hasErrorResult())
     return false;
   
@@ -1914,7 +1942,7 @@ bool SimplifyCFG::simplifyTryApplyBlock(TryApplyInst *TAI) {
   if (isTryApplyOfConvertFunction(TAI, Callee, CalleeType) ||
       isTryApplyWithUnreachableError(TAI, Callee, CalleeType)) {
 
-    auto CalleeFnTy = cast<SILFunctionType>(CalleeType.getSwiftRValueType());
+    auto CalleeFnTy = CalleeType.castTo<SILFunctionType>();
     SILFunctionConventions calleeConv(CalleeFnTy, TAI->getModule());
     auto ResultTy = calleeConv.getSILResultType();
     auto OrigResultTy = TAI->getNormalBB()->getArgument(0)->getType();
@@ -1928,8 +1956,7 @@ bool SimplifyCFG::simplifyTryApplyBlock(TryApplyInst *TAI) {
     }
     SILFunctionConventions targetConv(TargetFnTy, TAI->getModule());
 
-    auto OrigFnTy = dyn_cast<SILFunctionType>(
-        TAI->getCallee()->getType().getSwiftRValueType());
+    auto OrigFnTy = TAI->getCallee()->getType().getAs<SILFunctionType>();
     if (OrigFnTy->isPolymorphic()) {
       OrigFnTy = OrigFnTy->substGenericArgs(TAI->getModule(),
                                             TAI->getSubstitutions());
@@ -2157,6 +2184,10 @@ bool SimplifyCFG::simplifyBlocks() {
       break;
     case TermKind::CheckedCastBranchInst:
       Changed |= simplifyCheckedCastBranchBlock(cast<CheckedCastBranchInst>(TI));
+      break;
+    case TermKind::CheckedCastValueBranchInst:
+      Changed |= simplifyCheckedCastValueBranchBlock(
+          cast<CheckedCastValueBranchInst>(TI));
       break;
     case TermKind::CheckedCastAddrBranchInst:
       Changed |= simplifyCheckedCastAddrBranchBlock(cast<CheckedCastAddrBranchInst>(TI));
@@ -2486,7 +2517,7 @@ bool ArgumentSplitter::createNewArguments() {
 
   // Only handle struct and tuple type.
   SILType Ty = Arg->getType();
-  if (!Ty.getStructOrBoundGenericStruct() && !Ty.getAs<TupleType>())
+  if (!Ty.getStructOrBoundGenericStruct() && !Ty.is<TupleType>())
     return false;
 
   // Get the first level projection for the struct or tuple type.
@@ -3430,7 +3461,6 @@ public:
       invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);
   }
 
-  StringRef getName() override { return "Simplify CFG"; }
 };
 } // end anonymous namespace
 
@@ -3469,7 +3499,6 @@ public:
     }
   }
 
-  StringRef getName() override { return "Split Critical Edges"; }
 };
 
 // Used to test SimplifyCFG::simplifyArgs with sil-opt.
@@ -3485,7 +3514,6 @@ public:
     }
   }
   
-  StringRef getName() override { return "Simplify Block Args"; }
 };
 
 // Used to test splitBBArguments with sil-opt
@@ -3499,7 +3527,6 @@ public:
     }
   }
 
-  StringRef getName() override { return "SROA BB Arguments"; }
 };
 
 // Used to test tryMoveCondFailToPreds with sil-opt
@@ -3515,7 +3542,6 @@ public:
     }
   }
 
-  StringRef getName() override { return "Move Cond Fail To Preds"; }
 };
 
 } // end anonymous namespace

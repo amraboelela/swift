@@ -16,6 +16,7 @@
 #include "swift/Syntax/TypeSyntax.h"
 #include "swift/Syntax/StmtSyntax.h"
 #include "swift/Syntax/UnknownSyntax.h"
+#include "llvm/Support/ErrorHandling.h"
 
 using namespace swift;
 using namespace swift::syntax;
@@ -40,10 +41,14 @@ RC<SyntaxData> SyntaxData::makeDataFromRaw(RC<RawSyntax> Raw,
   case SyntaxKind::Id: \
     return ParentType##Data::make(Raw, Parent, IndexInParent);
 
+#define SYNTAX_COLLECTION(Id, Element) SYNTAX(Id, {})
+
 #include "swift/Syntax/SyntaxKinds.def"
   case SyntaxKind::Token:
     llvm_unreachable("Can't make a SyntaxData from a Token!");
   }
+
+  llvm_unreachable("Unhandled SyntaxKind in switch.");
 }
 
 bool SyntaxData::isType() const {

@@ -25,6 +25,7 @@
 #include "swift/AST/Identifier.h"
 #include "swift/AST/Types.h"
 #include "swift/AST/TypeLoc.h"
+#include "swift/AST/TypeRepr.h"
 #include "swift/Basic/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/FoldingSet.h"
@@ -32,6 +33,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/TinyPtrVector.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TrailingObjects.h"
 #include <functional>
 #include <memory>
@@ -58,6 +60,22 @@ class TypeRepr;
 class ASTContext;
 class DiagnosticEngine;
 
+/// Determines how to resolve a dependent type to a potential archetype.
+enum class ArchetypeResolutionKind {
+  /// Always create a new potential archetype to describe this dependent type,
+  /// which might be invalid and may not provide complete information.
+  AlwaysPartial,
+
+  /// Only create a potential archetype when it is well-formed (e.g., a nested
+  /// type should exist) and make sure we have complete information about
+  /// that potential archetype.
+  CompleteWellFormed,
+
+  /// Only create a new potential archetype to describe this dependent type
+  /// if it is already known.
+  AlreadyKnown,
+};
+
 /// \brief Collects a set of requirements of generic parameters, both explicitly
 /// stated and inferred, and determines the set of archetypes for each of
 /// the generic parameters.
@@ -73,19 +91,44 @@ public:
   using RequirementRHS =
       llvm::PointerUnion3<Type, PotentialArchetype *, LayoutConstraint>;
 
+  /// The location of a requirement as written somewhere in the source.
+  typedef llvm::PointerUnion<const TypeRepr *, const RequirementRepr *>
+    WrittenRequirementLoc;
+
   class RequirementSource;
 
   class FloatingRequirementSource;
 
-  /// Describes a constraint that is bounded on one side by a concrete type.
-  struct ConcreteConstraint {
+  class DelayedRequirement;
+
+  /// Describes a specific constraint on a potential archetype.
+  template<typename T>
+  struct Constraint {
     PotentialArchetype *archetype;
-    Type concreteType;
+    T value;
     const RequirementSource *source;
   };
 
+  /// Describes a concrete constraint on a potential archetype where, where the
+  /// other parameter is a concrete type.
+  typedef Constraint<Type> ConcreteConstraint;
+
   /// Describes an equivalence class of potential archetypes.
   struct EquivalenceClass {
+    /// The list of protocols to which this equivalence class conforms.
+    ///
+    /// The keys form the (semantic) list of protocols to which this type
+    /// conforms. The values are the conformance constraints as written on
+    /// this equivalence class.
+    llvm::MapVector<ProtocolDecl *, std::vector<Constraint<ProtocolDecl *>>>
+      conformsTo;
+
+    /// Same-type constraints between each potential archetype and any other
+    /// archetype in its equivalence class.
+    llvm::MapVector<PotentialArchetype *,
+                    std::vector<Constraint<PotentialArchetype *>>>
+      sameTypeConstraints;
+
     /// Concrete type to which this equivalence class is equal.
     ///
     /// This is the semantic concrete type; the constraints as written
@@ -104,8 +147,30 @@ public:
     /// Superclass constraints written within this equivalence class.
     std::vector<ConcreteConstraint> superclassConstraints;
 
+    /// \The layout constraint for this equivalence class.
+    LayoutConstraint layout;
+
+    /// Layout constraints written within this equivalence class.
+    std::vector<Constraint<LayoutConstraint>> layoutConstraints;
+
     /// The members of the equivalence class.
     TinyPtrVector<PotentialArchetype *> members;
+
+    /// Describes a component within the graph of same-type constraints within
+    /// the equivalence class that is held together by derived constraints.
+    struct DerivedSameTypeComponent {
+      /// The potential archetype that acts as the anchor for this component.
+      PotentialArchetype *anchor;
+
+      /// The (best) requirement source within the component that makes the
+      /// potential archetypes in this component equivalent to the concrete
+      /// type.
+      const RequirementSource *concreteTypeSource;
+    };
+
+    /// The set of connected components within this equivalence class, using
+    /// only the derived same-type constraints in the graph.
+    std::vector<DerivedSameTypeComponent> derivedSameTypeComponents;
 
     /// Construct a new equivalence class containing only the given
     /// potential archetype (which represents itself).
@@ -124,9 +189,48 @@ public:
     Optional<ConcreteConstraint>
     findAnySuperclassConstraintAsWritten(
                               PotentialArchetype *preferredPA = nullptr) const;
-};
+
+    /// Determine whether conformance to the given protocol is satisfied by
+    /// a superclass requirement.
+    bool isConformanceSatisfiedBySuperclass(ProtocolDecl *proto) const;
+
+    /// Dump a debugging representation of this equivalence class.
+    void dump(llvm::raw_ostream &out) const;
+
+    LLVM_ATTRIBUTE_DEPRECATED(void dump() const,
+                              "only for use in the debugger");
+  };
 
   friend class RequirementSource;
+
+  /// The result of introducing a new constraint.
+  enum class ConstraintResult {
+    /// The constraint was resolved and the relative potential archetypes
+    /// have been updated.
+    Resolved,
+
+    /// The constraint was written directly on a concrete type.
+    Concrete,
+
+    /// The constraint conflicted with existing constraints in some way;
+    /// the generic signature is ill-formed.
+    Conflicting,
+
+    /// The constraint could not be resolved immediately.
+    Unresolved,
+  };
+
+  /// Enum used to indicate how we should handle a constraint that cannot be
+  /// processed immediately for some reason.
+  enum class UnresolvedHandlingKind : char {
+    /// Generate a new, unresolved constraint and consider the constraint
+    /// "resolved" at this point.
+    GenerateConstraints = 0,
+
+    /// Do not generate a new constraint; rather, return
+    /// \c ConstraintResult::Unresolved and let the caller handle it.
+    ReturnUnresolved = 1,
+  };
 
 private:
   class InferRequirementsWalker;
@@ -141,13 +245,17 @@ private:
   GenericSignatureBuilder(const GenericSignatureBuilder &) = delete;
   GenericSignatureBuilder &operator=(const GenericSignatureBuilder &) = delete;
 
-  /// Update an existing constraint source reference when another constraint
-  /// source was found to produce the same constraint. Only the better
-  /// constraint source will be kept.
+  /// When a particular requirement cannot be resolved due to, e.g., a
+  /// currently-unresolvable or nested type, this routine should be
+  /// called to cope with the unresolved requirement.
   ///
-  /// \returns true if the new constraint source was better, false otherwise.
-  bool updateRequirementSource(const RequirementSource *&existingSource,
-                               const RequirementSource *newSource);
+  /// \returns \c ConstraintResult::Resolved or ConstraintResult::Delayed,
+  /// as appropriate based on \c unresolvedHandling.
+  ConstraintResult handleUnresolvedRequirement(RequirementKind kind,
+                                   UnresolvedType lhs,
+                                   RequirementRHS rhs,
+                                   FloatingRequirementSource source,
+                                   UnresolvedHandlingKind unresolvedHandling);
 
   /// Retrieve the constraint source conformance for the superclass constraint
   /// of the given potential archetype (if present) to the given protocol.
@@ -156,24 +264,15 @@ private:
   /// queried.
   ///
   /// \param proto The protocol to which we are establishing conformance.
-  ///
-  /// \param protoSource The requirement source for the conformance to the
-  /// given protocol.
   const RequirementSource *resolveSuperConformance(
                             GenericSignatureBuilder::PotentialArchetype *pa,
-                            ProtocolDecl *proto,
-                            const RequirementSource *&protoSource);
+                            ProtocolDecl *proto);
 
   /// \brief Add a new conformance requirement specifying that the given
   /// potential archetype conforms to the given protocol.
-  bool addConformanceRequirement(PotentialArchetype *T,
-                                 ProtocolDecl *Proto,
-                                 const RequirementSource *Source);
-
-  bool addConformanceRequirement(PotentialArchetype *T,
-                                 ProtocolDecl *Proto,
-                                 const RequirementSource *Source,
-                                llvm::SmallPtrSetImpl<ProtocolDecl *> &Visited);
+  ConstraintResult addConformanceRequirement(PotentialArchetype *T,
+                                             ProtocolDecl *Proto,
+                                             const RequirementSource *Source);
 
 public:
   /// \brief Add a new same-type requirement between two fully resolved types
@@ -183,8 +282,9 @@ public:
   /// incompatible (e.g. \c Foo<Bar<T>> and \c Foo<Baz>), \c diagnoseMismatch is
   /// called with the two types that don't match (\c Bar<T> and \c Baz for the
   /// previous example).
-  bool
-  addSameTypeRequirement(ResolvedType paOrT1, ResolvedType paOrT2,
+  ConstraintResult
+  addSameTypeRequirementDirect(
+                         ResolvedType paOrT1, ResolvedType paOrT2,
                          FloatingRequirementSource Source,
                          llvm::function_ref<void(Type, Type)> diagnoseMismatch);
 
@@ -192,49 +292,65 @@ public:
   /// (output of GenericSignatureBuilder::resolve).
   ///
   /// The two types must not be incompatible concrete types.
-  bool addSameTypeRequirement(ResolvedType paOrT1, ResolvedType paOrT2,
-                              FloatingRequirementSource Source);
+  ConstraintResult addSameTypeRequirementDirect(
+                                            ResolvedType paOrT1,
+                                            ResolvedType paOrT2,
+                                            FloatingRequirementSource Source);
 
   /// \brief Add a new same-type requirement between two unresolved types.
   ///
   /// The types are resolved with \c GenericSignatureBuilder::resolve, and must
   /// not be incompatible concrete types.
-  bool addSameTypeRequirement(UnresolvedType paOrT1, UnresolvedType paOrT2,
-                              FloatingRequirementSource Source);
+  ConstraintResult addSameTypeRequirement(
+                                    UnresolvedType paOrT1,
+                                    UnresolvedType paOrT2,
+                                    FloatingRequirementSource Source,
+                                    UnresolvedHandlingKind unresolvedHandling);
 
   /// \brief Add a new same-type requirement between two unresolved types.
   ///
   /// The types are resolved with \c GenericSignatureBuilder::resolve. \c
   /// diagnoseMismatch is called if the two types refer to incompatible concrete
   /// types.
-  bool
+  ConstraintResult
   addSameTypeRequirement(UnresolvedType paOrT1, UnresolvedType paOrT2,
                          FloatingRequirementSource Source,
+                         UnresolvedHandlingKind unresolvedHandling,
                          llvm::function_ref<void(Type, Type)> diagnoseMismatch);
 
   /// Update the superclass for the equivalence class of \c T.
   ///
-  /// This assumes that the constraint has already been recorded
-  bool updateSuperclass(PotentialArchetype *T,
+  /// This assumes that the constraint has already been recorded.
+  void updateSuperclass(PotentialArchetype *T,
                         Type superclass,
                         const RequirementSource *source);
 
 private:
   /// \brief Add a new superclass requirement specifying that the given
   /// potential archetype has the given type as an ancestor.
-  bool addSuperclassRequirement(PotentialArchetype *T,
-                                Type Superclass,
-                                const RequirementSource *Source);
+  ConstraintResult addSuperclassRequirementDirect(
+                                              PotentialArchetype *T,
+                                              Type Superclass,
+                                              const RequirementSource *Source);
+
+  /// \brief Add a new type requirement specifying that the given
+  /// type conforms-to or is a superclass of the second type.
+  ConstraintResult addTypeRequirement(
+                          UnresolvedType subject,
+                          UnresolvedType constraint,
+                          FloatingRequirementSource source,
+                          UnresolvedHandlingKind unresolvedHandling);
 
   /// \brief Add a new conformance requirement specifying that the given
   /// potential archetypes are equivalent.
-  bool addSameTypeRequirementBetweenArchetypes(PotentialArchetype *T1,
+  ConstraintResult addSameTypeRequirementBetweenArchetypes(
+                                               PotentialArchetype *T1,
                                                PotentialArchetype *T2,
                                                const RequirementSource *Source);
   
   /// \brief Add a new conformance requirement specifying that the given
   /// potential archetype is bound to a concrete type.
-  bool addSameTypeRequirementToConcrete(PotentialArchetype *T,
+  ConstraintResult addSameTypeRequirementToConcrete(PotentialArchetype *T,
                                         Type Concrete,
                                         const RequirementSource *Source);
 
@@ -243,15 +359,35 @@ private:
   ///
   /// \param diagnoseMismatch Callback invoked when the types in the same-type
   /// requirement mismatch.
-  bool addSameTypeRequirementBetweenConcrete(
+  ConstraintResult addSameTypeRequirementBetweenConcrete(
       Type T1, Type T2, FloatingRequirementSource Source,
       llvm::function_ref<void(Type, Type)> diagnoseMismatch);
 
+  /// \brief Add a new layout requirement directly on the potential archetype.
+  ///
+  /// \returns true if this requirement makes the set of requirements
+  /// inconsistent, in which case a diagnostic will have been issued.
+  ConstraintResult addLayoutRequirementDirect(PotentialArchetype *PAT,
+                                              LayoutConstraint Layout,
+                                              const RequirementSource *Source);
+
+  /// Add a new layout requirement to the subject.
+  ConstraintResult addLayoutRequirement(
+                                    UnresolvedType subject,
+                                    LayoutConstraint layout,
+                                    FloatingRequirementSource source,
+                                    UnresolvedHandlingKind unresolvedHandling);
+
   /// Add the requirements placed on the given type parameter
   /// to the given potential archetype.
-  bool addInheritedRequirements(TypeDecl *decl, PotentialArchetype *pa,
+  ///
+  /// \param inferForModule Infer additional requirements from the types
+  /// relative to the given module.
+  ConstraintResult addInheritedRequirements(
+                                TypeDecl *decl,
+                                UnresolvedType type,
                                 const RequirementSource *parentSource,
-                                llvm::SmallPtrSetImpl<ProtocolDecl *> &visited);
+                                ModuleDecl *inferForModule);
 
   /// Visit all of the potential archetypes.
   template<typename F>
@@ -307,32 +443,40 @@ public:
   
   /// \brief Add a new requirement.
   ///
+  /// \param inferForModule Infer additional requirements from the types
+  /// relative to the given module.
+  ///
   /// \returns true if this requirement makes the set of requirements
   /// inconsistent, in which case a diagnostic will have been issued.
-  bool addRequirement(const RequirementRepr *Req,
-                      const RequirementSource *source = nullptr,
-                      const SubstitutionMap *subMap = nullptr);
+  ConstraintResult addRequirement(const RequirementRepr *req,
+                                  ModuleDecl *inferForModule);
+
+  /// \brief Add a new requirement.
+  ///
+  /// \param inferForModule Infer additional requirements from the types
+  /// relative to the given module.
+  ///
+  /// \returns true if this requirement makes the set of requirements
+  /// inconsistent, in which case a diagnostic will have been issued.
+  ConstraintResult addRequirement(const RequirementRepr *Req,
+                                  FloatingRequirementSource source,
+                                  const SubstitutionMap *subMap,
+                                  ModuleDecl *inferForModule);
 
   /// \brief Add an already-checked requirement.
   ///
   /// Adding an already-checked requirement cannot fail. This is used to
   /// re-inject requirements from outer contexts.
   ///
-  /// \returns true if this requirement makes the set of requirements
-  /// inconsistent, in which case a diagnostic will have been issued.
-  bool addRequirement(const Requirement &req, FloatingRequirementSource source);
-
-  bool addRequirement(const Requirement &req, FloatingRequirementSource source,
-                      llvm::SmallPtrSetImpl<ProtocolDecl *> &Visited);
-
-  /// \brief Add a new requirement.
+  /// \param inferForModule Infer additional requirements from the types
+  /// relative to the given module.
   ///
   /// \returns true if this requirement makes the set of requirements
   /// inconsistent, in which case a diagnostic will have been issued.
-
-  bool addLayoutRequirement(PotentialArchetype *PAT,
-                            LayoutConstraint Layout,
-                            const RequirementSource *Source);
+  ConstraintResult addRequirement(const Requirement &req,
+                                  FloatingRequirementSource source,
+                                  ModuleDecl *inferForModule,
+                                  const SubstitutionMap *subMap = nullptr);
 
   /// \brief Add all of a generic signature's parameters and requirements.
   void addGenericSignature(GenericSignature *sig);
@@ -352,7 +496,8 @@ public:
   /// where \c Dictionary requires that its key type be \c Hashable,
   /// the requirement \c K : Hashable is inferred from the parameter type,
   /// because the type \c Dictionary<K,V> cannot be formed without it.
-  void inferRequirements(TypeLoc type);
+  void inferRequirements(ModuleDecl &module, TypeLoc type,
+                         FloatingRequirementSource source);
 
   /// Infer requirements from the given pattern, recursively.
   ///
@@ -366,7 +511,8 @@ public:
   /// where \c Dictionary requires that its key type be \c Hashable,
   /// the requirement \c K : Hashable is inferred from the parameter type,
   /// because the type \c Dictionary<K,V> cannot be formed without it.
-  void inferRequirements(ParameterList *params,GenericParamList *genericParams);
+  void inferRequirements(ModuleDecl &module, ParameterList *params,
+                         GenericParamList *genericParams);
 
   /// Finalize the set of requirements, performing any remaining checking
   /// required before generating archetypes.
@@ -384,6 +530,9 @@ public:
                                 ArrayRef<GenericTypeParamType *> genericParams);
 
 private:
+  /// Process any delayed requirements that can be handled now.
+  void processDelayedRequirements();
+
   /// Describes the relationship between a given constraint and
   /// the canonical constraint of the equivalence class.
   enum class ConstraintRelation {
@@ -399,7 +548,7 @@ private:
     Conflicting,
   };
 
-  /// Check a list of concrete constraints, removing self-derived constraints
+  /// Check a list of constraints, removing self-derived constraints
   /// and diagnosing redundant constraints.
   ///
   /// \param isSuitableRepresentative Determines whether the given constraint
@@ -410,51 +559,95 @@ private:
   /// emitted.
   ///
   /// \returns the representative constraint.
-  ConcreteConstraint checkConstraintList(
+  template<typename T>
+  Constraint<T> checkConstraintList(
                            ArrayRef<GenericTypeParamType *> genericParams,
-                           std::vector<ConcreteConstraint> &constraints,
-                           llvm::function_ref<bool(const ConcreteConstraint &)>
+                           std::vector<Constraint<T>> &constraints,
+                           llvm::function_ref<bool(const Constraint<T> &)>
                              isSuitableRepresentative,
-                           llvm::function_ref<ConstraintRelation(Type)>
+                           llvm::function_ref<ConstraintRelation(const T&)>
                              checkConstraint,
-                           Optional<Diag<unsigned, Type, Type, Type>>
+                           Optional<Diag<unsigned, Type, T, T>>
                              conflictingDiag,
-                           Diag<Type, Type> redundancyDiag,
-                           Diag<bool, Type, Type> otherNoteDiag);
+                           Diag<Type, T> redundancyDiag,
+                           Diag<unsigned, Type, T> otherNoteDiag);
 
-  /// Check for redundant concrete type constraints within the equivalence
+  /// Check a list of constraints, removing self-derived constraints
+  /// and diagnosing redundant constraints.
+  ///
+  /// \param isSuitableRepresentative Determines whether the given constraint
+  /// is a suitable representative.
+  ///
+  /// \param checkConstraint Checks the given constraint against the
+  /// canonical constraint to determine which diagnostics (if any) should be
+  /// emitted.
+  ///
+  /// \returns the representative constraint.
+  template<typename T, typename DiagT>
+  Constraint<T> checkConstraintList(
+                           ArrayRef<GenericTypeParamType *> genericParams,
+                           std::vector<Constraint<T>> &constraints,
+                           llvm::function_ref<bool(const Constraint<T> &)>
+                             isSuitableRepresentative,
+                           llvm::function_ref<ConstraintRelation(const T&)>
+                             checkConstraint,
+                           Optional<Diag<unsigned, Type, DiagT, DiagT>>
+                             conflictingDiag,
+                           Diag<Type, DiagT> redundancyDiag,
+                           Diag<unsigned, Type, DiagT> otherNoteDiag,
+                           llvm::function_ref<DiagT(const T&)> diagValue,
+                           bool removeSelfDerived);
+
+  /// Check the concrete type constraints within the equivalence
   /// class of the given potential archetype.
-  void checkRedundantConcreteTypeConstraints(
+  void checkConcreteTypeConstraints(
                             ArrayRef<GenericTypeParamType *> genericParams,
                             PotentialArchetype *pa);
 
-  /// Check for redundant superclass constraints within the equivalence
+  /// Check the superclass constraints within the equivalence
   /// class of the given potential archetype.
-  void checkRedundantSuperclassConstraints(
+  void checkSuperclassConstraints(
+                            ArrayRef<GenericTypeParamType *> genericParams,
+                            PotentialArchetype *pa);
+
+  /// Check conformance constraints within the equivalence class of the
+  /// given potential archetype.
+  void checkConformanceConstraints(
+                            ArrayRef<GenericTypeParamType *> genericParams,
+                            PotentialArchetype *pa);
+
+  /// Check layout constraints within the equivalence class of the given
+  /// potential archetype.
+  void checkLayoutConstraints(ArrayRef<GenericTypeParamType *> genericParams,
+                              PotentialArchetype *pa);
+
+  /// Check same-type constraints within the equivalence class of the
+  /// given potential archetype.
+  void checkSameTypeConstraints(
                             ArrayRef<GenericTypeParamType *> genericParams,
                             PotentialArchetype *pa);
 
 public:
   /// \brief Resolve the given type to the potential archetype it names.
   ///
-  /// This routine will synthesize nested types as required to refer to a
-  /// potential archetype, even in cases where no requirement specifies the
-  /// requirement for such an archetype. FIXME: The failure to include such a
-  /// requirement will be diagnosed at some point later (when the types in the
-  /// signature are fully resolved).
+  /// The \c resolutionKind parameter describes how resolution should be
+  /// performed. If the potential archetype named by the given dependent type
+  /// already exists, it will be always returned. If it doesn't exist yet,
+  /// the \c resolutionKind dictates whether the potential archetype will
+  /// be created or whether null will be returned.
   ///
   /// For any type that cannot refer to an archetype, this routine returns null.
-  PotentialArchetype *resolveArchetype(Type type);
+  PotentialArchetype *resolveArchetype(Type type,
+                                       ArchetypeResolutionKind resolutionKind);
 
   /// \brief Resolve the given type as far as this Builder knows how.
   ///
-  /// This returns either a non-typealias potential archetype or a Type, if \c
-  /// type is concrete.
-  // FIXME: the hackTypeFromGenericTypeAlias is just temporarily patching over
-  // problems with generic typealiases (see the comment on the ResolvedType
-  // function)
-  ResolvedType resolve(UnresolvedType type,
-                       bool hackTypeFromGenericTypeAlias = false);
+  /// If successful, this returns either a non-typealias potential archetype
+  /// or a Type, if \c type is concrete.
+  /// If the type cannot be resolved, e.g., because it is "too" recursive
+  /// given the source, returns \c None.
+  Optional<ResolvedType> resolve(UnresolvedType type,
+                                 FloatingRequirementSource source);
 
   /// \brief Dump all of the requirements, both specified and inferred.
   LLVM_ATTRIBUTE_DEPRECATED(
@@ -472,7 +665,11 @@ public:
 /// Requirement sources are uniqued within a generic signature builder.
 class GenericSignatureBuilder::RequirementSource final
   : public llvm::FoldingSetNode,
-    private llvm::TrailingObjects<RequirementSource, PotentialArchetype *> {
+    private llvm::TrailingObjects<RequirementSource, ProtocolDecl *,
+                                  WrittenRequirementLoc> {
+
+  friend class FloatingRequirementSource;
+  friend class GenericSignature;
 
 public:
   enum Kind : uint8_t {
@@ -512,8 +709,18 @@ public:
 
     /// The requirement is a protocol requirement.
     ///
-    /// This stores the protocol that introduced the requirement.
+    /// This stores the protocol that introduced the requirement as well as the
+    /// dependent type (relative to that protocol) to which the conformance
+    /// appertains.
     ProtocolRequirement,
+
+    /// The requirement is a protocol requirement that is inferred from
+    /// some part of the protocol definition.
+    ///
+    /// This stores the protocol that introduced the requirement as well as the
+    /// dependent type (relative to that protocol) to which the conformance
+    /// appertains.
+    InferredProtocolRequirement,
 
     /// A requirement that was resolved via a superclass requirement.
     ///
@@ -540,9 +747,7 @@ private:
   /// The kind of storage we have.
   enum class StorageKind : uint8_t {
     RootArchetype,
-    TypeRepr,
-    RequirementRepr,
-    ProtocolDecl,
+    StoredType,
     ProtocolConformance,
     AssociatedTypeDecl,
   };
@@ -550,19 +755,19 @@ private:
   /// The kind of storage we have.
   const StorageKind storageKind;
 
+  /// Whether there is a trailing written requirement location.
+  const bool hasTrailingWrittenRequirementLoc;
+
+  /// Whether a protocol requirement came from the requirement signature.
+  const bool usesRequirementSignature;
+
   /// The actual storage, described by \c storageKind.
   union {
     /// The root archetype.
     PotentialArchetype *rootArchetype;
 
-    /// The type representation describing where the requirement came from.
-    const TypeRepr *typeRepr;
-
-    /// Where a requirement came from.
-    const RequirementRepr *requirementRepr;
-
-    /// The protocol being described.
-    ProtocolDecl *protocol;
+    /// The type to which a requirement applies.
+    TypeBase *type;
 
     /// A protocol conformance used to satisfy the requirement.
     ProtocolConformance *conformance;
@@ -573,35 +778,47 @@ private:
 
   friend TrailingObjects;
 
-  /// The trailing potential archetype, for
-  size_t numTrailingObjects(OverloadToken<PotentialArchetype *>) const {
+  /// The trailing protocol declaration, if there is one.
+  size_t numTrailingObjects(OverloadToken<ProtocolDecl *>) const {
     switch (kind) {
     case RequirementSignatureSelf:
+    case ProtocolRequirement:
+    case InferredProtocolRequirement:
       return 1;
 
     case Explicit:
     case Inferred:
-      return storageKind == StorageKind::RootArchetype ? 0 : 1;
-
     case NestedTypeNameMatch:
-    case ProtocolRequirement:
     case Superclass:
     case Parent:
     case Concrete:
       return 0;
     }
+
+    llvm_unreachable("Unhandled RequirementSourceKind in switch.");
   }
 
+  /// The trailing written requirement location, if there is one.
+  size_t numTrailingObjects(OverloadToken<WrittenRequirementLoc>) const {
+    return hasTrailingWrittenRequirementLoc ? 1 : 0;
+  }
+
+#ifndef NDEBUG
   /// Determines whether we have been provided with an acceptable storage kind
   /// for the given requirement source kind.
   static bool isAcceptableStorageKind(Kind kind, StorageKind storageKind);
+#endif
 
   /// Retrieve the opaque storage as a single pointer, for use in uniquing.
-  const void *getOpaqueStorage() const;
+  const void *getOpaqueStorage1() const;
 
-  /// Retrieve the extra opaque storage as a single pointer, for use in
+  /// Retrieve the second opaque storage as a single pointer, for use in
   /// uniquing.
-  const void *getExtraOpaqueStorage() const;
+  const void *getOpaqueStorage2() const;
+
+  /// Retrieve the third opaque storage as a single pointer, for use in
+  /// uniquing.
+  const void *getOpaqueStorage3() const;
 
   /// Whether this kind of requirement source is a root.
   static bool isRootKind(Kind kind) {
@@ -613,11 +830,14 @@ private:
       return true;
 
     case ProtocolRequirement:
+    case InferredProtocolRequirement:
     case Superclass:
     case Parent:
     case Concrete:
       return false;
     }
+
+    llvm_unreachable("Unhandled RequirementSourceKind in switch.");
   }
 
 public:
@@ -627,54 +847,46 @@ public:
   /// requirement source with one of the "root" kinds.
   const RequirementSource * const parent;
 
-  RequirementSource(Kind kind, const RequirementSource *parent,
-                    PotentialArchetype *rootArchetype)
-    : kind(kind), storageKind(StorageKind::RootArchetype), parent(parent) {
-    assert((static_cast<bool>(parent) != isRootKind(kind)) &&
-           "Root RequirementSource should not have parent (or vice versa)");
+  RequirementSource(Kind kind, PotentialArchetype *rootArchetype,
+                    ProtocolDecl *protocol,
+                    WrittenRequirementLoc writtenReqLoc)
+    : kind(kind), storageKind(StorageKind::RootArchetype),
+      hasTrailingWrittenRequirementLoc(!writtenReqLoc.isNull()),
+      usesRequirementSignature(false), parent(nullptr) {
     assert(isAcceptableStorageKind(kind, storageKind) &&
            "RequirementSource kind/storageKind mismatch");
 
     storage.rootArchetype = rootArchetype;
+    if (kind == RequirementSignatureSelf)
+      getTrailingObjects<ProtocolDecl *>()[0] = protocol;
+    if (hasTrailingWrittenRequirementLoc)
+      getTrailingObjects<WrittenRequirementLoc>()[0] = writtenReqLoc;
   }
 
   RequirementSource(Kind kind, const RequirementSource *parent,
-                    const TypeRepr *typeRepr)
-    : kind(kind), storageKind(StorageKind::TypeRepr), parent(parent) {
+                    Type type, ProtocolDecl *protocol,
+                    WrittenRequirementLoc writtenReqLoc)
+    : kind(kind), storageKind(StorageKind::StoredType),
+      hasTrailingWrittenRequirementLoc(!writtenReqLoc.isNull()),
+      usesRequirementSignature(protocol->isRequirementSignatureComputed()),
+      parent(parent) {
     assert((static_cast<bool>(parent) != isRootKind(kind)) &&
            "Root RequirementSource should not have parent (or vice versa)");
     assert(isAcceptableStorageKind(kind, storageKind) &&
            "RequirementSource kind/storageKind mismatch");
 
-    storage.typeRepr = typeRepr;
-  }
-
-  RequirementSource(Kind kind, const RequirementSource *parent,
-                    const RequirementRepr *requirementRepr)
-    : kind(kind), storageKind(StorageKind::RequirementRepr), parent(parent) {
-    assert((static_cast<bool>(parent) != isRootKind(kind)) &&
-           "Root RequirementSource should not have parent (or vice versa)");
-    assert(isAcceptableStorageKind(kind, storageKind) &&
-           "RequirementSource kind/storageKind mismatch");
-
-    storage.requirementRepr = requirementRepr;
-  }
-
-  RequirementSource(Kind kind, const RequirementSource *parent,
-                    ProtocolDecl *protocol)
-    : kind(kind), storageKind(StorageKind::ProtocolDecl), parent(parent) {
-    assert((static_cast<bool>(parent) != isRootKind(kind)) &&
-           "Root RequirementSource should not have parent (or vice versa)");
-    assert(isAcceptableStorageKind(kind, storageKind) &&
-           "RequirementSource kind/storageKind mismatch");
-
-    storage.protocol = protocol;
+    storage.type = type.getPointer();
+    if (isProtocolRequirement())
+      getTrailingObjects<ProtocolDecl *>()[0] = protocol;
+    if (hasTrailingWrittenRequirementLoc)
+      getTrailingObjects<WrittenRequirementLoc>()[0] = writtenReqLoc;
   }
 
   RequirementSource(Kind kind, const RequirementSource *parent,
                     ProtocolConformance *conformance)
     : kind(kind), storageKind(StorageKind::ProtocolConformance),
-      parent(parent) {
+      hasTrailingWrittenRequirementLoc(false),
+      usesRequirementSignature(false), parent(parent) {
     assert((static_cast<bool>(parent) != isRootKind(kind)) &&
            "Root RequirementSource should not have parent (or vice versa)");
     assert(isAcceptableStorageKind(kind, storageKind) &&
@@ -686,7 +898,8 @@ public:
   RequirementSource(Kind kind, const RequirementSource *parent,
                     AssociatedTypeDecl *assocType)
     : kind(kind), storageKind(StorageKind::AssociatedTypeDecl),
-      parent(parent) {
+      hasTrailingWrittenRequirementLoc(false),
+      usesRequirementSignature(false), parent(parent) {
     assert((static_cast<bool>(parent) != isRootKind(kind)) &&
            "Root RequirementSource should not have parent (or vice versa)");
     assert(isAcceptableStorageKind(kind, storageKind) &&
@@ -700,15 +913,9 @@ public:
   static const RequirementSource *forAbstract(PotentialArchetype *root);
 
   /// Retrieve a requirement source representing an explicit requirement
-  /// stated in an 'inheritance' clause.
+  /// stated in an 'inheritance' or 'where' clause.
   static const RequirementSource *forExplicit(PotentialArchetype *root,
-                                              const TypeRepr *typeRepr);
-
-  /// Retrieve a requirement source representing an explicit requirement
-  /// stated in an 'where' clause.
-  static const RequirementSource *forExplicit(
-                                        PotentialArchetype *root,
-                                        const RequirementRepr *requirementRepr);
+                                              WrittenRequirementLoc writtenLoc);
 
   /// Retrieve a requirement source representing a requirement that is
   /// inferred from some part of a generic declaration's signature, e.g., the
@@ -726,12 +933,18 @@ public:
   static const RequirementSource *forNestedTypeNameMatch(
                                      PotentialArchetype *root);
 
+private:
   /// A requirement source that describes that a requirement comes from a
   /// requirement of the given protocol described by the parent.
-  const RequirementSource *viaAbstractProtocolRequirement(
+  const RequirementSource *viaProtocolRequirement(
                              GenericSignatureBuilder &builder,
-                             ProtocolDecl *protocol) const;
+                             Type dependentType,
+                             ProtocolDecl *protocol,
+                             bool inferred,
+                             WrittenRequirementLoc writtenLoc =
+                               WrittenRequirementLoc()) const;
 
+public:
   /// A requirement source that describes that a requirement that is resolved
   /// via a superclass requirement.
   const RequirementSource *viaSuperclass(
@@ -750,8 +963,40 @@ public:
   const RequirementSource *viaParent(GenericSignatureBuilder &builder,
                                      AssociatedTypeDecl *assocType) const;
 
+  /// Retrieve the root requirement source.
+  const RequirementSource *getRoot() const;
+
   /// Retrieve the potential archetype at the root.
   PotentialArchetype *getRootPotentialArchetype() const;
+
+  /// Retrieve the potential archetype to which this source refers.
+  PotentialArchetype *getAffectedPotentialArchetype() const;
+
+  /// Visit each of the potential archetypes along the path, from the root
+  /// potential archetype to each potential archetype named via (e.g.) a
+  /// protocol requirement or parent source.
+  ///
+  /// \param visitor Called with each potential archetype along the path along
+  /// with the requirement source that is being applied on top of that
+  /// potential archetype. Can return \c true to halt the search.
+  ///
+  /// \returns nullptr if any call to \c visitor returned true. Otherwise,
+  /// returns the potential archetype to which the entire source refers.
+  PotentialArchetype *visitPotentialArchetypesAlongPath(
+           llvm::function_ref<bool(PotentialArchetype *,
+                                   const RequirementSource *)> visitor) const;
+
+  /// Whether this source is a requirement in a protocol.
+  bool isProtocolRequirement() const {
+    return kind == ProtocolRequirement || kind == InferredProtocolRequirement;
+  }
+
+  /// Whether the requirement is inferred or derived from an inferred
+  /// requirement.
+  bool isInferredRequirement() const;
+
+  /// Classify the kind of this source for diagnostic purposes.
+  unsigned classifyDiagKind() const;
 
   /// Whether the requirement can be derived from something in its path.
   ///
@@ -760,17 +1005,19 @@ public:
   /// path.
   bool isDerivedRequirement() const;
 
-  /// Whether the requirement is derived via some concrete conformance, e.g.,
-  /// a concrete type's conformance to a protocol or a superclass's conformance
-  /// to a protocol.
-  bool isDerivedViaConcreteConformance() const;
-
   /// Determine whether the given derived requirement \c source, when rooted at
   /// the potential archetype \c pa, is actually derived from the same
   /// requirement. Such "self-derived" requirements do not make the original
   /// requirement redundant, because without said original requirement, the
   /// derived requirement ceases to hold.
-  bool isSelfDerivedSource(PotentialArchetype *pa) const;
+  bool isSelfDerivedSource(PotentialArchetype *pa,
+                           bool &derivedViaConcrete) const;
+
+  /// Determine whether a requirement \c pa: proto, when formed from this
+  /// requirement source, is dependent on itself.
+  bool isSelfDerivedConformance(PotentialArchetype *pa,
+                                ProtocolDecl *proto,
+                                bool &derivedViaConcrete) const;
 
   /// Retrieve a source location that corresponds to the requirement.
   SourceLoc getLoc() const;
@@ -784,16 +1031,21 @@ public:
 
   /// Retrieve the type representation for this requirement, if there is one.
   const TypeRepr *getTypeRepr() const {
-    if (storageKind != StorageKind::TypeRepr) return nullptr;
-    return storage.typeRepr;
+    if (!hasTrailingWrittenRequirementLoc) return nullptr;
+    return getTrailingObjects<WrittenRequirementLoc>()[0]
+             .dyn_cast<const TypeRepr *>();
   }
 
   /// Retrieve the requirement representation for this requirement, if there is
   /// one.
   const RequirementRepr *getRequirementRepr() const {
-    if (storageKind != StorageKind::RequirementRepr) return nullptr;
-    return storage.requirementRepr;
+    if (!hasTrailingWrittenRequirementLoc) return nullptr;
+    return getTrailingObjects<WrittenRequirementLoc>()[0]
+             .dyn_cast<const RequirementRepr *>();
   }
+
+  /// Retrieve the type stored in this requirement.
+  Type getStoredType() const;
 
   /// Retrieve the protocol for this requirement, if there is one.
   ProtocolDecl *getProtocolDecl() const;
@@ -813,17 +1065,19 @@ public:
 
   /// Profiling support for \c FoldingSet.
   void Profile(llvm::FoldingSetNodeID &ID) {
-    Profile(ID, kind, parent, getOpaqueStorage(), getExtraOpaqueStorage());
+    Profile(ID, kind, parent, getOpaqueStorage1(), getOpaqueStorage2(),
+            getOpaqueStorage3());
   }
 
   /// Profiling support for \c FoldingSet.
   static void Profile(llvm::FoldingSetNodeID &ID, Kind kind,
-                      const RequirementSource *parent, const void *storage,
-                      const void *extraStorage) {
+                      const RequirementSource *parent, const void *storage1,
+                      const void *storage2, const void *storage3) {
     ID.AddInteger(kind);
     ID.AddPointer(parent);
-    ID.AddPointer(storage);
-    ID.AddPointer(extraStorage);
+    ID.AddPointer(storage1);
+    ID.AddPointer(storage2);
+    ID.AddPointer(storage3);
   }
 
   LLVM_ATTRIBUTE_DEPRECATED(
@@ -852,7 +1106,12 @@ class GenericSignatureBuilder::FloatingRequirementSource {
     /// An explicit requirement source lacking a root.
     Explicit,
     /// An inferred requirement source lacking a root.
-    Inferred
+    Inferred,
+    /// A requirement source augmented by an abstract protocol requirement
+    AbstractProtocol,
+    /// A requirement source for a nested-type-name match introduced by
+    /// the given source.
+    NestedTypeNameMatch,
   } kind;
 
   using Storage =
@@ -860,6 +1119,17 @@ class GenericSignatureBuilder::FloatingRequirementSource {
                         const RequirementRepr *>;
 
   Storage storage;
+
+  // Additional storage for an abstract protocol requirement.
+  union {
+    struct {
+      ProtocolDecl *protocol = nullptr;
+      WrittenRequirementLoc written;
+      bool inferred = false;
+    } protocolReq;
+
+    Identifier nestedName;
+  };
 
   FloatingRequirementSource(Kind kind, Storage storage)
     : kind(kind), storage(storage) { }
@@ -886,12 +1156,53 @@ public:
     return { Inferred, typeRepr };
   }
 
+  static FloatingRequirementSource viaProtocolRequirement(
+                                     const RequirementSource *base,
+                                     ProtocolDecl *inProtocol,
+                                     bool inferred) {
+    FloatingRequirementSource result{ AbstractProtocol, base };
+    result.protocolReq.protocol = inProtocol;
+    result.protocolReq.inferred = inferred;
+    return result;
+  }
+
+  static FloatingRequirementSource viaProtocolRequirement(
+                                     const RequirementSource *base,
+                                     ProtocolDecl *inProtocol,
+                                     WrittenRequirementLoc written,
+                                     bool inferred) {
+    FloatingRequirementSource result{ AbstractProtocol, base };
+    result.protocolReq.protocol = inProtocol;
+    result.protocolReq.written = written;
+    result.protocolReq.inferred = inferred;
+    return result;
+  }
+
+  static FloatingRequirementSource forNestedTypeNameMatch(
+                                     const RequirementSource *base,
+                                     Identifier nestedName) {
+    FloatingRequirementSource result{ NestedTypeNameMatch, base };
+    result.nestedName = nestedName;
+    return result;
+  };
+
   /// Retrieve the complete requirement source rooted at the given potential
   /// archetype.
   const RequirementSource *getSource(PotentialArchetype *pa) const;
 
   /// Retrieve the source location for this requirement.
   SourceLoc getLoc() const;
+
+  /// Whether this is an explicitly-stated requirement.
+  bool isExplicit() const;
+
+  /// Return the "inferred" version of this source, if it isn't already
+  /// inferred.
+  FloatingRequirementSource asInferred(const TypeRepr *typeRepr) const;
+
+  /// Whether this requirement source is recursive when composed with
+  /// the given type.
+  bool isRecursive(Type rootType, GenericSignatureBuilder &builder) const;
 };
 
 class GenericSignatureBuilder::PotentialArchetype {
@@ -931,27 +1242,41 @@ class GenericSignatureBuilder::PotentialArchetype {
   mutable llvm::PointerUnion<PotentialArchetype *, EquivalenceClass *>
     representativeOrEquivClass;
 
-  /// Same-type constraints between this potential archetype and any other
-  /// archetype in its equivalence class.
-  llvm::MapVector<PotentialArchetype *, const RequirementSource *>
-    SameTypeConstraints;
+  /// A stored nested type.
+  struct StoredNestedType {
+    /// The potential archetypes describing this nested type, all of which
+    /// are equivalent.
+    llvm::TinyPtrVector<PotentialArchetype *> archetypes;
 
-  /// \brief The list of protocols to which this archetype will conform.
-  llvm::MapVector<ProtocolDecl *, const RequirementSource *> ConformsTo;
+    typedef llvm::TinyPtrVector<PotentialArchetype *>::iterator iterator;
+    iterator begin() { return archetypes.begin(); }
+    iterator end() { return archetypes.end(); }
 
-  /// \brief The layout constraint of this archetype, if specified.
-  LayoutConstraint Layout;
+    typedef llvm::TinyPtrVector<PotentialArchetype *>::const_iterator
+      const_iterator;
+    const_iterator begin() const { return archetypes.begin(); }
+    const_iterator end() const { return archetypes.end(); }
 
-  /// The source of the layout constraint requirement.
-  const RequirementSource *LayoutSource = nullptr;
+    PotentialArchetype *front() const { return archetypes.front(); }
+    PotentialArchetype *back() const { return archetypes.back(); }
+
+    unsigned size() const { return archetypes.size(); }
+    bool empty() const { return archetypes.empty(); }
+
+    void push_back(PotentialArchetype *pa) {
+      archetypes.push_back(pa);
+    }
+  };
 
   /// \brief The set of nested types of this archetype.
   ///
   /// For a given nested type name, there may be multiple potential archetypes
   /// corresponding to different associated types (from different protocols)
   /// that share a name.
-  llvm::MapVector<Identifier, llvm::TinyPtrVector<PotentialArchetype *>>
-    NestedTypes;
+  llvm::MapVector<Identifier, StoredNestedType> NestedTypes;
+
+  /// Tracks the number of conformances that
+  unsigned numConformancesInNestedType = 0;
 
   /// Whether this is an unresolved nested type.
   unsigned isUnresolvedNestedType : 1;
@@ -1062,6 +1387,10 @@ public:
   void resolveAssociatedType(AssociatedTypeDecl *assocType,
                              GenericSignatureBuilder &builder);
 
+  /// Resolve the potential archetype to the given typealias.
+  void resolveTypeAlias(TypeAliasDecl *typealias,
+                        GenericSignatureBuilder &builder);
+
   /// Determine whether this is a generic parameter.
   bool isGenericParam() const {
     return parentOrBuilder.is<GenericSignatureBuilder *>();
@@ -1103,16 +1432,23 @@ public:
     return dyn_cast<TypeAliasDecl>(identifier.assocTypeOrAlias);
   }
 
-  /// Retrieve the set of protocols to which this type conforms.
-  llvm::MapVector<ProtocolDecl *, const RequirementSource *> &
-  getConformsTo() {
-    return ConformsTo;
+  /// Retrieve the set of protocols to which this potential archetype
+  /// conforms.
+  SmallVector<ProtocolDecl *, 4> getConformsTo() const {
+    SmallVector<ProtocolDecl *, 4> result;
+
+    if (auto equiv = getEquivalenceClassIfPresent()) {
+      for (const auto &entry : equiv->conformsTo)
+        result.push_back(entry.first);
+    }
+
+    return result;
   }
 
   /// Add a conformance to this potential archetype.
   ///
   /// \returns true if the conformance was new, false if it already existed.
-  bool addConformance(ProtocolDecl *proto, bool updateExistingSource,
+  bool addConformance(ProtocolDecl *proto,
                       const RequirementSource *source,
                       GenericSignatureBuilder &builder);
 
@@ -1125,22 +1461,27 @@ public:
   }
 
   /// Retrieve the layout constraint of this archetype.
-  LayoutConstraint getLayout() const { return Layout; }
+  LayoutConstraint getLayout() const {
+    if (auto equivClass = getEquivalenceClassIfPresent())
+      return equivClass->layout;
 
-  /// Retrieve the requirement source for the layout constraint requirement.
-  const RequirementSource *getLayoutSource() const {
-    return LayoutSource;
+    return LayoutConstraint();
   }
 
   /// Retrieve the set of nested types.
-  const llvm::MapVector<Identifier, llvm::TinyPtrVector<PotentialArchetype *>> &
-  getNestedTypes() const{
+  const llvm::MapVector<Identifier, StoredNestedType> &getNestedTypes() const {
     return NestedTypes;
   }
 
   /// \brief Determine the nesting depth of this potential archetype, e.g.,
   /// the number of associated type references.
   unsigned getNestingDepth() const;
+
+  /// Determine whether two potential archetypes are in the same equivalence
+  /// class.
+  bool isInSameEquivalenceClassAs(const PotentialArchetype *other) const {
+    return getRepresentative() == other->getRepresentative();
+  }
 
   /// Retrieve the equivalence class, if it's already present.
   ///
@@ -1172,12 +1513,15 @@ public:
                              const RequirementSource *source);
 
   /// Retrieve the same-type constraints.
-  llvm::iterator_range<
-    std::vector<std::pair<PotentialArchetype *, const RequirementSource *>>
-       ::const_iterator>
-  getSameTypeConstraints() const {
-    return llvm::make_range(SameTypeConstraints.begin(),
-                            SameTypeConstraints.end());
+  ArrayRef<Constraint<PotentialArchetype *>> getSameTypeConstraints() const {
+    if (auto equivClass = getEquivalenceClassIfPresent()) {
+      auto known = equivClass->sameTypeConstraints.find(
+                                       const_cast<PotentialArchetype *>(this));
+      if (known == equivClass->sameTypeConstraints.end()) return { };
+      return known->second;
+    }
+
+    return { };
   }
 
   /// \brief Retrieve (or create) a nested type with the given name.
@@ -1187,6 +1531,53 @@ public:
   /// \brief Retrieve (or create) a nested type with a known associated type.
   PotentialArchetype *getNestedType(AssociatedTypeDecl *assocType,
                                     GenericSignatureBuilder &builder);
+
+  /// \brief Retrieve (or create) a nested type with a known typealias.
+  PotentialArchetype *getNestedType(TypeAliasDecl *typealias,
+                                    GenericSignatureBuilder &builder);
+
+  /// Describes the kind of update that is performed.
+  enum class NestedTypeUpdate {
+    /// Resolve an existing potential archetype, but don't create a new
+    /// one if not present.
+    ResolveExisting,
+    /// If this potential archetype is missing, create it.
+    AddIfMissing,
+    /// If this potential archetype is missing and would be a better anchor,
+    /// create it.
+    AddIfBetterAnchor,
+  };
+
+  /// \brief Retrieve (or create) a nested type that is the current best
+  /// nested archetype anchor (locally) with the given name.
+  ///
+  /// When called on the archetype anchor, this will produce the named
+  /// archetype anchor.
+  PotentialArchetype *getNestedArchetypeAnchor(
+                       Identifier name,
+                       GenericSignatureBuilder &builder,
+                       NestedTypeUpdate kind = NestedTypeUpdate::AddIfMissing);
+
+  /// Update the named nested type when we know this type conforms to the given
+  /// protocol.
+  ///
+  /// \returns the potential archetype associated with the associated
+  /// type or typealias of the given protocol, unless the \c kind implies that
+  /// a potential archetype should not be created if it's missing.
+  PotentialArchetype *updateNestedTypeForConformance(
+                      PointerUnion<AssociatedTypeDecl *, TypeAliasDecl *> type,
+                      NestedTypeUpdate kind);
+
+  /// Update the named nested type when we know this type conforms to the given
+  /// protocol.
+  ///
+  /// \returns the potential archetype associated with either an associated
+  /// type or typealias of the given protocol, unless the \c kind implies that
+  /// a potential archetype should not be created if it's missing.
+  PotentialArchetype *updateNestedTypeForConformance(
+                        Identifier name,
+                        ProtocolDecl *protocol,
+                        NestedTypeUpdate kind);
 
   /// \brief Retrieve (or build) the type corresponding to the potential
   /// archetype within the given generic environment.
@@ -1260,6 +1651,28 @@ public:
 
   friend class GenericSignatureBuilder;
 };
+
+/// Describes a requirement whose processing has been delayed for some reason.
+class GenericSignatureBuilder::DelayedRequirement {
+public:
+  RequirementKind kind;
+  UnresolvedType lhs;
+  RequirementRHS rhs;
+  FloatingRequirementSource source;
+};
+
+/// Whether the given constraint result signals an error.
+inline bool isErrorResult(GenericSignatureBuilder::ConstraintResult result) {
+  switch (result) {
+  case GenericSignatureBuilder::ConstraintResult::Concrete:
+  case GenericSignatureBuilder::ConstraintResult::Conflicting:
+    return true;
+
+  case GenericSignatureBuilder::ConstraintResult::Resolved:
+  case GenericSignatureBuilder::ConstraintResult::Unresolved:
+    return false;
+  }
+}
 
 } // end namespace swift
 

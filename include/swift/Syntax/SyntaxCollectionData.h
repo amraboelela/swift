@@ -1,3 +1,15 @@
+//===--- SyntaxCollectionData.h ---------------------------------*- C++ -*-===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef SWIFT_SYNTAX_SYNTAXCOLLECTIONDATA_H
 #define SWIFT_SYNTAX_SYNTAXCOLLECTIONDATA_H
 
@@ -18,16 +30,6 @@ class SyntaxCollectionData : public SyntaxData {
   friend class SyntaxData;
   friend class FunctionCallExprSyntaxBuilder;
 
-  SyntaxCollectionData(RC<RawSyntax> Raw, const SyntaxData *Parent = nullptr,
-                       CursorIndex IndexInParent = 0)
-    : SyntaxData(Raw, Parent, IndexInParent) {
-    assert(Raw->Kind == CollectionKind);
-#ifndef NDEBUG
-    for (auto Child : Raw->Layout) {
-      CachedElements.push_back(nullptr);
-    }
-#endif
-  }
 
   static RC<SyntaxCollectionData<CollectionKind, ElementType>>
   make(RC<RawSyntax> Raw, const SyntaxData *Parent = nullptr,
@@ -45,11 +47,25 @@ class SyntaxCollectionData : public SyntaxData {
     return make(Raw);
   }
 
+protected:
+  SyntaxCollectionData(RC<RawSyntax> Raw, const SyntaxData *Parent = nullptr,
+                       CursorIndex IndexInParent = 0)
+  : SyntaxData(Raw, Parent, IndexInParent),
+  CachedElements(Raw->Layout.size(), nullptr) {
+      assert(Raw->Kind == CollectionKind);
+  }
+
 public:
   static bool classof(const SyntaxData *SD) {
     return SD->getKind() == CollectionKind;
   }
 };
+
+#define SYNTAX(Id, Parent)
+#define SYNTAX_COLLECTION(Id, Element) \
+  class Element;                       \
+  using Id##SyntaxData = SyntaxCollectionData<SyntaxKind::Id, Element>;
+#include "swift/Syntax/SyntaxKinds.def"
 
 } // end namespace syntax
 } // end namespace swift

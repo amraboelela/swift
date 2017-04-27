@@ -277,6 +277,11 @@ private:
 
   /// Returns the last use of the value in the live block \p BB.
   SILInstruction *findLastUserInBlock(SILBasicBlock *BB);
+
+  /// Returns true if the value is alive at the begin of block \p BB.
+  bool isAliveAtBeginOfBlock(SILBasicBlock *BB) {
+    return LiveBlocks.count(BB) && BB != DefValue->getParentBlock();
+  }
 };
 
 /// Base class for BB cloners.
@@ -482,6 +487,10 @@ public:
   SILInstruction *
   simplifyCheckedCastBranchInst(CheckedCastBranchInst *Inst);
 
+  /// Simplify checked_cast_value_br. It may change the control flow.
+  SILInstruction *
+  simplifyCheckedCastValueBranchInst(CheckedCastValueBranchInst *Inst);
+
   /// Simplify checked_cast_addr_br. It may change the control flow.
   SILInstruction *
   simplifyCheckedCastAddrBranchInst(CheckedCastAddrBranchInst *Inst);
@@ -489,6 +498,10 @@ public:
   /// Optimize checked_cast_br. This cannot change the control flow.
   SILInstruction *
   optimizeCheckedCastBranchInst(CheckedCastBranchInst *Inst);
+
+  /// Optimize checked_cast_value_br. This cannot change the control flow.
+  SILInstruction *
+  optimizeCheckedCastValueBranchInst(CheckedCastValueBranchInst *Inst);
 
   /// Optimize checked_cast_addr_br. This cannot change the control flow.
   SILInstruction *

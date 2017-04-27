@@ -4,7 +4,9 @@ add_swift_library(swiftSILGen STATIC
   Condition.cpp
   FormalEvaluation.cpp
   ManagedValue.cpp
+  ResultPlan.cpp
   RValue.cpp
+  SwitchCaseFullExpr.cpp
   SILGen.cpp
   SILGenApply.cpp
   SILGenBridging.cpp
@@ -27,6 +29,7 @@ add_swift_library(swiftSILGen STATIC
   SILGenProfiling.cpp
   SILGenProlog.cpp
   SILGenStmt.cpp
+  SILGenThunk.cpp
   SILGenType.cpp
   LINK_LIBRARIES
     swiftSIL

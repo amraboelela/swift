@@ -396,7 +396,7 @@ __muloti4(ti_int a, ti_int b, int* overflow)
 // some other lower-level architecture issue that I'm
 // missing.  Perhaps relevant bug report:
 // FIXME: https://llvm.org/bugs/show_bug.cgi?id=14469
-#if __has_attribute(__mode__(DI))
+#if __has_attribute(__mode__)
 #define SWIFT_MODE_DI __attribute__((__mode__(DI)))
 #else
 #define SWIFT_MODE_DI
@@ -445,11 +445,28 @@ __mulodi4(di_int a, di_int b, int* overflow)
 #endif
 
 #if defined(__CYGWIN__) || defined(_WIN32)
+  #define strcasecmp _stricmp
+#endif
+
+static bool swift_stringIsSignalingNaN(const char *nptr) {
+  if (nptr[0] == '+' || nptr[0] == '-') {
+    nptr++;
+  }
+
+  return strcasecmp(nptr, "snan") == 0;
+}
+
+#if defined(__CYGWIN__) || defined(_WIN32)
 // Cygwin does not support uselocale(), but we can use the locale feature 
 // in stringstream object.
 template <typename T>
 static const char *_swift_stdlib_strtoX_clocale_impl(
     const char *nptr, T *outResult) {
+  if (swift_stringIsSignalingNaN(nptr)) {
+    *outResult = std::numeric_limits<T>::signaling_NaN();
+    return nptr + std::strlen(nptr);
+  }
+  
   std::istringstream ValueStream(nptr);
   ValueStream.imbue(std::locale::classic());
   T ParsedValue;
@@ -487,6 +504,13 @@ static const char *_swift_stdlib_strtoX_clocale_impl(
     const char * nptr, T* outResult, T huge,
     T (*posixImpl)(const char *, char **, locale_t)
 ) {
+  if (swift_stringIsSignalingNaN(nptr)) {
+    // TODO: ensure that the returned sNaN bit pattern matches that of sNaNs
+    // produced by Swift.
+    *outResult = std::numeric_limits<T>::signaling_NaN();
+    return nptr + std::strlen(nptr);
+  }
+  
   char *EndPtr;
   errno = 0;
   const auto result = posixImpl(nptr, &EndPtr, getCLocale());

@@ -13,6 +13,7 @@
 @_exported import Foundation // Clang module
 import CoreFoundation
 import Darwin
+import _SwiftFoundationOverlayShims
 
 //===----------------------------------------------------------------------===//
 // NSError (as an out parameter).
@@ -64,13 +65,6 @@ public extension LocalizedError {
   var helpAnchor: String? { return nil }
 }
 
-@_silgen_name("NS_Swift_performErrorRecoverySelector")
-internal func NS_Swift_performErrorRecoverySelector(
-  delegate: AnyObject?,
-  selector: Selector,
-  success: ObjCBool,
-  contextInfo: UnsafeMutableRawPointer?)
-
 /// Class that implements the informal protocol
 /// NSErrorRecoveryAttempting, which is used by NSError when it
 /// attempts recovery from an error.
@@ -83,11 +77,7 @@ class _NSErrorRecoveryAttempter {
                        contextInfo: UnsafeMutableRawPointer?) {
     let error = nsError as Error as! RecoverableError
     error.attemptRecovery(optionIndex: recoveryOptionIndex) { success in
-      NS_Swift_performErrorRecoverySelector(
-        delegate: delegate,
-        selector: didRecoverSelector,
-        success: ObjCBool(success),
-        contextInfo: contextInfo)
+      __NSErrorPerformRecoverySelector(delegate, didRecoverSelector, success, contextInfo)
     }
   }
 
@@ -212,7 +202,7 @@ internal let _errorDomainUserInfoProviderQueue = DispatchQueue(
 
 /// Retrieve the default userInfo dictionary for a given error.
 @_silgen_name("swift_Foundation_getErrorDefaultUserInfo")
-public func _swift_Foundation_getErrorDefaultUserInfo(_ error: Error)
+public func _swift_Foundation_getErrorDefaultUserInfo<T: Error>(_ error: T)
   -> AnyObject? {
   let hasUserInfoValueProvider: Bool
 
@@ -313,11 +303,17 @@ public func _swift_Foundation_getErrorDefaultUserInfo(_ error: Error)
 // or CFError is used as an Error existential.
 
 extension NSError : Error {
+  @nonobjc
   public var _domain: String { return domain }
+
+  @nonobjc
   public var _code: Int { return code }
+
+  @nonobjc
   public var _userInfo: AnyObject? { return userInfo as NSDictionary }
 
   /// The "embedded" NSError is itself.
+  @nonobjc
   public func _getEmbeddedNSError() -> AnyObject? {
     return self
   }
@@ -384,14 +380,14 @@ public protocol __BridgedNSError : Error {
 extension __BridgedNSError
     where Self: RawRepresentable, Self.RawValue: SignedInteger {
   public static func ==(lhs: Self, rhs: Self) -> Bool {
-    return lhs.rawValue.toIntMax() == rhs.rawValue.toIntMax()
+    return lhs.rawValue == rhs.rawValue
   }
 }
 
 public extension __BridgedNSError 
     where Self: RawRepresentable, Self.RawValue: SignedInteger {
-  public final var _domain: String { return Self._nsErrorDomain }
-  public final var _code: Int { return Int(rawValue.toIntMax()) }
+  public var _domain: String { return Self._nsErrorDomain }
+  public var _code: Int { return Int(rawValue) }
 
   public init?(rawValue: RawValue) {
     self = unsafeBitCast(rawValue, to: Self.self)
@@ -405,22 +401,22 @@ public extension __BridgedNSError
     self.init(rawValue: RawValue(IntMax(_bridgedNSError.code)))
   }
 
-  public final var hashValue: Int { return _code }
+  public var hashValue: Int { return _code }
 }
 
 // Allow two bridged NSError types to be compared.
 extension __BridgedNSError
     where Self: RawRepresentable, Self.RawValue: UnsignedInteger {
   public static func ==(lhs: Self, rhs: Self) -> Bool {
-    return lhs.rawValue.toUIntMax() == rhs.rawValue.toUIntMax()
+    return lhs.rawValue == rhs.rawValue
   }
 }
 
 public extension __BridgedNSError
     where Self: RawRepresentable, Self.RawValue: UnsignedInteger {
-  public final var _domain: String { return Self._nsErrorDomain }
-  public final var _code: Int {
-    return Int(bitPattern: UInt(rawValue.toUIntMax()))
+  public var _domain: String { return Self._nsErrorDomain }
+  public var _code: Int {
+    return Int(bitPattern: UInt(rawValue))
   }
 
   public init?(rawValue: RawValue) {
@@ -435,7 +431,7 @@ public extension __BridgedNSError
     self.init(rawValue: RawValue(UIntMax(UInt(_bridgedNSError.code))))
   }
 
-  public final var hashValue: Int { return _code }
+  public var hashValue: Int { return _code }
 }
 
 /// Describes a raw representable type that is bridged to a particular

@@ -2,7 +2,7 @@
 // RUN: mkdir -p %t
 // RUN: %target-swift-frontend -emit-module -o %t %S/Inputs/def_func.swift
 // RUN: llvm-bcanalyzer %t/def_func.swiftmodule | %FileCheck %s
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen -I %t %s | %FileCheck %s -check-prefix=SIL
+// RUN: %target-swift-frontend -emit-silgen -I %t %s | %FileCheck %s -check-prefix=SIL
 
 // CHECK-NOT: FALL_BACK_TO_TRANSLATION_UNIT
 // CHECK-NOT: UnknownCode
@@ -24,11 +24,11 @@ var raw = getZero()
 var cooked : Int = raw
 
 
-// SIL:   [[GET_INPUT:%.+]] = function_ref @_T08def_func8getInputSiSi1x_tF : $@convention(thin) (Int) -> Int
+// SIL:   [[GET_INPUT:%.+]] = function_ref @_T08def_func8getInputS2i1x_tF : $@convention(thin) (Int) -> Int
 // SIL:   {{%.+}} = apply [[GET_INPUT]]({{%.+}}) : $@convention(thin) (Int) -> Int
 var raw2 = getInput(x: raw)
 
-// SIL:   [[GET_SECOND:%.+]] = function_ref @_T08def_func9getSecondSiSi_Si1ytF : $@convention(thin) (Int, Int) -> Int
+// SIL:   [[GET_SECOND:%.+]] = function_ref @_T08def_func9getSecondS2i_Si1ytF : $@convention(thin) (Int, Int) -> Int
 // SIL:   {{%.+}} = apply [[GET_SECOND]]({{%.+}}, {{%.+}}) : $@convention(thin) (Int, Int) -> Int
 var raw3 = getSecond(raw, y: raw2)
 
@@ -42,7 +42,7 @@ useNested((raw, raw2), n: raw3)
 // SIL:   {{%.+}} = apply [[VARIADIC]]({{%.+}}, {{%.+}}) : $@convention(thin) (Double, @owned Array<Int>) -> ()
 variadic(x: 2.5, 4, 5)
 
-// SIL:   [[VARIADIC:%.+]] = function_ref @_T08def_func9variadic2ySaySiG_Sd1xtF : $@convention(thin) (@owned Array<Int>, Double) -> ()
+// SIL:   [[VARIADIC:%.+]] = function_ref @_T08def_func9variadic2ySaySiGd_Sd1xtF : $@convention(thin) (@owned Array<Int>, Double) -> ()
 variadic2(1, 2, 3, x: 5.0)
 
 // SIL:   [[SLICE:%.+]] = function_ref @_T08def_func5sliceySaySiG1x_tF : $@convention(thin) (@owned Array<Int>) -> ()

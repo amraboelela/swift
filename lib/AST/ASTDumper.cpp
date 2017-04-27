@@ -15,7 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/Basic/QuotedString.h"
-#include "swift/AST/AST.h"
+#include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ForeignErrorConvention.h"
@@ -29,6 +29,7 @@
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/raw_ostream.h"
@@ -116,18 +117,18 @@ void RequirementRepr::dump() const {
   llvm::errs() << "\n";
 }
 
-void RequirementRepr::printImpl(raw_ostream &out, bool AsWritten) const {
+void RequirementRepr::printImpl(ASTPrinter &out, bool AsWritten) const {
   auto printTy = [&](const TypeLoc &TyLoc) {
     if (AsWritten && TyLoc.getTypeRepr()) {
-      TyLoc.getTypeRepr()->print(out);
+      TyLoc.getTypeRepr()->print(out, PrintOptions());
     } else {
-      TyLoc.getType().print(out);
+      TyLoc.getType().print(out, PrintOptions());
     }
   };
 
   auto printLayoutConstraint =
       [&](const LayoutConstraintLoc &LayoutConstraintLoc) {
-        LayoutConstraintLoc.getLayoutConstraint()->print(out);
+        LayoutConstraintLoc.getLayoutConstraint()->print(out, PrintOptions());
       };
 
   switch (getKind()) {
@@ -152,24 +153,24 @@ void RequirementRepr::printImpl(raw_ostream &out, bool AsWritten) const {
 }
 
 void RequirementRepr::print(raw_ostream &out) const {
-  printImpl(out, /*AsWritten=*/false);
+  StreamPrinter printer(out);
+  printImpl(printer, /*AsWritten=*/true);
+}
+void RequirementRepr::print(ASTPrinter &out) const {
+  printImpl(out, /*AsWritten=*/true);
 }
 
 void GenericParamList::print(llvm::raw_ostream &OS) {
   OS << '<';
-  bool First = true;
-  for (auto P : *this) {
-    if (First) {
-      First = false;
-    } else {
-      OS << ", ";
-    }
-    OS << P->getName();
-    if (!P->getInherited().empty()) {
-      OS << " : ";
-      P->getInherited()[0].getType().print(OS);
-    }
-  }
+  interleave(*this,
+             [&](const GenericTypeParamDecl *P) {
+               OS << P->getName();
+               if (!P->getInherited().empty()) {
+                 OS << " : ";
+                 P->getInherited()[0].getType().print(OS);
+               }
+             },
+             [&] { OS << ", "; });
 
   if (!getRequirements().empty()) {
     OS << " where ";
@@ -207,6 +208,8 @@ getSILFunctionTypeRepresentationString(SILFunctionType::Representation value) {
   case SILFunctionType::Representation::WitnessMethod: return "witness_method";
   case SILFunctionType::Representation::Closure: return "closure";
   }
+
+  llvm_unreachable("Unhandled SILFunctionTypeRepresentation in switch.");
 }
 static StringRef
 getAbstractStorageDeclKindString(AbstractStorageDecl::StorageKindTy value) {
@@ -230,6 +233,8 @@ getAbstractStorageDeclKindString(AbstractStorageDecl::StorageKindTy value) {
   case AbstractStorageDecl::Computed:
     return "computed";
   }
+
+  llvm_unreachable("Unhandled AbstractStorageDecl in switch.");
 }
 static StringRef getImportKindString(ImportKind value) {
   switch (value) {
@@ -242,6 +247,8 @@ static StringRef getImportKindString(ImportKind value) {
   case ImportKind::Var: return "var";
   case ImportKind::Func: return "func";
   }
+  
+  llvm_unreachable("Unhandled ImportKind in switch.");
 }
 static StringRef getAccessibilityString(Accessibility value) {
   switch (value) {
@@ -251,6 +258,8 @@ static StringRef getAccessibilityString(Accessibility value) {
   case Accessibility::Public: return "public";
   case Accessibility::Open: return "open";
   }
+
+  llvm_unreachable("Unhandled Accessibility in switch.");
 }
 static StringRef
 getForeignErrorConventionKindString(ForeignErrorConvention::Kind value) {
@@ -261,6 +270,8 @@ getForeignErrorConventionKindString(ForeignErrorConvention::Kind value) {
   case ForeignErrorConvention::NilResult: return "NilResult";
   case ForeignErrorConvention::NonNilError: return "NonNilError";
   }
+
+  llvm_unreachable("Unhandled ForeignErrorConvention in switch.");
 }
 static StringRef getDefaultArgumentKindString(DefaultArgumentKind value) {
   switch (value) {
@@ -276,6 +287,8 @@ static StringRef getDefaultArgumentKindString(DefaultArgumentKind value) {
     case DefaultArgumentKind::EmptyDictionary: return "[:]";
     case DefaultArgumentKind::Normal: return "normal";
   }
+
+  llvm_unreachable("Unhandled DefaultArgumentKind in switch.");
 }
 static StringRef getAccessorKindString(AccessorKind value) {
   switch (value) {
@@ -288,6 +301,8 @@ static StringRef getAccessorKindString(AccessorKind value) {
     case AccessorKind::IsAddressor: return "addressor";
     case AccessorKind::IsMutableAddressor: return "mutableAddressor";
   }
+
+  llvm_unreachable("Unhandled AccessorKind in switch.");
 }
 static StringRef getAccessKindString(AccessKind value) {
   switch (value) {
@@ -295,6 +310,8 @@ static StringRef getAccessKindString(AccessKind value) {
     case AccessKind::Write: return "write";
     case AccessKind::ReadWrite: return "readwrite";
   }
+
+  llvm_unreachable("Unhandled AccessKind in switch.");
 }
 static StringRef
 getMagicIdentifierLiteralExprKindString(MagicIdentifierLiteralExpr::Kind value) {
@@ -305,6 +322,8 @@ getMagicIdentifierLiteralExprKindString(MagicIdentifierLiteralExpr::Kind value) 
     case MagicIdentifierLiteralExpr::Column: return "#column";
     case MagicIdentifierLiteralExpr::DSOHandle: return "#dsohandle";
   }
+
+  llvm_unreachable("Unhandled MagicIdentifierLiteralExpr in switch.");
 }
 static StringRef
 getObjCSelectorExprKindString(ObjCSelectorExpr::ObjCSelectorKind value) {
@@ -313,6 +332,8 @@ getObjCSelectorExprKindString(ObjCSelectorExpr::ObjCSelectorKind value) {
     case ObjCSelectorExpr::Getter: return "getter";
     case ObjCSelectorExpr::Setter: return "setter";
   }
+
+  llvm_unreachable("Unhandled ObjCSelectorExpr in switch.");
 }
 static StringRef getAccessSemanticsString(AccessSemantics value) {
   switch (value) {
@@ -321,6 +342,8 @@ static StringRef getAccessSemanticsString(AccessSemantics value) {
     case AccessSemantics::DirectToAccessor: return "direct_to_accessor";
     case AccessSemantics::BehaviorInitialization: return "behavior_init";
   }
+
+  llvm_unreachable("Unhandled AccessSemantics in switch.");
 }
 static StringRef getMetatypeRepresentationString(MetatypeRepresentation value) {
   switch (value) {
@@ -328,14 +351,22 @@ static StringRef getMetatypeRepresentationString(MetatypeRepresentation value) {
     case MetatypeRepresentation::Thick: return "thick";
     case MetatypeRepresentation::ObjC: return "@objc";
   }
+
+  llvm_unreachable("Unhandled MetatypeRepresentation in switch.");
 }
 static StringRef
 getStringLiteralExprEncodingString(StringLiteralExpr::Encoding value) {
   switch (value) {
     case StringLiteralExpr::UTF8: return "utf8";
     case StringLiteralExpr::UTF16: return "utf16";
+    case StringLiteralExpr::UTF8ConstString:
+      return "utf8_const_string";
+    case StringLiteralExpr::UTF16ConstString:
+      return "utf16_const_string";
     case StringLiteralExpr::OneUnicodeScalar: return "unicodeScalar";
   }
+
+  llvm_unreachable("Unhandled StringLiteral in switch.");
 }
 static StringRef getCtorInitializerKindString(CtorInitializerKind value) {
   switch (value) {
@@ -344,6 +375,8 @@ static StringRef getCtorInitializerKindString(CtorInitializerKind value) {
     case CtorInitializerKind::ConvenienceFactory: return "convenience_factory";
     case CtorInitializerKind::Factory: return "factory";
   }
+
+  llvm_unreachable("Unhandled CtorInitializerKind in switch.");
 }
 static StringRef getOptionalTypeKindString(OptionalTypeKind value) {
   switch (value) {
@@ -351,6 +384,8 @@ static StringRef getOptionalTypeKindString(OptionalTypeKind value) {
     case OTK_Optional: return "Optional";
     case OTK_ImplicitlyUnwrappedOptional: return "ImplicitlyUnwrappedOptional";
   }
+
+  llvm_unreachable("Unhandled OptionalTypeKind in switch.");
 }
 static StringRef getAssociativityString(Associativity value) {
   switch (value) {
@@ -358,6 +393,8 @@ static StringRef getAssociativityString(Associativity value) {
     case Associativity::Left: return "left";
     case Associativity::Right: return "right";
   }
+
+  llvm_unreachable("Unhandled Associativity in switch.");
 }
 
 //===----------------------------------------------------------------------===//
@@ -545,15 +582,8 @@ namespace {
       if (Inherited.empty())
         return;
       OS << " inherits: ";
-      bool First = true;
-      for (auto Super : Inherited) {
-        if (First)
-          First = false;
-        else
-          OS << ", ";
-
-        Super.getType().print(OS);
-      }
+      interleave(Inherited, [&](TypeLoc Super) { Super.getType().print(OS); },
+                 [&] { OS << ", "; });
     }
 
     void visitImportDecl(ImportDecl *ID) {
@@ -629,13 +659,33 @@ namespace {
         OS << " default=";
         defaultDef.print(OS);
       }
-      
+      if (auto whereClause = decl->getTrailingWhereClause()) {
+        OS << " where requirements: ";
+        interleave(whereClause->getRequirements(),
+                   [&](const RequirementRepr &req) { req.print(OS); },
+                   [&] { OS << ", "; });
+      }
+
       OS << ")";
     }
 
     void visitProtocolDecl(ProtocolDecl *PD) {
       printCommon(PD, "protocol");
+
+      OS << " requirement signature=";
+      if (PD->isRequirementSignatureComputed()) {
+        OS << PD->getRequirementSignature()->getAsString();
+      } else {
+        OS << "<null>";
+      }
       printInherited(PD->getInherited());
+      if (auto whereClause = PD->getTrailingWhereClause()) {
+        OS << " where requirements: ";
+        interleave(whereClause->getRequirements(),
+                   [&](const RequirementRepr &req) { req.print(OS); },
+                   [&] { OS << ", "; });
+      }
+
       for (auto VD : PD->getMembers()) {
         OS << '\n';
         printRec(VD);
@@ -1901,6 +1951,14 @@ public:
     printRec(E->getIndex());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
+  void visitKeyPathApplicationExpr(KeyPathApplicationExpr *E) {
+    printCommon(E, "keypath_application_expr");
+    OS << '\n';
+    printRec(E->getBase());
+    OS << '\n';
+    printRec(E->getKeyPath());
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+  }
   void visitDynamicSubscriptExpr(DynamicSubscriptExpr *E) {
     printCommon(E, "dynamic_subscript_expr")
       << " decl=";
@@ -2022,11 +2080,6 @@ public:
   }
   void visitArchetypeToSuperExpr(ArchetypeToSuperExpr *E) {
     printCommon(E, "archetype_to_super_expr") << '\n';
-    printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
-  }
-  void visitLValueToPointerExpr(LValueToPointerExpr *E) {
-    printCommon(E, "lvalue_to_pointer") << '\n';
     printRec(E->getSubExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
@@ -2358,20 +2411,61 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
 
-  void visitObjCKeyPathExpr(ObjCKeyPathExpr *E) {
+  void visitKeyPathExpr(KeyPathExpr *E) {
     printCommon(E, "keypath_expr");
-    for (unsigned i = 0, n = E->getNumComponents(); i != n; ++i) {
-      OS << "\n";
-      OS.indent(Indent + 2);
-      OS << "component=";
-      if (auto decl = E->getComponentDecl(i))
-        decl->dumpRef(OS);
-      else
-        OS << E->getComponentName(i);
-    }
-    if (auto semanticE = E->getSemanticExpr()) {
+    if (E->isObjC())
+      OS << " objc";
+    for (auto &component : E->getComponents()) {
       OS << '\n';
-      printRec(semanticE);
+      OS.indent(Indent + 2);
+      OS << "(component=";
+      switch (component.getKind()) {
+      case KeyPathExpr::Component::Kind::OptionalChain:
+        OS << "optional_chain ";
+        break;
+        
+      case KeyPathExpr::Component::Kind::OptionalForce:
+        OS << "optional_force ";
+        break;
+        
+      case KeyPathExpr::Component::Kind::OptionalWrap:
+        OS << "optional_wrap ";
+        break;
+        
+      case KeyPathExpr::Component::Kind::Property:
+        OS << "property ";
+        component.getDeclRef().dump(OS);
+        OS << " ";
+        break;
+      
+      case KeyPathExpr::Component::Kind::Subscript:
+        OS << "subscript ";
+        component.getDeclRef().dump(OS);
+        OS << '\n';
+        component.getIndexExpr()->print(OS, Indent + 4);
+        OS.indent(Indent + 4);
+        break;
+      
+      case KeyPathExpr::Component::Kind::UnresolvedProperty:
+        OS << "unresolved_property ";
+        component.getUnresolvedDeclName().print(OS);
+        OS << " ";
+        break;
+        
+      case KeyPathExpr::Component::Kind::UnresolvedSubscript:
+        OS << "unresolved_subscript";
+        OS << '\n';
+        component.getIndexExpr()->print(OS, Indent + 4);
+        OS.indent(Indent + 4);
+        break;
+      }
+      OS << "type=";
+      component.getComponentType().print(OS);
+      OS << ")";
+    }
+    if (auto stringLiteral = E->getObjCStringLiteralExpr()) {
+      OS << '\n';
+      printRec(stringLiteral);
     }
     OS << ")";
   }
@@ -2589,6 +2683,7 @@ void ProtocolConformanceRef::dump(llvm::raw_ostream &out,
     out.indent(indent) << "(abstract_conformance protocol="
                        << getAbstract()->getName();
     PrintWithColorRAII(out, ParenthesisColor) << ')';
+    out << '\n';
   }
 }
 
@@ -3024,7 +3119,9 @@ namespace {
     void visitProtocolCompositionType(ProtocolCompositionType *T,
                                       StringRef label) {
       printCommon(T, label, "protocol_composition_type");
-      for (auto proto : T->getProtocols()) {
+      if (T->hasExplicitAnyObject())
+        OS << " any_object";
+      for (auto proto : T->getMembers()) {
         printRec(proto);
       }
       OS << ")";

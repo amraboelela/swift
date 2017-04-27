@@ -1,7 +1,7 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %build-clang-importer-objc-overlays
 
-// RUN: %target-swift-frontend(mock-sdk: %clang-importer-sdk-nosource -I %t) -target x86_64-apple-macosx10.51 -typecheck %s -verify -verify-ignore-unknown
+// RUN: %target-swift-frontend(mock-sdk: %clang-importer-sdk-nosource -I %t) -target x86_64-apple-macosx10.51 -typecheck %s -verify
 
 // REQUIRES: OS=macosx
 // REQUIRES: objc_interop
@@ -30,6 +30,7 @@ func testInstanceTypeFactoryMethodInherited() {
 }
 
 func testFactoryWithLaterIntroducedInit() {
+    // expected-note @-1 4{{add @available attribute to enclosing global function}}
   // Prefer importing more available factory initializer over less
   // less available convenience initializer
   _ = NSHavingConvenienceFactoryAndLaterConvenienceInit(flim:5)
@@ -44,22 +45,19 @@ func testFactoryWithLaterIntroducedInit() {
   // available designated initializer
   _ = NSHavingConvenienceFactoryAndLaterDesignatedInit(flim:5) // expected-error {{'init(flim:)' is only available on OS X 10.52 or newer}} 
     // expected-note @-1 {{add 'if #available' version check}}
-    // expected-note @-2 {{add @available attribute to enclosing global function}}
   
   _ = NSHavingConvenienceFactoryAndLaterDesignatedInit(flam:5) // expected-error {{'init(flam:)' is only available on OS X 10.52 or newer}}
   // expected-note @-1 {{add 'if #available' version check}}  {{3-63=if #available(OSX 10.52, *) {\n      _ = NSHavingConvenienceFactoryAndLaterDesignatedInit(flam:5)\n  \} else {\n      // Fallback on earlier versions\n  \}}}
-  // expected-note @-2 {{add @available attribute to enclosing global function}} {{1-1=@available(OSX 10.52, *)\n}}
 
   
   // Don't prefer more available factory initializer over less
   // available designated initializer
   _ = NSHavingFactoryAndLaterConvenienceInit(flim:5) // expected-error {{'init(flim:)' is only available on OS X 10.52 or newer}} 
   // expected-note @-1 {{add 'if #available' version check}}
-  // expected-note @-2 {{add @available attribute to enclosing global function}}
+  
 
   _ = NSHavingFactoryAndLaterConvenienceInit(flam:5) // expected-error {{'init(flam:)' is only available on OS X 10.52 or newer}} 
   // expected-note @-1 {{add 'if #available' version check}}
-  // expected-note @-2 {{add @available attribute to enclosing global function}}
 
 
   // When both a convenience factory and a convenience initializer have the
@@ -110,10 +108,3 @@ func testURL() {
   _ = NSURLRequest.requestWithString("http://www.llvm.org") // expected-error{{'requestWithString' has been replaced by 'init(string:)'}}
   _ = NSURLRequest.URLRequestWithURL(url as URL) // expected-error{{'URLRequestWithURL' has been replaced by 'init(url:)'}}
 }
-
-// FIXME: Remove -verify-ignore-unknown.
-// <unknown>:0: error: unexpected note produced: 'hiveWithQueen' has been explicitly marked unavailable here
-// <unknown>:0: error: unexpected note produced: 'decimalNumberWithMantissa(_:exponent:isNegative:)' has been explicitly marked unavailable here
-// <unknown>:0: error: unexpected note produced: 'URLWithString' has been explicitly marked unavailable here
-// <unknown>:0: error: unexpected note produced: 'requestWithString' has been explicitly marked unavailable here
-// <unknown>:0: error: unexpected note produced: 'URLRequestWithURL' has been explicitly marked unavailable here

@@ -363,7 +363,7 @@ Runtime.test("Generic class ObjC runtime names") {
 
   expectEqual("_T01a12GenericClassCySo7CFArrayCGD",
               NSStringFromClass(GenericClass<CFArray>.self))
-  expectEqual("_T01a12GenericClassCySC7DecimalVGD",
+  expectEqual("_T01a12GenericClassCySo7DecimalVGD",
               NSStringFromClass(GenericClass<Decimal>.self))
   expectEqual("_T01a12GenericClassCySo8NSObjectCGD",
               NSStringFromClass(GenericClass<NSObject>.self))
@@ -374,7 +374,7 @@ Runtime.test("Generic class ObjC runtime names") {
   expectEqual("_T01a12GenericClassCySo9NSCopying_AA9ProtocolAAA0D1BpGD",
               NSStringFromClass(GenericClass<ProtocolB & NSCopying & ProtocolA>.self))
 
-  expectEqual("_T01a17MultiGenericClassCyAA0B6StructVySiGAA0B4EnumOyAGySiGGGD",
+  expectEqual("_T01a17MultiGenericClassCyAA0B6StructVySiGAA0B4EnumOyAHySiGGGD",
               NSStringFromClass(MultiGenericClass<GenericStruct<Int>,
                                                   GenericEnum<GenericEnum<Int>>>.self))
 }
@@ -751,8 +751,8 @@ Reflection.test("Unmanaged/not-nil") {
   dump(optionalURL, to: &output)
 
   let expected =
-    "▿ Optional(Swift.Unmanaged<__ObjC.CFURL>(_value: http://llvm.org/))\n" +
-    "  ▿ some: Swift.Unmanaged<__ObjC.CFURL>\n" +
+    "▿ Optional(Swift.Unmanaged<__C.CFURL>(_value: http://llvm.org/))\n" +
+    "  ▿ some: Swift.Unmanaged<__C.CFURL>\n" +
     "    - _value: http://llvm.org/ #0\n" +
     "      - super: NSObject\n"
 

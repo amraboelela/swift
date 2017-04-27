@@ -126,3 +126,34 @@ struct BadConcreteInherits: Inherits {
     typealias X = ConcreteConformsNonFoo2
 }
 */
+
+struct X { }
+
+protocol P {
+	associatedtype P1 where P1 == X
+	// expected-note@-1{{same-type constraint 'Self.P1' == 'X' written here}}
+	associatedtype P2 where P2 == P1, P2 == X
+	// expected-warning@-1{{redundant same-type constraint 'Self.P2' == 'X'}}
+}
+
+// Lookup of same-named associated types aren't ambiguous in this context.
+protocol P1 {
+  associatedtype A // expected-note 2{{declared here}}
+}
+
+protocol P2: P1 {
+  associatedtype A // expected-warning{{redeclaration of associated type}}
+  associatedtype B where A == B
+}
+
+protocol P3: P1 {
+  associatedtype A // expected-warning{{redeclaration of associated type}}
+}
+
+protocol P4 {
+  associatedtype A
+}
+
+protocol P5: P3, P4 {
+  associatedtype B where B == A?
+}

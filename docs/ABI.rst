@@ -819,7 +819,7 @@ types where the metadata itself has unknown layout.)
   global ::= global 'To'                 // swift-as-ObjC thunk
   global ::= global 'TD'                 // dynamic dispatch thunk
   global ::= global 'Td'                 // direct method reference thunk
-  global ::= global 'TV'                 // vtable override thunk
+  global ::= entity entity 'TV'          // vtable override thunk, derived followed by base
   global ::= type 'D'                    // type mangling for the debugger. TODO: check if we really need this
   global ::= protocol-conformance entity 'TW' // protocol witness thunk
   global ::= context identifier identifier 'TB' // property behavior initializer thunk (not used currently)
@@ -889,7 +889,7 @@ Entities
   entity-spec ::= decl-name type 'i'                 // subscript ('i'ndex) itself (not the individual accessors)
   entity-spec ::= decl-name type 'v'                 // variable
   entity-spec ::= decl-name type 'f' ACCESSOR
-  entity-spec ::= decl-name type 'fp'                // generic type parameter (not used?)
+  entity-spec ::= decl-name type 'fp'                // generic type parameter
   entity-spec ::= decl-name type 'fo'                // enum element (currently not used)
 
   ACCESSOR ::= 'm'                           // materializeForSet
@@ -958,30 +958,32 @@ Types
 
 ::
 
-  nominal-type ::= substitution
-  nominal-type ::= context decl-name 'C'     // nominal class type
-  nominal-type ::= context decl-name 'O'     // nominal enum type
-  nominal-type ::= context decl-name 'V'     // nominal struct type
-  nominal-type ::= protocol 'P'              // nominal protocol type
+  any-generic-type ::= substitution
+  any-generic-type ::= context decl-name 'C'     // nominal class type
+  any-generic-type ::= context decl-name 'O'     // nominal enum type
+  any-generic-type ::= context decl-name 'V'     // nominal struct type
+  any-generic-type ::= protocol 'P'              // nominal protocol type
+  any-generic-type ::= context decl-name 'a'     // typealias type (used in DWARF and USRs)
 
-  nominal-type ::= known-nominal-type
+  any-generic-type ::= 'S' KNOWN-TYPE-KIND       // known nominal type substitution
+  any-generic-type ::= 'S' NATURAL KNOWN-TYPE-KIND    // repeated known type substitutions of the same kind
 
-  known-nominal-type ::= 'Sa'                // Swift.Array
-  known-nominal-type ::= 'Sb'                // Swift.Bool
-  known-nominal-type ::= 'Sc'                // Swift.UnicodeScalar
-  known-nominal-type ::= 'Sd'                // Swift.Float64
-  known-nominal-type ::= 'Sf'                // Swift.Float32
-  known-nominal-type ::= 'Si'                // Swift.Int
-  known-nominal-type ::= 'SV'                // Swift.UnsafeRawPointer
-  known-nominal-type ::= 'Sv'                // Swift.UnsafeMutableRawPointer
-  known-nominal-type ::= 'SP'                // Swift.UnsafePointer
-  known-nominal-type ::= 'Sp'                // Swift.UnsafeMutablePointer
-  known-nominal-type ::= 'SQ'                // Swift.ImplicitlyUnwrappedOptional
-  known-nominal-type ::= 'Sq'                // Swift.Optional
-  known-nominal-type ::= 'SR'                // Swift.UnsafeBufferPointer
-  known-nominal-type ::= 'Sr'                // Swift.UnsafeMutableBufferPointer
-  known-nominal-type ::= 'SS'                // Swift.String
-  known-nominal-type ::= 'Su'                // Swift.UInt
+  KNOWN-TYPE-KIND ::= 'a'                    // Swift.Array
+  KNOWN-TYPE-KIND ::= 'b'                    // Swift.Bool
+  KNOWN-TYPE-KIND ::= 'c'                    // Swift.UnicodeScalar
+  KNOWN-TYPE-KIND ::= 'd'                    // Swift.Float64
+  KNOWN-TYPE-KIND ::= 'f'                    // Swift.Float32
+  KNOWN-TYPE-KIND ::= 'i'                    // Swift.Int
+  KNOWN-TYPE-KIND ::= 'V'                    // Swift.UnsafeRawPointer
+  KNOWN-TYPE-KIND ::= 'v'                    // Swift.UnsafeMutableRawPointer
+  KNOWN-TYPE-KIND ::= 'P'                    // Swift.UnsafePointer
+  KNOWN-TYPE-KIND ::= 'p'                    // Swift.UnsafeMutablePointer
+  KNOWN-TYPE-KIND ::= 'Q'                    // Swift.ImplicitlyUnwrappedOptional
+  KNOWN-TYPE-KIND ::= 'q'                    // Swift.Optional
+  KNOWN-TYPE-KIND ::= 'R'                    // Swift.UnsafeBufferPointer
+  KNOWN-TYPE-KIND ::= 'r'                    // Swift.UnsafeMutableBufferPointer
+  KNOWN-TYPE-KIND ::= 'S'                    // Swift.String
+  KNOWN-TYPE-KIND ::= 'u'                    // Swift.UInt
 
   protocol ::= context decl-name
 
@@ -994,10 +996,9 @@ Types
   type ::= 'Bp'                              // Builtin.RawPointer
   type ::= type 'Bv' NATURAL '_'             // Builtin.Vec<n>x<type>
   type ::= 'Bw'                              // Builtin.Word
-  type ::= context decl-name 'a'             // Type alias (DWARF only)
   type ::= function-signature 'c'            // function type
   type ::= function-signature 'X' FUNCTION-KIND // special function type
-  type ::= type 'y' (type* '_')* type* 'G'   // bound generic type (one type-list per nesting level of type)
+  type ::= bound-generic-type
   type ::= type 'Sg'                         // optional type, shortcut for: type 'ySqG'
   type ::= type 'Xo'                         // @unowned type
   type ::= type 'Xu'                         // @unowned(unsafe) type
@@ -1013,7 +1014,9 @@ Types
   type ::= type 'Xp'                         // existential metatype without representation
   type ::= type 'Xm' METATYPE-REPR           // existential metatype with representation
   type ::= 'Xe'                              // error or unresolved type
-
+ 
+  bound-generic-type ::= type 'y' (type* '_')* type* 'G'   // one type-list per nesting level of type
+  bound-generic-type ::= substitution
 
   FUNCTION-KIND ::= 'f'                      // @thin function type
   FUNCTION-KIND ::= 'U'                      // uncurried function type (currently not used) 
@@ -1028,10 +1031,10 @@ Types
 
   throws ::= 'K'                             // 'throws' annotation on function types
 
-  type-list ::= list-type '_' list-type* 'd'?  // list of types with optional variadic specifier
+  type-list ::= list-type '_' list-type*     // list of types
   type-list ::= empty-list
 
-  list-type ::= type identifier? 'z'?        // type with optional label and inout convention
+  list-type ::= type identifier? 'z'? 'd'?   // type with optional label, inout convention and variadic specifier
 
   METATYPE-REPR ::= 't'                      // Thin metatype representation
   METATYPE-REPR ::= 'T'                      // Thick metatype representation
@@ -1039,8 +1042,10 @@ Types
 
   type ::= archetype
   type ::= associated-type
-  type ::= nominal-type
+  type ::= any-generic-type
   type ::= protocol-list 'p'                 // existential type
+  type ::= protocol-list superclass 'Xc'     // existential type with superclass
+  type ::= protocol-list 'Xl'                // existential type with AnyObject
   type ::= type-list 't'                     // tuple
   type ::= type generic-signature 'u'        // generic type
   type ::= 'x'                               // generic param, depth=0, idx=0
@@ -1170,6 +1175,8 @@ Property behaviors are implemented using private protocol conformances.
   LAYOUT-CONSTRAINT ::= 'N'  // NativeRefCountedObject 
   LAYOUT-CONSTRAINT ::= 'R'  // RefCountedObject 
   LAYOUT-CONSTRAINT ::= 'T'  // Trivial 
+  LAYOUT-CONSTRAINT ::= 'C'  // Class
+  LAYOUT-CONSTRAINT ::= 'D'  // NativeClass 
   LAYOUT-CONSTRAINT ::= 'E' LAYOUT-SIZE-AND-ALIGNMENT  // Trivial of exact size 
   LAYOUT-CONSTRAINT ::= 'e' LAYOUT-SIZE  // Trivial of exact size 
   LAYOUT-CONSTRAINT ::= 'M' LAYOUT-SIZE-AND-ALIGNMENT  // Trivial of size at most N bits 
@@ -1296,7 +1303,11 @@ Substitutions
 ::
 
   substitution ::= 'A' INDEX                  // substitution of N+26
-  substitution ::= 'A' [a-z]* [A-Z]           // One or more consecutive substitutions of N < 26
+  substitution ::= 'A' SUBST_IDX* LAST-SUBST-IDX    // One or more consecutive substitutions of N < 26
+  SUBST-IDX ::= [a-z]
+  SUBST-IDX ::= NATURAL [a-z]
+  LAST-SUBST-IDX ::= [A-Z]
+  LAST-SUBST-IDX ::= NATURAL [A-Z]
 
 
 ``<substitution>`` is a back-reference to a previously mangled entity. The mangling
@@ -1323,7 +1334,7 @@ third argument type will mangle using the substitution for ``zim``,
 if it mangled again.) The result type will mangle using the substitution for
 ``zim.zang``, ``AB3zoo`` (and acquire substitution ``AE``).
 
-There are some pre-defined substitutions, see ``<known-nominal-type>``.
+There are some pre-defined substitutions, see ``KNOWN-TYPE-KIND``.
 
 If the mangling contains two or more consecutive substitutions, it can be
 abbreviated with the ``A`` substitution. Similar to word-substitutions the
@@ -1331,6 +1342,9 @@ index is encoded as letters, whereas the last letter is uppercase::
 
   AaeB      // equivalent to A_A4_A0_
 
+Repeated substitutions are encoded with a natural prefix number::
+
+  A3a2B     // equivalent to AaaabB
 
 Numbers and Indexes
 ~~~~~~~~~~~~~~~~~~~

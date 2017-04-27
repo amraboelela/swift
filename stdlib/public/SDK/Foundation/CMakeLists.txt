@@ -1,3 +1,6 @@
+cmake_minimum_required(VERSION 3.4.3)
+include("../../../../cmake/modules/StandaloneOverlay.cmake")
+
 add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SDK_OVERLAY
   AffineTransform.swift
   Boxing.swift
@@ -11,13 +14,9 @@ add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SD
   Decimal.swift
   ExtraStringAPIs.swift
   FileManager.swift
-  FileManagerThunks.m
   Foundation.swift
-  Hashing.m
-  Hashing.swift
   IndexPath.swift
   IndexSet.swift
-  IndexSetThunks.m
   Locale.swift
   Measurement.swift
   Notification.swift
@@ -44,7 +43,6 @@ add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SD
   PersonNameComponents.swift
   ReferenceConvertible.swift
   String.swift
-  Thunks.mm
   TimeZone.swift
   TypePreservingNSNumber.mm
   URL.swift
@@ -60,11 +58,11 @@ add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SD
   # framework, so we need to add it as a dependency.
   # The ./utils/find-overlay-dependencies.sh tool only touches the
   # OSX|IOS|TVOS|WATCHOS lines, so the standalone CoreGraphics lines remain.
-  SWIFT_MODULE_DEPENDS_IOS Darwin Dispatch ObjectiveC # auto-updated
+  SWIFT_MODULE_DEPENDS_IOS Darwin Dispatch ObjectiveC XPC # auto-updated
     CoreGraphics
-  SWIFT_MODULE_DEPENDS_TVOS Darwin Dispatch ObjectiveC # auto-updated
+  SWIFT_MODULE_DEPENDS_TVOS Darwin Dispatch ObjectiveC XPC # auto-updated
     CoreGraphics
-  SWIFT_MODULE_DEPENDS_WATCHOS Darwin Dispatch ObjectiveC # auto-updated
+  SWIFT_MODULE_DEPENDS_WATCHOS Darwin Dispatch ObjectiveC XPC # auto-updated
     CoreGraphics
   FRAMEWORK_DEPENDS Foundation
 

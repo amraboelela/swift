@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -assume-parsing-unqualified-ownership-sil -primary-file %s -emit-ir -disable-objc-attr-requires-foundation-module | %FileCheck %s
+// RUN: %target-swift-frontend -assume-parsing-unqualified-ownership-sil -primary-file %s -emit-ir -disable-objc-attr-requires-foundation-module | %FileCheck %s
 
 // REQUIRES: CPU=x86_64
 // REQUIRES: objc_interop
@@ -37,23 +37,21 @@ protocol ABO : A, B, O { func abo() }
 // CHECK: }
 
 // -- @objc protocol O uses ObjC symbol mangling and layout
-// CHECK: @_PROTOCOL__TtP17protocol_metadata1O_ = private constant { {{.*}} i32, { [1 x i8*] }*, i8*, i8* } {
-// CHECK:   @_PROTOCOL_INSTANCE_METHODS__TtP17protocol_metadata1O_,
+// CHECK: @_PROTOCOL__TtP17protocol_metadata1O_ = private constant { {{.*}} i32, [1 x i8*]*, i8*, i8* } {
+// CHECK-SAME:   @_PROTOCOL_INSTANCE_METHODS__TtP17protocol_metadata1O_,
 // -- size, flags: 1 = Swift
-// CHECK:   i32 96, i32 1
-// CHECK: }
-// CHECK: @_PROTOCOL_METHOD_TYPES__TtP17protocol_metadata1O_
-// CHECK: }
+// CHECK-SAME:   i32 96, i32 1
+// CHECK-SAME: @_PROTOCOL_METHOD_TYPES__TtP17protocol_metadata1O_
+// CHECK-SAME: }
 
 // -- @objc protocol OPT uses ObjC symbol mangling and layout
-// CHECK: @_PROTOCOL__TtP17protocol_metadata3OPT_ = private constant { {{.*}} i32, { [4 x i8*] }*, i8*, i8* } {
-// CHECK:   @_PROTOCOL_INSTANCE_METHODS_OPT__TtP17protocol_metadata3OPT_,
-// CHECK:   @_PROTOCOL_CLASS_METHODS_OPT__TtP17protocol_metadata3OPT_,
+// CHECK: @_PROTOCOL__TtP17protocol_metadata3OPT_ = private constant { {{.*}} i32, [4 x i8*]*, i8*, i8* } {
+// CHECK-SAME:   @_PROTOCOL_INSTANCE_METHODS_OPT__TtP17protocol_metadata3OPT_,
+// CHECK-SAME:   @_PROTOCOL_CLASS_METHODS_OPT__TtP17protocol_metadata3OPT_,
 // -- size, flags: 1 = Swift
-// CHECK:   i32 96, i32 1
-// CHECK: }
-// CHECK: @_PROTOCOL_METHOD_TYPES__TtP17protocol_metadata3OPT_
-// CHECK: }
+// CHECK-SAME:   i32 96, i32 1
+// CHECK-SAME: @_PROTOCOL_METHOD_TYPES__TtP17protocol_metadata3OPT_
+// CHECK-SAME: }
 
 // -- inheritance lists for refined protocols
 
@@ -82,12 +80,12 @@ func protocol_types(_ a: A,
                     abc: A & B & C,
                     abco: A & B & C & O) {
   // CHECK: store %swift.protocol* @_T017protocol_metadata1AMp
-  // CHECK: call %swift.type* @swift_rt_swift_getExistentialTypeMetadata(i64 1, %swift.protocol** {{%.*}})
+  // CHECK: call %swift.type* @swift_rt_swift_getExistentialTypeMetadata(i1 true, %swift.type* null, i64 1, %swift.protocol** {{%.*}})
   reify_metadata(a)
   // CHECK: store %swift.protocol* @_T017protocol_metadata1AMp
   // CHECK: store %swift.protocol* @_T017protocol_metadata1BMp
   // CHECK: store %swift.protocol* @_T017protocol_metadata1CMp
-  // CHECK: call %swift.type* @swift_rt_swift_getExistentialTypeMetadata(i64 3, %swift.protocol** {{%.*}})
+  // CHECK: call %swift.type* @swift_rt_swift_getExistentialTypeMetadata(i1 false, %swift.type* null, i64 3, %swift.protocol** {{%.*}})
   reify_metadata(abc)
   // CHECK: store %swift.protocol* @_T017protocol_metadata1AMp
   // CHECK: store %swift.protocol* @_T017protocol_metadata1BMp
@@ -95,7 +93,7 @@ func protocol_types(_ a: A,
   // CHECK: [[O_REF:%.*]] = load i8*, i8** @"\01l_OBJC_PROTOCOL_REFERENCE_$__TtP17protocol_metadata1O_"
   // CHECK: [[O_REF_BITCAST:%.*]] = bitcast i8* [[O_REF]] to %swift.protocol*
   // CHECK: store %swift.protocol* [[O_REF_BITCAST]]
-  // CHECK: call %swift.type* @swift_rt_swift_getExistentialTypeMetadata(i64 4, %swift.protocol** {{%.*}})
+  // CHECK: call %swift.type* @swift_rt_swift_getExistentialTypeMetadata(i1 false, %swift.type* null, i64 4, %swift.protocol** {{%.*}})
   reify_metadata(abco)
 }
 
