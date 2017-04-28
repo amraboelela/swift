@@ -2479,7 +2479,7 @@ Type TypeResolver::resolveSILBoxType(SILBoxTypeRepr *repr,
     }
     
     bool ok = true;
-    genericSig->getSubstitutions(
+    auto subMap = genericSig->getSubstitutionMap(
       QueryTypeSubstitutionMap{genericArgMap},
       [&](CanType depTy, Type replacement, ProtocolType *proto)
       -> ProtocolConformanceRef {
@@ -2492,17 +2492,11 @@ Type TypeResolver::resolveSILBoxType(SILBoxTypeRepr *repr,
         }
         
         return *result;
-      },
-      genericArgs);
+      });
+    genericSig->getSubstitutions(subMap, genericArgs);
 
     if (!ok)
       return ErrorType::get(Context);
-    
-    // Canonicalize the replacement types.
-    for (auto &arg : genericArgs) {
-      arg = Substitution(arg.getReplacement()->getCanonicalType(),
-                         arg.getConformances());
-    }
   }
   
   auto layout = SILLayout::get(Context, genericSig, fields);
@@ -3100,8 +3094,7 @@ Type TypeResolver::resolveCompositionType(CompositionTypeRepr *repr,
     if (!ty || ty->hasError()) return ty;
 
     auto nominalDecl = ty->getAnyNominal();
-    if (TC.Context.LangOpts.EnableExperimentalSubclassExistentials &&
-        nominalDecl && isa<ClassDecl>(nominalDecl)) {
+    if (nominalDecl && isa<ClassDecl>(nominalDecl)) {
       if (checkSuperclass(tyR->getStartLoc(), ty))
         continue;
 
