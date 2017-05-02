@@ -12,6 +12,46 @@
 
 import SwiftShims
 
+public protocol StringProtocol
+  : RangeReplaceableCollection, BidirectionalCollection,
+  CustomStringConvertible, CustomDebugStringConvertible,
+  CustomReflectable, CustomPlaygroundQuickLookable,
+  TextOutputStream, TextOutputStreamable,
+  LosslessStringConvertible, ExpressibleByStringLiteral,
+  Hashable
+  where Iterator.Element == Character {
+
+  // this should be just <T : StringProtocol>
+  init<
+    T : LosslessStringConvertible & Sequence
+  >(_ other: T) where T.Iterator.Element == Character
+
+  associatedtype UTF8Index
+  var utf8: String.UTF8View { get }
+  associatedtype UTF16Index
+  var utf16: String.UTF16View { get }
+  associatedtype UnicodeScalarIndex
+  var unicodeScalars: String.UnicodeScalarView { get }
+  /*associatedtype CharacterIndex*/
+  var characters: String.CharacterView { get }
+
+#if _runtime(_ObjC)
+  func hasPrefix(_ prefix: String) -> Bool
+  func hasSuffix(_ prefix: String) -> Bool
+#endif
+
+  func lowercased() -> String
+  func uppercased() -> String
+}
+
+extension StringProtocol {
+  public init<
+    T : LosslessStringConvertible & Sequence
+  >(_ other: T) where T.Iterator.Element == Character {
+    self.init(other.description.characters)
+  }
+}
+
 // FIXME: complexity documentation for most of methods on String is ought to be
 // qualified with "amortized" at least, as Characters are variable-length.
 
@@ -353,18 +393,8 @@ extension String : _ExpressibleByBuiltinUnicodeScalarLiteral {
   }
 }
 
-extension String : ExpressibleByUnicodeScalarLiteral {
-  /// Creates an instance initialized to the given Unicode scalar value.
-  ///
-  /// Do not call this initializer directly. It may be used by the compiler when
-  /// you initialize a string using a string literal that contains a single
-  /// Unicode scalar value.
-  public init(unicodeScalarLiteral value: String) {
-    self = value
-  }
-}
-
 extension String : _ExpressibleByBuiltinExtendedGraphemeClusterLiteral {
+  @_inlineable
   @effects(readonly)
   @_semantics("string.makeUTF8")
   public init(
@@ -379,19 +409,8 @@ extension String : _ExpressibleByBuiltinExtendedGraphemeClusterLiteral {
   }
 }
 
-extension String : ExpressibleByExtendedGraphemeClusterLiteral {
-  /// Creates an instance initialized to the given extended grapheme cluster
-  /// literal.
-  ///
-  /// Do not call this initializer directly. It may be used by the compiler when
-  /// you initialize a string using a string literal containing a single
-  /// extended grapheme cluster.
-  public init(extendedGraphemeClusterLiteral value: String) {
-    self = value
-  }
-}
-
 extension String : _ExpressibleByBuiltinUTF16StringLiteral {
+  @_inlineable
   @effects(readonly)
   @_semantics("string.makeUTF16")
   public init(
@@ -409,6 +428,7 @@ extension String : _ExpressibleByBuiltinUTF16StringLiteral {
 }
 
 extension String : _ExpressibleByBuiltinStringLiteral {
+  @_inlineable
   @effects(readonly)
   @_semantics("string.makeUTF8")
   public init(
@@ -554,6 +574,7 @@ extension String {
   ///
   /// Low-level construction interface used by introspection
   /// implementation in the runtime library.
+  @_inlineable
   @_silgen_name("swift_stringFromUTF8InRawMemory")
   public // COMPILER_INTRINSIC
   static func _fromUTF8InRawMemory(
@@ -585,6 +606,11 @@ extension Sequence where Iterator.Element == String {
   ///   in this sequence. The default separator is an empty string.
   /// - Returns: A single, concatenated string.
   public func joined(separator: String = "") -> String {
+    return _joined(separator: separator)
+  }
+
+  @inline(__always)
+  internal func _joined(separator: String = "") -> String {
     var result = ""
 
     // FIXME(performance): this code assumes UTF-16 in-memory representation.
@@ -623,6 +649,30 @@ extension Sequence where Iterator.Element == String {
     }
 
     return result
+  }
+}
+
+
+// This overload is necessary because String now conforms to
+// BidirectionalCollection, and there are other `joined` overloads that are
+// considered more specific. See Flatten.swift.gyb.
+extension BidirectionalCollection where Iterator.Element == String {
+  /// Returns a new string by concatenating the elements of the sequence,
+  /// adding the given separator between each element.
+  ///
+  /// The following example shows how an array of strings can be joined to a
+  /// single, comma-separated string:
+  ///
+  ///     let cast = ["Vivien", "Marlon", "Kim", "Karl"]
+  ///     let list = cast.joined(separator: ", ")
+  ///     print(list)
+  ///     // Prints "Vivien, Marlon, Kim, Karl"
+  ///
+  /// - Parameter separator: A string to insert between each of the elements
+  ///   in this sequence. The default separator is an empty string.
+  /// - Returns: A single, concatenated string.
+  public func joined(separator: String = "") -> String {
+    return _joined(separator: separator)
   }
 }
 
@@ -744,13 +794,13 @@ extension String {
         // }
         let value = source[i]
         let isUpper =
-          _asciiUpperCaseTable >>
-          UInt64(((value &- 1) & 0b0111_1111) >> 1)
-        let add = (isUpper & 0x1) << 5
+          _asciiUpperCaseTable &>>
+          UInt64(((value &- 1) & 0b0111_1111) &>> 1)
+        let add = (isUpper & 0x1) &<< 5
         // Since we are left with either 0x0 or 0x20, we can safely truncate to
         // a UInt8 and add to our ASCII value (this will not overflow numbers in
         // the ASCII range).
-        dest.storeBytes(of: value &+ UInt8(truncatingBitPattern: add),
+        dest.storeBytes(of: value &+ UInt8(extendingOrTruncating: add),
           toByteOffset: i, as: UInt8.self)
       }
       return String(_storage: buffer)
@@ -786,10 +836,10 @@ extension String {
         // See the comment above in lowercaseString.
         let value = source[i]
         let isLower =
-          _asciiLowerCaseTable >>
-          UInt64(((value &- 1) & 0b0111_1111) >> 1)
-        let add = (isLower & 0x1) << 5
-        dest.storeBytes(of: value &- UInt8(truncatingBitPattern: add),
+          _asciiLowerCaseTable &>>
+          UInt64(((value &- 1) & 0b0111_1111) &>> 1)
+        let add = (isLower & 0x1) &<< 5
+        dest.storeBytes(of: value &- UInt8(extendingOrTruncating: add),
           toByteOffset: i, as: UInt8.self)
       }
       return String(_storage: buffer)

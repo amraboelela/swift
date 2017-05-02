@@ -76,6 +76,10 @@ public:
   ManagedValue(SILValue value, CleanupHandle cleanup)
     : valueAndFlag(value, false), cleanup(cleanup) {
     assert(value && "No value specified?!");
+    assert((!getType().isObject() ||
+            value.getOwnershipKind() != ValueOwnershipKind::Trivial ||
+            !hasCleanup()) &&
+           "Objects with trivial ownership should never have a cleanup");
   }
 
   /// Create a managed value for a +0 rvalue.
@@ -230,23 +234,25 @@ public:
     return M;
   }
 
-  CanType getSwiftType() const {
-    return isLValue()
-      ? getType().getSwiftType()
-      : getType().getSwiftRValueType();
-  }
-  
   /// Emit a copy of this value with independent ownership.
-  ManagedValue copy(SILGenFunction &gen, SILLocation l);
-  
+  ManagedValue copy(SILGenFunction &SGF, SILLocation loc);
+
+  /// Emit a copy of this value with independent ownership into the current
+  /// formal evaluation scope.
+  ManagedValue formalAccessCopy(SILGenFunction &SGF, SILLocation loc);
+
   /// Store a copy of this value with independent ownership into the given
   /// uninitialized address.
-  void copyInto(SILGenFunction &gen, SILValue dest, SILLocation L);
-  
+  void copyInto(SILGenFunction &SGF, SILValue dest, SILLocation loc);
+
   /// This is the same operation as 'copy', but works on +0 values that don't
   /// have cleanups.  It returns a +1 value with one.
-  ManagedValue copyUnmanaged(SILGenFunction &gen, SILLocation loc);
-  
+  ManagedValue copyUnmanaged(SILGenFunction &SGF, SILLocation loc);
+
+  /// This is the same operation as 'formalAccessCopy', but works on +0 values
+  /// that don't have cleanups.  It returns a +1 value with one.
+  ManagedValue formalAccessCopyUnmanaged(SILGenFunction &SGF, SILLocation loc);
+
   bool hasCleanup() const { return cleanup.isValid(); }
   CleanupHandle getCleanup() const { return cleanup; }
 
@@ -255,38 +261,48 @@ public:
   /// An l-value is borrowed as itself.  A +1 r-value is borrowed as a
   /// +0 r-value, with the assumption that the original ManagedValue
   /// will not be forwarded until the borrowed value is fully used.
-  ManagedValue borrow(SILGenFunction &gen, SILLocation loc) const;
+  ManagedValue borrow(SILGenFunction &SGF, SILLocation loc) const;
+
+  /// Return a formally evaluated "borrowed" version of this value.
+  ManagedValue formalAccessBorrow(SILGenFunction &SGF, SILLocation loc) const;
 
   ManagedValue unmanagedBorrow() const {
     return isLValue() ? *this : ManagedValue::forUnmanaged(getValue());
   }
 
+  /// Given a scalar value, materialize it into memory with the
+  /// exact same level of cleanup it had before.
+  ManagedValue materialize(SILGenFunction &SGF, SILLocation loc) const;
+
   /// Disable the cleanup for this value.
-  void forwardCleanup(SILGenFunction &gen) const;
+  void forwardCleanup(SILGenFunction &SGF) const;
   
   /// Forward this value, deactivating the cleanup and returning the
   /// underlying value.
-  SILValue forward(SILGenFunction &gen) const;
+  SILValue forward(SILGenFunction &SGF) const;
   
   /// Forward this value into memory by storing it to the given address.
   ///
-  /// \param gen - The SILGenFunction.
+  /// \param SGF - The SILGenFunction.
   /// \param loc - the AST location to associate with emitted instructions.
   /// \param address - the address to assign to.
-  void forwardInto(SILGenFunction &gen, SILLocation loc, SILValue address);
+  void forwardInto(SILGenFunction &SGF, SILLocation loc, SILValue address);
   
   /// Assign this value into memory, destroying the existing
   /// value at the destination address.
   ///
-  /// \param gen - The SILGenFunction.
+  /// \param SGF - The SILGenFunction.
   /// \param loc - the AST location to associate with emitted instructions.
   /// \param address - the address to assign to.
-  void assignInto(SILGenFunction &gen, SILLocation loc, SILValue address);
+  void assignInto(SILGenFunction &SGF, SILLocation loc, SILValue address);
   
   explicit operator bool() const {
     // "InContext" is not considered false.
     return bool(getValue()) || valueAndFlag.getInt();
   }
+
+  void dump() const;
+  void print(raw_ostream &os) const;
 };
 
 /// A ManagedValue which may not be intended to be consumed.
@@ -339,6 +355,9 @@ public:
 
   SILType getType() const { return Value.getType(); }
   SILValue getValue() const { return Value.getValue(); }
+  ValueOwnershipKind getOwnershipKind() const {
+    return Value.getOwnershipKind();
+  }
 
   /// Return a managed value appropriate for the final use of this CMV.
   ManagedValue getFinalManagedValue() const { return Value; }
@@ -360,36 +379,12 @@ public:
   ConsumableManagedValue asBorrowedOperand() const {
     return { asUnmanagedValue(), CastConsumptionKind::CopyOnSuccess };
   }
-};
 
-/// An RAII object that allows a user to borrow a value without a specific scope
-/// that ensures that the object is cleaned up before other scoped cleanups
-/// occur. The way cleanup is triggered is by calling:
-///
-///   std::move(value).cleanup();
-class BorrowedManagedValue {
-  SILGenFunction &gen;
-  ManagedValue borrowedValue;
-  Optional<CleanupHandle> handle;
-  SILLocation loc;
-
-public:
-  BorrowedManagedValue(SILGenFunction &gen, ManagedValue originalValue,
-                       SILLocation loc);
-  ~BorrowedManagedValue() {
-    assert(!borrowedValue &&
-           "Did not manually cleanup borrowed managed value?!");
+  /// Return a managed value that's appropriate for copying this value and
+  /// always consuming it.
+  ConsumableManagedValue copy(SILGenFunction &SGF, SILLocation loc) const {
+    return ConsumableManagedValue::forOwned(asUnmanagedValue().copy(SGF, loc));
   }
-  BorrowedManagedValue(const BorrowedManagedValue &) = delete;
-  BorrowedManagedValue(BorrowedManagedValue &&) = delete;
-  BorrowedManagedValue &operator=(const BorrowedManagedValue &) = delete;
-  BorrowedManagedValue &operator=(BorrowedManagedValue &&) = delete;
-
-  void cleanup() && { cleanupImpl(); }
-  operator ManagedValue() const { return borrowedValue; }
-
-private:
-  void cleanupImpl();
 };
 
 } // namespace Lowering

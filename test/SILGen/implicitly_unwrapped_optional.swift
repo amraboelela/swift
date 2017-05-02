@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen %s | %FileCheck %s
 
 func foo(f f: (() -> ())!) {
   var f: (() -> ())! = f
@@ -8,25 +8,28 @@ func foo(f f: (() -> ())!) {
 // CHECK: bb0([[T0:%.*]] : $Optional<@callee_owned () -> ()>):
 // CHECK:   [[F:%.*]] = alloc_box ${ var Optional<@callee_owned () -> ()> }
 // CHECK:   [[PF:%.*]] = project_box [[F]]
-// CHECK:   [[T0_COPY:%.*]] = copy_value [[T0]]
+// CHECK:   [[BORROWED_T0:%.*]] = begin_borrow [[T0]]
+// CHECK:   [[T0_COPY:%.*]] = copy_value [[BORROWED_T0]]
 // CHECK:   store [[T0_COPY]] to [init] [[PF]]
-// CHECK:   [[T1:%.*]] = select_enum_addr [[PF]]
-// CHECK:   cond_br [[T1]], bb1, bb3
+// CHECK:   end_borrow [[BORROWED_T0]] from [[T0]]
+// CHECK:   [[READ:%.*]] = begin_access [read] [unknown] [[PF]] : $*Optional<@callee_owned () -> ()>
+// CHECK:   [[T1:%.*]] = select_enum_addr [[READ]]
+// CHECK:   cond_br [[T1]], bb2, bb1
 //   If it does, project and load the value out of the implicitly unwrapped
 //   optional...
-// CHECK:    bb1:
-// CHECK-NEXT: [[FN0_ADDR:%.*]] = unchecked_take_enum_data_addr [[PF]]
+// CHECK:    bb2:
+// CHECK-NEXT: [[FN0_ADDR:%.*]] = unchecked_take_enum_data_addr [[READ]]
 // CHECK-NEXT: [[FN0:%.*]] = load [copy] [[FN0_ADDR]]
 //   .... then call it
 // CHECK:   apply [[FN0]]() : $@callee_owned () -> ()
-// CHECK:   br bb2
-// CHECK: bb2(
+// CHECK:   br bb3
+// CHECK: bb3(
 // CHECK:   destroy_value [[F]]
 // CHECK:   destroy_value [[T0]]
 // CHECK:   return
-// CHECK: bb3:
+// CHECK: bb4:
 // CHECK:   enum $Optional<()>, #Optional.none!enumelt
-// CHECK:   br bb2
+// CHECK:   br bb3
 //   The rest of this is tested in optional.swift
 // } // end sil function '{{.*}}foo{{.*}}'
 
@@ -34,7 +37,7 @@ func wrap<T>(x x: T) -> T! { return x }
 
 // CHECK-LABEL: sil hidden @_T029implicitly_unwrapped_optional16wrap_then_unwrap{{[_0-9a-zA-Z]*}}F
 func wrap_then_unwrap<T>(x x: T) -> T {
-  // CHECK:   switch_enum_addr {{%.*}}, case #Optional.none!enumelt: [[FAIL:.*]], default [[OK:bb[0-9]+]]
+  // CHECK:   switch_enum_addr {{%.*}}, case #Optional.some!enumelt.1: [[OK:bb[0-9]+]], case #Optional.none!enumelt: [[FAIL:bb[0-9]+]]
   // CHECK: [[FAIL]]:
   // CHECK:   unreachable
   // CHECK: [[OK]]:
@@ -65,8 +68,11 @@ func sr3758() {
   // Verify that there are no additional reabstractions introduced.
   // CHECK: [[CLOSURE:%.+]] = function_ref @_T029implicitly_unwrapped_optional6sr3758yyFySQyypGcfU_ : $@convention(thin) (@in Optional<Any>) -> ()
   // CHECK: [[F:%.+]] = thin_to_thick_function [[CLOSURE]] : $@convention(thin) (@in Optional<Any>) -> () to $@callee_owned (@in Optional<Any>) -> ()
-  // CHECK: [[CALLEE:%.+]] = copy_value [[F]] : $@callee_owned (@in Optional<Any>) -> ()
+  // CHECK: [[BORROWED_F:%.*]] = begin_borrow [[F]]
+  // CHECK: [[CALLEE:%.+]] = copy_value [[BORROWED_F]] : $@callee_owned (@in Optional<Any>) -> ()
   // CHECK: = apply [[CALLEE]]({{%.+}}) : $@callee_owned (@in Optional<Any>) -> ()
+  // CHECK: end_borrow [[BORROWED_F]] from [[F]]
+  // CHECK: destroy_value [[F]]
   let f: ((Any?) -> Void) = { (arg: Any!) in }
   f(nil)
 } // CHECK: end sil function '_T029implicitly_unwrapped_optional6sr3758yyF'

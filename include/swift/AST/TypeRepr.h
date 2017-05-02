@@ -283,6 +283,13 @@ public:
   SimpleIdentTypeRepr(SourceLoc Loc, Identifier Id)
     : ComponentIdentTypeRepr(TypeReprKind::SimpleIdent, Loc, Id) {}
 
+  // SmallVector::emplace_back will never need to call this because
+  // we reserve the right size, but it does try statically.
+  SimpleIdentTypeRepr(const SimpleIdentTypeRepr &repr)
+      : SimpleIdentTypeRepr(repr.getLoc(), repr.getIdentifier()) {
+    llvm_unreachable("should not be called dynamically");
+  }
+
   static bool classof(const TypeRepr *T) {
     return T->getKind() == TypeReprKind::SimpleIdent;
   }
@@ -845,6 +852,12 @@ class FixedTypeRepr : public TypeRepr {
 public:
   FixedTypeRepr(Type Ty, SourceLoc Loc)
     : TypeRepr(TypeReprKind::Fixed), Ty(Ty), Loc(Loc) {}
+
+  // SmallVector::emplace_back will never need to call this because
+  // we reserve the right size, but it does try statically.
+  FixedTypeRepr(const FixedTypeRepr &repr) : FixedTypeRepr(repr.Ty, repr.Loc) {
+    llvm_unreachable("should not be called dynamically");
+  }
 
   /// Retrieve the location.
   SourceLoc getLoc() const { return Loc; }

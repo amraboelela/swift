@@ -90,12 +90,14 @@ void SILBasicBlock::remove(SILInstruction *I) {
   InstList.remove(I);
 }
 
-void SILBasicBlock::erase(SILInstruction *I) {
+/// Returns the iterator following the erased instruction.
+SILBasicBlock::iterator SILBasicBlock::erase(SILInstruction *I) {
   // Notify the delete handlers that this instruction is going away.
   getModule().notifyDeleteHandlers(&*I);
   auto *F = getParent();
-  InstList.erase(I);
+  auto nextIter = InstList.erase(I);
   F->getModule().deallocateInst(I);
+  return nextIter;
 }
 
 /// This method unlinks 'self' from the containing SILFunction and deletes it.
@@ -137,6 +139,28 @@ SILFunctionArgument *SILBasicBlock::insertFunctionArgument(arg_iterator Iter,
                                                            const ValueDecl *D) {
   assert(isEntry() && "Function Arguments can only be in the entry block");
   return new (getModule()) SILFunctionArgument(this, Iter, Ty, OwnershipKind, D);
+}
+
+SILFunctionArgument *SILBasicBlock::replaceFunctionArgument(
+    unsigned i, SILType Ty, ValueOwnershipKind Kind, const ValueDecl *D) {
+  assert(isEntry() && "Function Arguments can only be in the entry block");
+  SILModule &M = getParent()->getModule();
+  if (Ty.isTrivial(M))
+    Kind = ValueOwnershipKind::Trivial;
+
+  assert(ArgumentList[i]->use_empty() && "Expected no uses of the old arg!");
+
+  // Notify the delete handlers that this argument is being deleted.
+  M.notifyDeleteHandlers(ArgumentList[i]);
+
+  SILFunctionArgument *NewArg = new (M) SILFunctionArgument(Ty, Kind, D);
+  NewArg->setParent(this);
+
+  // TODO: When we switch to malloc/free allocation we'll be leaking memory
+  // here.
+  ArgumentList[i] = NewArg;
+
+  return NewArg;
 }
 
 /// Replace the ith BB argument with a new one with type Ty (and optional
@@ -304,4 +328,30 @@ SILBasicBlock::getFunctionArguments() const {
     return cast<SILFunctionArgument>(A);
   };
   return makeTransformArrayRef(getArguments(), F);
+}
+
+/// Returns true if this block ends in an unreachable or an apply of a
+/// no-return apply or builtin.
+bool SILBasicBlock::isNoReturn() const {
+  if (isa<UnreachableInst>(getTerminator()))
+    return true;
+
+  auto Iter = prev_or_begin(getTerminator()->getIterator(), begin());
+  FullApplySite FAS = FullApplySite::isa(const_cast<SILInstruction *>(&*Iter));
+  if (FAS && FAS.isCalleeNoReturn()) {
+    return true;
+  }
+
+  if (auto *BI = dyn_cast<BuiltinInst>(&*Iter)) {
+    return BI->getModule().isNoReturnBuiltinOrIntrinsic(BI->getName());
+  }
+
+  return false;
+}
+
+bool SILBasicBlock::isTrampoline() const {
+  auto *Branch = dyn_cast<BranchInst>(getTerminator());
+  if (!Branch)
+    return false;
+  return begin() == Branch->getIterator();
 }

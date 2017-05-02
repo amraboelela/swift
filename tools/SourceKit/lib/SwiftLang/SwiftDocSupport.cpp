@@ -10,6 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/AST/Decl.h"
+#include "clang/Basic/Module.h"
 #include "SwiftASTManager.h"
 #include "SwiftEditorDiagConsumer.h"
 #include "SwiftLangSupport.h"
@@ -147,7 +149,7 @@ public:
 
   using StreamPrinter::StreamPrinter;
 
-  ~AnnotatingPrinter() {
+  ~AnnotatingPrinter() override {
     assert(EntitiesStack.empty());
   }
 
@@ -161,7 +163,7 @@ public:
 
   bool shouldContinuePost(const Decl *D, Optional<BracketOptions> Bracket) {
     assert(Bracket.hasValue());
-    if (!Bracket.getValue().shouldCloseNominal(D) && dyn_cast<NominalTypeDecl>(D))
+    if (!Bracket.getValue().shouldCloseNominal(D) && isa<NominalTypeDecl>(D))
       return false;
     if (!Bracket.getValue().shouldCloseExtension(D) &&
         isa<ExtensionDecl>(D))
@@ -250,7 +252,7 @@ struct SourceTextInfo {
   std::vector<TextReference> References;
 };
 
-}
+} // end anonymous namespace
 
 static void initDocGenericParams(const Decl *D, DocEntityInfo &Info) {
   auto *DC = dyn_cast<DeclContext>(D);
@@ -297,6 +299,8 @@ static bool initDocEntityInfo(const Decl *D, const Decl *SynthesizedTarget,
                               bool IsRef, bool IsSynthesizedExtension,
                               DocEntityInfo &Info,
                               StringRef Arg = StringRef()) {
+  if (!IsRef && D->isImplicit())
+    return true;
   if (!D || isa<ParamDecl>(D) ||
       (isa<VarDecl>(D) && D->getDeclContext()->isLocalContext())) {
     Info.Kind = SwiftLangSupport::getUIDForLocalVar(IsRef);
@@ -378,6 +382,9 @@ static bool initDocEntityInfo(const Decl *D, const Decl *SynthesizedTarget,
 
     initDocGenericParams(D, Info);
 
+    llvm::raw_svector_ostream LocalizationKeyOS(Info.LocalizationKey);
+    ide::getLocalizationKey(D, LocalizationKeyOS);
+
     if (auto *VD = dyn_cast<ValueDecl>(D)) {
       llvm::raw_svector_ostream OS(Info.FullyAnnotatedDecl);
       if (SynthesizedTarget)
@@ -385,6 +392,44 @@ static bool initDocEntityInfo(const Decl *D, const Decl *SynthesizedTarget,
           (NominalTypeDecl*)SynthesizedTarget, OS);
       else
         SwiftLangSupport::printFullyAnnotatedDeclaration(VD, Type(), OS);
+    }
+  }
+
+  switch(D->getDeclContext()->getContextKind()) {
+    case DeclContextKind::AbstractClosureExpr:
+    case DeclContextKind::TopLevelCodeDecl:
+    case DeclContextKind::AbstractFunctionDecl:
+    case DeclContextKind::SubscriptDecl:
+    case DeclContextKind::Initializer:
+    case DeclContextKind::SerializedLocal:
+    case DeclContextKind::ExtensionDecl:
+    case DeclContextKind::GenericTypeDecl:
+      break;
+
+    // We report sub-module information only for top-level decls.
+    case DeclContextKind::Module:
+    case DeclContextKind::FileUnit: {
+      if (auto* CD = D->getClangDecl()) {
+        if (auto *M = CD->getImportedOwningModule()) {
+          const clang::Module *Root = M->getTopLevelModule();
+
+          // If Root differs from the owning module, then the owning module is
+          // a sub-module.
+          if (M != Root) {
+            llvm::raw_svector_ostream OS(Info.SubModuleName);
+            llvm::SmallVector<StringRef, 4> Names;
+
+            // Climb up and collect sub-module names.
+            for (auto Current = M; Current != Root; Current = Current->Parent) {
+              Names.insert(Names.begin(), Current->Name);
+            }
+            OS << Root->Name;
+            std::for_each(Names.begin(), Names.end(),
+                          [&](StringRef N) { OS << "." << N; });
+          }
+        }
+      }
+      break;
     }
   }
 
@@ -434,7 +479,7 @@ static void passInherits(ArrayRef<TypeLoc> InheritedTypes,
 
     if (auto ProtoComposition
                = Inherited.getType()->getAs<ProtocolCompositionType>()) {
-      for (auto T : ProtoComposition->getProtocols())
+      for (auto T : ProtoComposition->getMembers())
         passInherits(TypeLoc::withoutLoc(T), Consumer);
       continue;
     }
@@ -717,10 +762,11 @@ private:
     }
   }
 };
-}
+} // end anonymous namespace
 
-static bool makeParserAST(CompilerInstance &CI, StringRef Text) {
-  CompilerInvocation Invocation;
+static bool makeParserAST(CompilerInstance &CI, StringRef Text,
+                          CompilerInvocation Invocation) {
+  Invocation.clearInputs();
   Invocation.setModuleName("main");
   Invocation.setInputKind(InputFileKind::IFK_Swift);
 
@@ -851,7 +897,7 @@ public:
     return false; // skip body.
   }
 };
-}
+} // end anonymous namespace
 
 static void addParameterEntities(CompilerInstance &CI,
                                  SourceTextInfo &IFaceInfo) {
@@ -931,7 +977,7 @@ static bool reportModuleDocInfo(CompilerInvocation Invocation,
     return true;
 
   CompilerInstance ParseCI;
-  if (makeParserAST(ParseCI, IFaceInfo.Text))
+  if (makeParserAST(ParseCI, IFaceInfo.Text, Invocation))
     return true;
   addParameterEntities(ParseCI, IFaceInfo);
 
@@ -955,7 +1001,7 @@ public:
   SourceDocASTWalker(SourceManager &SM, unsigned BufferID)
     : SM(SM), BufferID(BufferID) {}
 
-  ~SourceDocASTWalker() {
+  ~SourceDocASTWalker() override {
     assert(EntitiesStack.empty());
   }
 
@@ -985,7 +1031,7 @@ public:
 
   bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
                           TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type Ty,
-                          SemaReferenceKind Kind) override {
+                          ReferenceMetaData Data) override {
     unsigned StartOffset = getOffset(Range.getStart());
     References.emplace_back(D, StartOffset, Range.getByteLength(), Ty);
     return true;
@@ -995,7 +1041,7 @@ public:
                                bool IsOpenBracket) override {
     // Treat both open and close brackets equally
     return visitDeclReference(D, Range, nullptr, nullptr, Type(),
-                              SemaReferenceKind::SubscriptRef);
+                      ReferenceMetaData(SemaReferenceKind::SubscriptRef, None));
   }
 
   bool isLocal(Decl *D) const {
@@ -1012,7 +1058,7 @@ public:
     return TextRange{ Start, End-Start };
   }
 };
-}
+} // end anonymous namespace
 
 static bool getSourceTextInfo(CompilerInstance &CI,
                               SourceTextInfo &Info) {

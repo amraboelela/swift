@@ -26,10 +26,10 @@ using namespace swift;
 
 /// Create a new empty function with the correct arguments and a unique name.
 SILFunction *GenericCloner::initCloned(SILFunction *Orig,
-                                       IsFragile_t Fragile,
+                                       IsSerialized_t Serialized,
                                        const ReabstractionInfo &ReInfo,
                                        StringRef NewName) {
-  assert((!Fragile || Orig->isFragile())
+  assert((!Serialized || Orig->isSerialized())
          && "Specialization cannot make body more resilient");
   assert((Orig->isTransparent() || Orig->isBare() || Orig->getLocation())
          && "SILFunction missing location");
@@ -42,7 +42,7 @@ SILFunction *GenericCloner::initCloned(SILFunction *Orig,
       getSpecializedLinkage(Orig, Orig->getLinkage()), NewName,
       ReInfo.getSpecializedType(), ReInfo.getSpecializedGenericEnvironment(),
       Orig->getLocation(), Orig->isBare(), Orig->isTransparent(),
-      Fragile, Orig->isThunk(), Orig->getClassVisibility(),
+      Serialized, Orig->isThunk(), Orig->getClassSubclassScope(),
       Orig->getInlineStrategy(), Orig->getEffectsKind(), Orig,
       Orig->getDebugScope());
   for (auto &Attr : Orig->getSemanticsAttrs()) {
@@ -111,8 +111,10 @@ void GenericCloner::populateCloned() {
           // Try to create a new debug_value from an existing debug_value_addr.
           for (Operand *ArgUse : OrigArg->getUses()) {
             if (auto *DVAI = dyn_cast<DebugValueAddrInst>(ArgUse->getUser())) {
+              getBuilder().setCurrentDebugScope(remapScope(DVAI->getDebugScope()));
               getBuilder().createDebugValue(DVAI->getLoc(), NewArg,
                                             DVAI->getVarInfo());
+              getBuilder().setCurrentDebugScope(nullptr);
               break;
             }
           }

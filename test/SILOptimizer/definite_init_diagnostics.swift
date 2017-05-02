@@ -14,6 +14,7 @@ func test1() -> Int {
 }
 
 func takes_inout(_ a: inout Int) {}
+func takes_inout_any(_ a: inout Any) {}
 func takes_closure(_ fn: () -> ()) {}
 
 class SomeClass { 
@@ -81,6 +82,10 @@ func test2() {
     markUsed(b4!)
   }
   b4 = 7
+  
+  let b5: Any
+  b5 = "x"   
+  ({ takes_inout_any(&b5) })()   // expected-error {{immutable value 'b5' may not be passed inout}}
 
   // Structs
   var s1 : SomeStruct
@@ -1246,3 +1251,13 @@ enum SR1469_Enum3 {
   } // expected-error {{return from enum initializer method without storing to 'self'}}
 }
 
+class BadFooSuper {
+  init() {}
+  init(_ x: BadFooSuper) {}
+}
+
+class BadFooSubclass: BadFooSuper {
+  override init() {
+    super.init(self) // expected-error {{'self' used before super.init call}}
+  }
+}

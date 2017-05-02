@@ -41,6 +41,7 @@ extern SourceKit::UIdent KeyEnableDiagnostics;
 extern SourceKit::UIdent KeySyntacticOnly;
 extern SourceKit::UIdent KeyLength;
 extern SourceKit::UIdent KeyActionable;
+extern SourceKit::UIdent KeyParentLoc;
 extern SourceKit::UIdent KeyKind;
 extern SourceKit::UIdent KeyAccessibility;
 extern SourceKit::UIdent KeySetterAccessibility;
@@ -129,6 +130,7 @@ extern SourceKit::UIdent KeyBaseName;
 extern SourceKit::UIdent KeyArgNames;
 extern SourceKit::UIdent KeySelectorPieces;
 extern SourceKit::UIdent KeyNameKind;
+extern SourceKit::UIdent KeyLocalizationKey;
 
 /// \brief Used for determining the printing order of dictionary keys.
 bool compareDictKeys(SourceKit::UIdent LHS, SourceKit::UIdent RHS);

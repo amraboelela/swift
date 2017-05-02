@@ -240,13 +240,13 @@ classifyClassHierarchyCast(CanType source, CanType target) {
   // Upcast: if the target type statically matches a type in the
   // source type's hierarchy, this is a static upcast and the cast
   // will always succeed.
-  if (target->isExactSuperclassOf(source, nullptr))
+  if (target->isExactSuperclassOf(source))
     return DynamicCastFeasibility::WillSucceed;
 
   // Upcast: if the target type might dynamically match a type in the
   // source type's hierarchy, this might be an upcast, in which
   // case the cast might succeed.
-  if (target->isBindableToSuperclassOf(source, nullptr))
+  if (target->isBindableToSuperclassOf(source))
     return DynamicCastFeasibility::MaySucceed;
 
   // Downcast: if the source type might dynamically match a type in the
@@ -254,7 +254,7 @@ classifyClassHierarchyCast(CanType source, CanType target) {
   // the cast might succeed.  Note that this also covers the case where
   // the source type statically matches a type in the target type's
   // hierarchy; since it's a downcast, the cast still at best might succeed.
-  if (source->isBindableToSuperclassOf(target, nullptr))
+  if (source->isBindableToSuperclassOf(target))
     return DynamicCastFeasibility::MaySucceed;
 
   // Otherwise, the classes are unrelated and the cast will fail (at least
@@ -1139,27 +1139,34 @@ bool swift::canUseScalarCheckedCastInstructions(SILModule &M,
   // non-NSError superclass constraint. Casts to archetypes thus must always be
   // indirect.
   if (auto archetype = targetType->getAs<ArchetypeType>()) {
-    auto super = archetype->getSuperclass();
-    if (super.isNull())
-      return false;
-
     // Only ever permit this if the source type is a reference type.
     if (!objectType.isAnyClassReferenceType())
       return false;
+    
+    if (M.getASTContext().LangOpts.EnableObjCInterop) {
+      auto super = archetype->getSuperclass();
+      if (super.isNull())
+        return false;
 
-    // A base class constraint that isn't NSError rules out the archetype being
-    // bound to NSError.
-    if (auto nserror = M.Types.getNSErrorType())
-      return !super->isEqual(nserror);
-    // If NSError wasn't loaded, any base class constraint must not be NSError.
-    return true;
+      // A base class constraint that isn't NSError rules out the archetype being
+      // bound to NSError.
+        if (auto nserror = M.Types.getNSErrorType())
+          return !super->isEqual(nserror);
+      // If NSError wasn't loaded, any base class constraint must not be NSError.
+      return true;
+    } else {
+      // If ObjC bridging isn't enabled, we can do a scalar cast from any
+      // reference type to any class-constrained archetype.
+      return archetype->requiresClass();
+    }
   }
   
-  if (targetType == M.Types.getNSErrorType()) {
+  if (M.getASTContext().LangOpts.EnableObjCInterop
+      && targetType == M.Types.getNSErrorType()) {
     // If we statically know the source is an NSError subclass, then the cast
     // can go through the scalar path (and it's trivially true so can be
     // killed).
-    return targetType->isExactSuperclassOf(objectType, nullptr);
+    return targetType->isExactSuperclassOf(objectType);
   }
   
   // Three supported cases:

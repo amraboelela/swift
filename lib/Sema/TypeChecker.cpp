@@ -161,7 +161,7 @@ ProtocolDecl *TypeChecker::getLiteralProtocol(Expr *expr) {
 #define POUND_OBJECT_LITERAL(Name, Desc, Protocol)\
     case ObjectLiteralExpr::Name:\
       return getProtocol(expr->getLoc(), KnownProtocolKind::Protocol);
-#include "swift/Parse/Tokens.def"
+#include "swift/Syntax/TokenKinds.def"
     }
   }
 
@@ -348,7 +348,7 @@ static void bindExtensionDecl(ExtensionDecl *ED, TypeChecker &TC) {
   }
 
   // Cannot extend a bound generic type.
-  if (extendedType->isSpecialized() && extendedType->getAnyNominal()) {
+  if (extendedType->isSpecialized()) {
     TC.diagnose(ED->getLoc(), diag::extension_specialization,
                 extendedType->getAnyNominal()->getName())
       .highlight(ED->getExtendedTypeLoc().getSourceRange());
@@ -410,7 +410,8 @@ void TypeChecker::bindExtension(ExtensionDecl *ext) {
   ::bindExtensionDecl(ext, *this);
 }
 
-static bool shouldValidateDeclForLayout(NominalTypeDecl *nominal, ValueDecl *VD) {
+static bool shouldValidateMemberDuringFinalization(NominalTypeDecl *nominal,
+                                                   ValueDecl *VD) {
   // For enums, we only need to validate enum elements to know
   // the layout.
   if (isa<EnumDecl>(nominal) &&
@@ -440,7 +441,7 @@ static bool shouldValidateDeclForLayout(NominalTypeDecl *nominal, ValueDecl *VD)
   return false;
 }
 
-static void validateDeclForLayout(TypeChecker &TC, NominalTypeDecl *nominal) {
+static void finalizeType(TypeChecker &TC, NominalTypeDecl *nominal) {
   Optional<bool> lazyVarsAlreadyHaveImplementation;
 
   for (auto *D : nominal->getMembers()) {
@@ -448,7 +449,7 @@ static void validateDeclForLayout(TypeChecker &TC, NominalTypeDecl *nominal) {
     if (!VD)
       continue;
 
-    if (!shouldValidateDeclForLayout(nominal, VD))
+    if (!shouldValidateMemberDuringFinalization(nominal, VD))
       continue;
 
     TC.validateDecl(VD);
@@ -488,6 +489,15 @@ static void validateDeclForLayout(TypeChecker &TC, NominalTypeDecl *nominal) {
   if (auto *CD = dyn_cast<ClassDecl>(nominal)) {
     TC.addImplicitConstructors(CD);
     TC.addImplicitDestructor(CD);
+  }
+
+  // validateDeclForNameLookup will not trigger an immediate full
+  // validation of protocols, but clients will assume that things
+  // like the requirement signature have been set.
+  if (auto PD = dyn_cast<ProtocolDecl>(nominal)) {
+    if (!PD->isRequirementSignatureComputed()) {
+      TC.validateDecl(PD);
+    }
   }
 }
 
@@ -541,12 +551,12 @@ static void typeCheckFunctionsAndExternalDecls(TypeChecker &TC) {
     // Note: if we ever start putting extension members in vtables, we'll need
     // to validate those members too.
     // FIXME: If we're not planning to run SILGen, this is wasted effort.
-    while (!TC.ValidatedTypes.empty()) {
-      auto nominal = TC.ValidatedTypes.pop_back_val();
+    while (!TC.TypesToFinalize.empty()) {
+      auto nominal = TC.TypesToFinalize.pop_back_val();
       if (nominal->isInvalid() || TC.Context.hadError())
         continue;
 
-      validateDeclForLayout(TC, nominal);
+      finalizeType(TC, nominal);
     }
 
     // Complete any conformances that we used.
@@ -559,11 +569,26 @@ static void typeCheckFunctionsAndExternalDecls(TypeChecker &TC) {
 
   } while (currentFunctionIdx < TC.definedFunctions.size() ||
            currentExternalDef < TC.Context.ExternalDefinitions.size() ||
-           !TC.ValidatedTypes.empty() ||
+           !TC.TypesToFinalize.empty() ||
            !TC.UsedConformances.empty());
 
   // FIXME: Horrible hack. Store this somewhere more appropriate.
   TC.Context.LastCheckedExternalDefinition = currentExternalDef;
+
+  // Now that all types have been finalized, run any delayed
+  // circularity checks.
+  // This has been written carefully to fail safe + finitely if
+  // for some reason a type gets re-delayed in a non-assertions
+  // build in an otherwise successful build.
+  // Types can be redelayed in a failing build because we won't
+  // type-check required declarations from different files.
+  for (size_t i = 0, e = TC.DelayedCircularityChecks.size(); i != e; ++i) {
+    TC.checkDeclCircularity(TC.DelayedCircularityChecks[i]);
+    assert((e == TC.DelayedCircularityChecks.size() ||
+            TC.Context.hadError()) &&
+           "circularity checking for type was re-delayed!");
+  }
+  TC.DelayedCircularityChecks.clear();
 
   // Compute captures for functions and closures we visited.
   for (AnyFunctionRef closure : TC.ClosuresWithUncomputedCaptures) {
@@ -704,12 +729,13 @@ void swift::performTypeChecking(SourceFile &SF, TopLevelContext &TLC,
 
     typeCheckFunctionsAndExternalDecls(TC);
   }
-  MyTC.reset();
 
   // Checking that benefits from having the whole module available.
   if (!(Options & TypeCheckingFlags::DelayWholeModuleChecking)) {
     performWholeModuleTypeChecking(SF);
   }
+
+  MyTC.reset();
 
   // Verify that we've checked types correctly.
   SF.ASTStage = SourceFile::TypeChecked;
@@ -817,9 +843,9 @@ static Optional<Type> getTypeOfCompletionContextExpr(
     // Handle below.
     break;
 
-  case CompletionTypeCheckKind::ObjCKeyPath:
+  case CompletionTypeCheckKind::KeyPath:
     referencedDecl = nullptr;
-    if (auto keyPath = dyn_cast<ObjCKeyPathExpr>(parsedExpr))
+    if (auto keyPath = dyn_cast<KeyPathExpr>(parsedExpr))
       return TC.checkObjCKeyPathExpr(DC, keyPath, /*requireResultType=*/true);
 
     return None;
@@ -987,6 +1013,8 @@ TypeChecker::getDeclTypeCheckingSemantics(ValueDecl *decl) {
       return DeclTypeCheckingSemantics::TypeOf;
     if (semantics->Value.equals("typechecker.withoutActuallyEscaping(_:do:)"))
       return DeclTypeCheckingSemantics::WithoutActuallyEscaping;
+    if (semantics->Value.equals("typechecker._openExistential(_:do:)"))
+      return DeclTypeCheckingSemantics::OpenExistential;
   }
   return DeclTypeCheckingSemantics::Normal;
 }

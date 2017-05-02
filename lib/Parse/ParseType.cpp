@@ -14,7 +14,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "swift/Basic/Fallthrough.h"
 #include "swift/Parse/Parser.h"
 #include "swift/AST/Attr.h"
 #include "swift/AST/TypeLoc.h"
@@ -23,7 +22,9 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/SaveAndRestore.h"
+
 using namespace swift;
 
 TypeRepr *Parser::applyAttributeToType(TypeRepr *ty,
@@ -110,24 +111,24 @@ LayoutConstraint Parser::parseLayoutConstraint(Identifier LayoutConstraintID) {
     // There was an error during parsing.
     skipUntil(tok::r_paren);
     consumeIf(tok::r_paren);
-    return LayoutConstraint::getUnknownLayout(Context);
+    return LayoutConstraint::getUnknownLayout();
   }
 
   if (!consumeIf(tok::r_paren)) {
     // Expected a closing r_paren.
     diagnose(Tok.getLoc(), diag::expected_rparen_layout_constraint);
     consumeToken();
-    return LayoutConstraint::getUnknownLayout(Context);
+    return LayoutConstraint::getUnknownLayout();
   }
 
   if (size < 0) {
     diagnose(Tok.getLoc(), diag::layout_size_should_be_positive);
-    return LayoutConstraint::getUnknownLayout(Context);
+    return LayoutConstraint::getUnknownLayout();
   }
 
   if (alignment < 0) {
     diagnose(Tok.getLoc(), diag::layout_alignment_should_be_positive);
-    return LayoutConstraint::getUnknownLayout(Context);
+    return LayoutConstraint::getUnknownLayout();
   }
 
   // Otherwise it is a trivial layout constraint with
@@ -193,7 +194,7 @@ ParserResult<TypeRepr> Parser::parseTypeSimple(Diag<> MessageID,
       ty = parseOldStyleProtocolComposition();
       break;
     }
-    SWIFT_FALLTHROUGH;
+    LLVM_FALLTHROUGH;
   default:
     diagnose(Tok, MessageID);
     if (Tok.isKeyword() && !Tok.isAtStartOfLine()) {

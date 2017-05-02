@@ -1651,7 +1651,8 @@ struct dedupS : dedupP {
 
 func testDeDuped(_ x: dedupS) {
   x#^PROTOCOL_EXT_DEDUP_1^#
-// PROTOCOL_EXT_DEDUP_1: Begin completions, 3 items
+// FIXME: Should produce 3 items
+// PROTOCOL_EXT_DEDUP_1: Begin completions, 5 items
 // PROTOCOL_EXT_DEDUP_1: Decl[InstanceMethod]/CurrNominal:   .foo()[#Int#]; name=foo()
 // PROTOCOL_EXT_DEDUP_1: Decl[InstanceVar]/CurrNominal:      .bar[#Int#]; name=bar
 // PROTOCOL_EXT_DEDUP_1: Decl[Subscript]/CurrNominal:        [{#Int#}][#Int#]; name=[Int]
@@ -1659,11 +1660,9 @@ func testDeDuped(_ x: dedupS) {
 }
 func testDeDuped2(_ x: dedupP) {
   x#^PROTOCOL_EXT_DEDUP_2^#
-// PROTOCOL_EXT_DEDUP_2: Begin completions, 4 items
+// PROTOCOL_EXT_DEDUP_2: Begin completions, 3 items
 // PROTOCOL_EXT_DEDUP_2: Decl[InstanceMethod]/CurrNominal:   .foo()[#dedupP.T#]; name=foo()
 // PROTOCOL_EXT_DEDUP_2: Decl[InstanceVar]/CurrNominal:      .bar[#dedupP.T#]; name=bar
-// PROTOCOL_EXT_DEDUP_2: Decl[Subscript]/CurrNominal:        [{#Self.T#}][#Self.T#]; name=[Self.T]
-// FIXME: duplicate subscript on protocol type rdar://problem/22086900
 // PROTOCOL_EXT_DEDUP_2: Decl[Subscript]/CurrNominal:        [{#Self.T#}][#Self.T#]; name=[Self.T]
 // PROTOCOL_EXT_DEDUP_2: End completions
 }
@@ -1733,7 +1732,7 @@ func testThrows006() {
 // Just sample some String API to sanity check.
 // AUTOCLOSURE_STRING: Decl[InstanceVar]/CurrNominal:      characters[#String.CharacterView#]
 // AUTOCLOSURE_STRING: Decl[InstanceVar]/CurrNominal:      utf16[#String.UTF16View#]
-// AUTOCLOSURE_STRING: Decl[InstanceVar]/CurrNominal:      utf8[#String.UTF8View#]
+// AUTOCLOSURE_STRING: Decl[InstanceVar]/CurrNominal:      unicodeScalars[#String.UnicodeScalarView#]
 func testWithAutoClosure1(_ x: String?) {
   (x ?? "autoclosure").#^AUTOCLOSURE1^#
 }
@@ -1780,20 +1779,20 @@ struct Person {
 }
 class Other { var nameFromOther: Int = 1 }
 class TestDotExprWithNonNominal {
-  var other: Other
+  var otherField: Other
 
   func test1() {
-    let person = Person(firstName: other.#^DOT_EXPR_NON_NOMINAL_1^#)
+    let person = Person(firstName: otherField.#^DOT_EXPR_NON_NOMINAL_1^#)
 // DOT_EXPR_NON_NOMINAL_1-NOT: Instance
 // DOT_EXPR_NON_NOMINAL_1: Decl[InstanceVar]/CurrNominal:      nameFromOther[#Int#];
 // DOT_EXPR_NON_NOMINAL_1-NOT: Instance
   }
   func test2() {
     let person = Person(firstName: 1.#^DOT_EXPR_NON_NOMINAL_2^#)
-// DOT_EXPR_NON_NOMINAL_2-NOT: other
+// DOT_EXPR_NON_NOMINAL_2-NOT: otherField
 // DOT_EXPR_NON_NOMINAL_2-NOT: firstName
 // DOT_EXPR_NON_NOMINAL_2: Decl[InstanceVar]/CurrNominal:      hashValue[#Int#];
-// DOT_EXPR_NON_NOMINAL_2-NOT: other
+// DOT_EXPR_NON_NOMINAL_2-NOT: otherField
 // DOT_EXPR_NON_NOMINAL_2-NOT: firstName
   }
 }

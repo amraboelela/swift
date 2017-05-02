@@ -19,6 +19,7 @@
 #include "swift/Sema/IterativeTypeChecker.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/ExistentialLayout.h"
 #include <tuple>
 using namespace swift;
 
@@ -60,6 +61,10 @@ decomposeInheritedClauseDecl(
         }
       }
     }
+
+    if (!isa<EnumDecl>(typeDecl)) {
+      options |= TR_NonEnumInheritanceClauseOuterLayer;
+    }
   } else {
     auto ext = decl.get<ExtensionDecl *>();
     inheritanceClause = ext->getInherited();
@@ -100,7 +105,7 @@ void IterativeTypeChecker::processResolveInheritedClauseEntry(
   // FIXME: Declaration validation is overkill. Sink it down into type
   // resolution when it is actually needed.
   if (auto nominal = dyn_cast<NominalTypeDecl>(dc))
-    TC.validateDecl(nominal);
+    TC.validateDeclForNameLookup(nominal);
   else if (auto ext = dyn_cast<ExtensionDecl>(dc)) {
     TC.validateExtension(ext);
   }
@@ -220,7 +225,13 @@ bool IterativeTypeChecker::breakCycleForTypeCheckRawType(EnumDecl *enumDecl) {
 // Inherited protocols
 //===----------------------------------------------------------------------===//
 bool IterativeTypeChecker::isInheritedProtocolsSatisfied(ProtocolDecl *payload){
-  return payload->isInheritedProtocolsValid();
+  auto inheritedClause = payload->getInherited();
+  for (unsigned i = 0, n = inheritedClause.size(); i != n; ++i) {
+    TypeLoc &inherited = inheritedClause[i];
+    if (!inherited.getType()) return false;
+  }
+
+  return true;
 }
 
 void IterativeTypeChecker::processInheritedProtocols(
@@ -245,13 +256,16 @@ void IterativeTypeChecker::processInheritedProtocols(
 
     // Collect existential types.
     // FIXME: We'd prefer to keep what the user wrote here.
-    SmallVector<ProtocolDecl *, 4> protocols;
-    if (inherited.getType()->isExistentialType(protocols)) {
-      for (auto inheritedProtocol: protocols) {
+    if (inherited.getType()->isExistentialType()) {
+      auto layout = inherited.getType()->getExistentialLayout();
+      assert(!layout.superclass && "Need to redo inheritance clause "
+             "typechecking");
+      for (auto inheritedProtocolTy: layout.getProtocols()) {
+        auto *inheritedProtocol = inheritedProtocolTy->getDecl();
+
         if (inheritedProtocol == protocol ||
             inheritedProtocol->inheritsFrom(protocol)) {
-          if (!diagnosedCircularity &&
-              !protocol->isInheritedProtocolsValid()) {
+          if (!diagnosedCircularity) {
             diagnose(protocol,
                      diag::circular_protocol_def, protocol->getName().str())
                     .fixItRemove(inherited.getSourceRange());
@@ -267,20 +281,12 @@ void IterativeTypeChecker::processInheritedProtocols(
   // If we enumerated any dependencies, we can't complete this request.
   if (anyDependencies)
     return;
-
-  // FIXME: Hack to deal with recursion elsewhere.
-  // We recurse through DeclContext::getLocalProtocols() -- this should be
-  // redone to use the IterativeDeclChecker also.
-  if (protocol->isInheritedProtocolsValid())
-    return;
-  protocol->setInheritedProtocols(getASTContext().AllocateCopy(allProtocols));
 }
 
 bool IterativeTypeChecker::breakCycleForInheritedProtocols(
        ProtocolDecl *protocol) {
   // FIXME: We'd like to drop just the problematic protocols, not
   // everything.
-  protocol->setInheritedProtocols({});
   return true;
 }
 
@@ -314,7 +320,7 @@ bool IterativeTypeChecker::isResolveTypeDeclSatisfied(TypeDecl *typeDecl) {
     } else if (auto ext = dyn_cast<ExtensionDecl>(dc)) {
       if (ext->isBeingValidated())
         return true;
-      if (ext->validated())
+      if (ext->hasValidationStarted())
         return false;
     } else {
       break;
@@ -332,9 +338,9 @@ void IterativeTypeChecker::processResolveTypeDecl(
   if (auto typeAliasDecl = dyn_cast<TypeAliasDecl>(typeDecl)) {
     if (typeAliasDecl->getDeclContext()->isModuleScopeContext() &&
         typeAliasDecl->getGenericParams() == nullptr) {
-      typeAliasDecl->setHasCompletedValidation();
+      typeAliasDecl->setValidationStarted();
 
-      TypeResolutionOptions options;
+      TypeResolutionOptions options = TR_TypeAliasUnderlyingType;
       if (typeAliasDecl->getFormalAccess() <= Accessibility::FilePrivate)
         options |= TR_KnownNonCascadingDependency;
 

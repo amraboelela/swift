@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -sdk %S/Inputs %s -I %S/Inputs -enable-source-import -emit-silgen | %FileCheck %s
+// RUN: %target-swift-frontend -sdk %S/Inputs %s -I %S/Inputs -enable-source-import -emit-silgen | %FileCheck %s
 
 // REQUIRES: objc_interop
 
@@ -69,11 +69,14 @@ extension FinalGizmo {
 }
 
 // CHECK-LABEL: sil hidden @_T019objc_attr_NSManaged9testFinalSSAA0E5GizmoCF : $@convention(thin) (@owned FinalGizmo) -> @owned String {
+// CHECK: bb0([[ARG:%.*]] : $FinalGizmo):
+// CHECK: [[BORROWED_ARG:%.*]] = begin_borrow [[ARG]]
+// CHECK: class_method [volatile] [[BORROWED_ARG]] : $FinalGizmo, #FinalGizmo.kvc2!1.foreign : (FinalGizmo) -> () -> (), $@convention(objc_method) (FinalGizmo) -> ()
+// CHECK-NOT: return
+// CHECK: [[BORROWED_ARG:%.*]] = begin_borrow [[ARG]]
+// CHECK: class_method [volatile] [[BORROWED_ARG]] : $FinalGizmo, #FinalGizmo.y!getter.1.foreign : (FinalGizmo) -> () -> String, $@convention(objc_method) (FinalGizmo) -> @autoreleased NSString
+// CHECK: return
 func testFinal(_ obj: FinalGizmo) -> String {
-  // CHECK: class_method [volatile] %0 : $FinalGizmo, #FinalGizmo.kvc2!1.foreign : (FinalGizmo) -> () -> (), $@convention(objc_method) (FinalGizmo) -> ()
-  // CHECK-NOT: return
-  // CHECK: class_method [volatile] %0 : $FinalGizmo, #FinalGizmo.y!getter.1.foreign : (FinalGizmo) -> () -> String, $@convention(objc_method) (FinalGizmo) -> @autoreleased NSString
-  // CHECK: return
   obj.kvc2()
   return obj.y
 }
@@ -101,9 +104,9 @@ extension ProtoAdopter {
 // CHECK-LABEL: sil_vtable SwiftGizmo {
 // CHECK-NEXT:   #SwiftGizmo.modifyX!1: {{.*}} : _T019objc_attr_NSManaged10SwiftGizmoC7modifyXyyF
 // CHECK-NEXT:   #SwiftGizmo.testFunc!1: {{.*}} : _T019objc_attr_NSManaged10SwiftGizmoC8testFuncyyF
-// CHECK-NEXT:   #SwiftGizmo.deinit!deallocator: _T019objc_attr_NSManaged10SwiftGizmoCfD
 // CHECK-NEXT:   #SwiftGizmo.init!initializer.1: {{.*}} : _T019objc_attr_NSManaged10SwiftGizmoCSQyACGycfc
 // CHECK-NEXT:   #SwiftGizmo.init!initializer.1: {{.*}} : _T019objc_attr_NSManaged10SwiftGizmoCSQyACGSi7bellsOn_tcfc
+// CHECK-NEXT:   #SwiftGizmo.deinit!deallocator: _T019objc_attr_NSManaged10SwiftGizmoCfD
 // CHECK-NEXT: }
 
 // CHECK-LABEL: sil_vtable FinalGizmo {

@@ -216,11 +216,12 @@ def run(*args, **kwargs):
     return (stdout, 0, args)
 
 
-def run_parallel(fn, pool_args, n_processes=0):
-    def init(l):
-        global lock
-        lock = l
+def init(l):
+    global lock
+    lock = l
 
+
+def run_parallel(fn, pool_args, n_processes=0):
     if n_processes == 0:
         n_processes = cpu_count() * 2
 
@@ -228,7 +229,7 @@ def run_parallel(fn, pool_args, n_processes=0):
     print("Running ``%s`` with up to %d processes." %
           (fn.__name__, n_processes))
     pool = Pool(processes=n_processes, initializer=init, initargs=(l,))
-    results = pool.map_async(func=fn, iterable=pool_args).get(9999999)
+    results = pool.map_async(func=fn, iterable=pool_args).get(999999)
     pool.close()
     pool.join()
     return results

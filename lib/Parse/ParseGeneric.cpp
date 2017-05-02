@@ -16,6 +16,7 @@
 
 #include "swift/Parse/Parser.h"
 #include "swift/AST/DiagnosticsParse.h"
+#include "swift/Parse/CodeCompletionCallbacks.h"
 #include "swift/Parse/Lexer.h"
 using namespace swift;
 
@@ -94,10 +95,10 @@ Parser::parseGenericParameters(SourceLoc LAngleLoc) {
     // We always create generic type parameters with a depth of zero.
     // Semantic analysis fills in the depth when it processes the generic
     // parameter list.
-    auto Param = new (Context) GenericTypeParamDecl(CurDeclContext, Name,
-                                                    NameLoc,
-                                                    /*Bogus depth=*/0xFFFF,
-                                                    GenericParams.size());
+    auto Param = new (Context) GenericTypeParamDecl(
+        CurDeclContext, Name, NameLoc,
+        GenericTypeParamDecl::InvalidDepth,
+        GenericParams.size());
     if (!Inherited.empty())
       Param->setInherited(Context.AllocateCopy(Inherited));
     GenericParams.push_back(Param);
@@ -371,3 +372,26 @@ parseFreestandingGenericWhereClause(GenericParamList *&genericParams,
   return ParserStatus();
 }
 
+/// Parse a where clause after a protocol or associated type declaration.
+ParserStatus Parser::parseProtocolOrAssociatedTypeWhereClause(
+    TrailingWhereClause *&trailingWhere, bool isProtocol) {
+  assert(Tok.is(tok::kw_where) && "Shouldn't call this without a where");
+  SourceLoc whereLoc;
+  SmallVector<RequirementRepr, 4> requirements;
+  bool firstTypeInComplete;
+  auto whereStatus =
+      parseGenericWhereClause(whereLoc, requirements, firstTypeInComplete);
+  if (whereStatus.isSuccess()) {
+    trailingWhere =
+        TrailingWhereClause::create(Context, whereLoc, requirements);
+  } else if (whereStatus.hasCodeCompletion()) {
+    // FIXME: this is completely (hah) cargo culted.
+    if (CodeCompletion && firstTypeInComplete) {
+      CodeCompletion->completeGenericParams(nullptr);
+    } else {
+      return makeParserCodeCompletionStatus();
+    }
+  }
+
+  return ParserStatus();
+}

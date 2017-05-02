@@ -1,5 +1,5 @@
 // RUN: rm -rf %t
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -assume-parsing-unqualified-ownership-sil -use-jit -playground -parse-stdlib %s -emit-ir -disable-objc-attr-requires-foundation-module | %FileCheck %s
+// RUN: %target-swift-frontend -assume-parsing-unqualified-ownership-sil -use-jit -playground -parse-stdlib %s -emit-ir -disable-objc-attr-requires-foundation-module | %FileCheck %s
 
 // REQUIRES: OS=macosx
 // REQUIRES: CPU=x86_64
@@ -15,7 +15,7 @@ anchor()
 
 // CHECK-LABEL: define{{( protected)?}} i32 @main
 // CHECK:         call void @runtime_registration
-// CHECK:         call void @_T010playground6anchoryyF
+// CHECK:         call swiftcc void @_T010playground6anchoryyF
 // CHECK:         ret void
 // CHECK:       }
 

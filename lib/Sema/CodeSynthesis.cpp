@@ -23,7 +23,9 @@
 #include "swift/AST/Expr.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/ParameterList.h"
+#include "swift/AST/ProtocolConformance.h"
 #include "swift/Basic/Defer.h"
+#include "swift/ClangImporter/ClangModule.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 using namespace swift;
@@ -241,11 +243,9 @@ bool needsToBeRegisteredAsExternalDecl(AbstractStorageDecl *storage) {
   if (storage->hasClangNode())
     return true;
 
-  // ...or it was synthesized into an imported type.
-  auto nominal = dyn_cast<NominalTypeDecl>(storage->getDeclContext());
-  if (!nominal)
-    return false;
-  return nominal->hasClangNode();
+  // ...or it was synthesized into an imported context.
+  const DeclContext *dc = storage->getDeclContext();
+  return isa<ClangModuleUnit>(dc->getModuleScopeContext());
 }
 
 /// Mark the accessor as transparent if we can.
@@ -262,12 +262,31 @@ static void maybeMarkTransparent(FuncDecl *accessor,
                                  AbstractStorageDecl *storage,
                                  TypeChecker &TC) {
   auto *DC = storage->getDeclContext();
-  if (isa<ProtocolDecl>(DC) || isa<ClassDecl>(DC))
+  auto *nominalDecl = DC->getAsNominalTypeOrNominalTypeExtensionContext();
+
+  // Global variable accessors are not @_transparent.
+  if (!nominalDecl)
     return;
 
-  auto *nominal = DC->getAsNominalTypeOrNominalTypeExtensionContext();
-  if (nominal && nominal->hasFixedLayout())
-    accessor->getAttrs().add(new (TC.Context) TransparentAttr(IsImplicit));
+  // Accessors for stored properties of resilient types are not
+  // @_transparent.
+  if (!nominalDecl->hasFixedLayout())
+    return;
+
+  // Accessors for protocol storage requirements are never @_transparent
+  // since they do not have bodies.
+  //
+  // FIXME: Revisit this if we ever get 'real' default implementations.
+  if (isa<ProtocolDecl>(nominalDecl))
+    return;
+
+  // Accessors for classes with @objc ancestry are not @_transparent,
+  // since they use a field offset variable which is not exported.
+  if (auto *classDecl = dyn_cast<ClassDecl>(nominalDecl))
+    if (classDecl->checkObjCAncestry() != ObjCClassKind::NonObjC)
+      return;
+
+  accessor->getAttrs().add(new (TC.Context) TransparentAttr(IsImplicit));
 }
 
 static FuncDecl *createMaterializeForSetPrototype(AbstractStorageDecl *storage,
@@ -307,10 +326,20 @@ static FuncDecl *createMaterializeForSetPrototype(AbstractStorageDecl *storage,
   };
   Type retTy = TupleType::get(retElts, ctx);
 
+  // Accessors of generic subscripts get a copy of the subscript's
+  // generic parameter list, because they're not nested inside the
+  // subscript.
+  GenericParamList *genericParams = nullptr;
+  if (auto *subscript = dyn_cast<SubscriptDecl>(storage))
+    genericParams = subscript->getGenericParams();
+
   auto *materializeForSet = FuncDecl::create(
       ctx, /*StaticLoc=*/SourceLoc(), StaticSpellingKind::None, loc,
       Identifier(), loc, /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
-      /*AccessorKeywordLoc=*/SourceLoc(), /*GenericParams=*/nullptr,
+      /*AccessorKeywordLoc=*/SourceLoc(),
+      (genericParams
+       ? genericParams->clone(DC)
+       : nullptr),
       params, TypeLoc::withoutLoc(retTy), DC);
   materializeForSet->setImplicit();
   
@@ -370,7 +399,7 @@ static void convertStoredVarInProtocolToComputed(VarDecl *VD, TypeChecker &TC) {
   
   // We've added some members to our containing class, add them to the members
   // list.
-  addMemberToContextIfNeeded(Get, VD->getDeclContext());
+  addMemberToContextIfNeeded(Get, VD->getDeclContext(), VD);
 }
 
 
@@ -688,7 +717,12 @@ static void synthesizeTrivialGetter(FuncDecl *getter,
   getter->setBody(BraceStmt::create(ctx, loc, returnStmt, loc, true));
 
   maybeMarkTransparent(getter, storage, TC);
- 
+
+  // Record the getter as an override, which can happen with addressors.
+  if (auto *baseASD = storage->getOverriddenDecl())
+    if (baseASD->isAccessibleFrom(storage->getDeclContext()))
+      getter->setOverriddenDecl(baseASD->getGetter());
+
   // Register the accessor as an external decl if the storage was imported.
   if (needsToBeRegisteredAsExternalDecl(storage))
     TC.Context.addExternalDecl(getter);
@@ -709,6 +743,15 @@ static void synthesizeTrivialSetter(FuncDecl *setter,
   setter->setBody(BraceStmt::create(ctx, loc, setterBody, loc, true));
 
   maybeMarkTransparent(setter, storage, TC);
+
+  // Record the setter as an override, which can happen with addressors.
+  if (auto *baseASD = storage->getOverriddenDecl()) {
+    auto *baseSetter = baseASD->getSetter();
+    if (baseSetter != nullptr &&
+        baseASD->isSetterAccessibleFrom(storage->getDeclContext())) {
+      setter->setOverriddenDecl(baseSetter);
+    }
+  }
 
   // Register the accessor as an external decl if the storage was imported.
   if (needsToBeRegisteredAsExternalDecl(storage))
@@ -758,23 +801,19 @@ static void addTrivialAccessorsToStorage(AbstractStorageDecl *storage,
   if (doesStorageNeedSetter(storage))
     setter = createSetterPrototype(storage, setterValueParam, TC);
 
-  FuncDecl *materializeForSet = nullptr;
-  if (setter && DC->getAsNominalTypeOrNominalTypeExtensionContext())
-    materializeForSet = createMaterializeForSetPrototype(storage, setter, TC);
-
   // Okay, we have both the getter and setter.  Set them in VD.
-  storage->addTrivialAccessors(getter, setter, materializeForSet);
+  storage->addTrivialAccessors(getter, setter, nullptr);
 
   bool isDynamic = (storage->isDynamic() && storage->isObjC());
   if (isDynamic)
-    getter->getAttrs().add(new (TC.Context) DynamicAttr(IsImplicit));
+    makeDynamic(TC.Context, getter);
 
   // Synthesize the body of the getter.
   synthesizeTrivialGetter(getter, storage, TC);
 
   if (setter) {
     if (isDynamic)
-      setter->getAttrs().add(new (TC.Context) DynamicAttr(IsImplicit));
+      makeDynamic(TC.Context, setter);
 
     // Synthesize the body of the setter.
     synthesizeTrivialSetter(setter, storage, setterValueParam, TC);
@@ -782,11 +821,11 @@ static void addTrivialAccessorsToStorage(AbstractStorageDecl *storage,
 
   // We've added some members to our containing context, add them to
   // the right list.
-  addMemberToContextIfNeeded(getter, DC);
+  addMemberToContextIfNeeded(getter, DC, storage);
   if (setter)
-    addMemberToContextIfNeeded(setter, DC);
-  if (materializeForSet)
-    addMemberToContextIfNeeded(materializeForSet, DC);
+    addMemberToContextIfNeeded(setter, DC, getter);
+
+  maybeAddMaterializeForSet(storage, TC);
 }
 
 /// Add a trivial setter and materializeForSet to a
@@ -808,6 +847,11 @@ synthesizeSetterForMutableAddressedStorage(AbstractStorageDecl *storage,
 /// Add a materializeForSet accessor to the given declaration.
 static FuncDecl *addMaterializeForSet(AbstractStorageDecl *storage,
                                       TypeChecker &TC) {
+  if (TC.Context.getOptionalDecl() == nullptr) {
+    TC.diagnose(storage->getStartLoc(), diag::optional_intrinsics_not_found);
+    return nullptr;
+  }
+
   auto materializeForSet = createMaterializeForSetPrototype(
       storage, storage->getSetter(), TC);
   addMemberToContextIfNeeded(materializeForSet, storage->getDeclContext(),
@@ -846,8 +890,10 @@ static void convertNSManagedStoredVarToComputed(VarDecl *VD, TypeChecker &TC) {
 
   // We've added some members to our containing class/extension, add them to
   // the members list.
-  addMemberToContextIfNeeded(Get, VD->getDeclContext());
-  addMemberToContextIfNeeded(Set, VD->getDeclContext());
+  addMemberToContextIfNeeded(Get, VD->getDeclContext(), VD);
+  addMemberToContextIfNeeded(Set, VD->getDeclContext(), Get);
+
+  maybeAddMaterializeForSet(VD, TC);
 }
 
 /// The specified AbstractStorageDecl was just found to satisfy a
@@ -1145,11 +1191,11 @@ void TypeChecker::completePropertyBehaviorStorage(VarDecl *VD,
   auto sig = BehaviorConformance->getProtocol()->getGenericSignatureOfContext();
 
   auto interfaceMap = sig->getSubstitutionMap(SelfInterfaceSubs);
-  auto SubstStorageInterfaceTy = StorageTy.subst(interfaceMap, SubstOptions());
+  auto SubstStorageInterfaceTy = StorageTy.subst(interfaceMap);
   assert(SubstStorageInterfaceTy && "storage type substitution failed?!");
 
   auto contextMap = sig->getSubstitutionMap(SelfContextSubs);
-  auto SubstStorageContextTy = StorageTy.subst(contextMap, SubstOptions());
+  auto SubstStorageContextTy = StorageTy.subst(contextMap);
   assert(SubstStorageContextTy && "storage type substitution failed?!");
 
   auto DC = VD->getDeclContext();
@@ -1293,7 +1339,7 @@ void TypeChecker::completePropertyBehaviorParameter(VarDecl *VD,
   GenericEnvironment *genericEnv = nullptr;
 
   auto interfaceMap = sig->getSubstitutionMap(SelfInterfaceSubs);
-  auto SubstInterfaceTy = ParameterTy.subst(interfaceMap, SubstOptions());
+  auto SubstInterfaceTy = ParameterTy.subst(interfaceMap);
   assert(SubstInterfaceTy && "storage type substitution failed?!");
   
   auto contextMap = sig->getSubstitutionMap(SelfContextSubs);
@@ -1333,9 +1379,9 @@ void TypeChecker::completePropertyBehaviorParameter(VarDecl *VD,
   for (unsigned i : indices(*DeclaredParams)) {
     auto declaredParam = DeclaredParams->get(i);
     auto declaredParamTy = declaredParam->getInterfaceType();
-    auto interfaceTy = declaredParamTy.subst(interfaceMap, SubstOptions());
+    auto interfaceTy = declaredParamTy.subst(interfaceMap);
     assert(interfaceTy);
-    auto contextTy = declaredParamTy.subst(contextMap, SubstOptions());
+    auto contextTy = declaredParamTy.subst(contextMap);
     assert(contextTy);
 
     SmallString<64> ParamNameBuf;
@@ -1571,7 +1617,7 @@ void TypeChecker::completeLazyVarImplementation(VarDecl *VD) {
                                          PBDPattern, /*init*/nullptr,
                                          VD->getDeclContext());
   PBD->setImplicit();
-  addMemberToContextIfNeeded(PBD, VD->getDeclContext());
+  addMemberToContextIfNeeded(PBD, VD->getDeclContext(), VD);
 
   // Now that we've got the storage squared away, synthesize the getter.
   completeLazyPropertyGetter(VD, Storage, *this);
@@ -1608,23 +1654,20 @@ void swift::maybeAddMaterializeForSet(AbstractStorageDecl *storage,
   if (!storage->getSetter()) return;
 
   // We only need materializeForSet in type contexts.
-  NominalTypeDecl *container = storage->getDeclContext()
-      ->getAsNominalTypeOrNominalTypeExtensionContext();
-  if (!container) return;
+  auto *dc = storage->getDeclContext();
+  if (!dc->isTypeContext())
+    return;
 
   // Requirements of ObjC protocols don't need this.
-  if (auto protocol = dyn_cast<ProtocolDecl>(container)) {
-    if (protocol->isObjC()) return;
+  if (auto protoDecl = dyn_cast<ProtocolDecl>(dc))
+    if (protoDecl->isObjC())
+      return;
 
-  // Types imported by Clang don't need this, because we can
+  // Members of structs imported by Clang don't need this, because we can
   // synthesize it later.
-  } else {
-    assert(isa<NominalTypeDecl>(container));
-    if (container->hasClangNode()) return;
-  }
-
-  // @NSManaged properties don't need this.
-  if (storage->getAttrs().hasAttribute<NSManagedAttr>()) return;
+  if (auto structDecl = dyn_cast<StructDecl>(dc))
+    if (structDecl->hasClangNode())
+      return;
 
   addMaterializeForSet(storage, TC);
 }
@@ -1695,9 +1738,9 @@ void swift::maybeAddAccessorsToVariable(VarDecl *var, TypeChecker &TC) {
       behavior->Conformance = conformance;
       behavior->ValueDecl = valueProp;
 
-      addMemberToContextIfNeeded(getter, dc);
+      addMemberToContextIfNeeded(getter, dc, var);
       if (setter)
-        addMemberToContextIfNeeded(setter, dc);
+        addMemberToContextIfNeeded(setter, dc, getter);
     };
 
     // Try to resolve the behavior to a protocol.
@@ -1761,19 +1804,16 @@ void swift::maybeAddAccessorsToVariable(VarDecl *var, TypeChecker &TC) {
       // The conformance will be on the containing 'self' type, or '()' if the
       // property is in a non-type context.
       Type behaviorSelf;
-      Type behaviorInterfaceSelf;
       if (dc->isTypeContext()) {
-        behaviorInterfaceSelf = dc->getSelfInterfaceType();
-        behaviorSelf = dc->mapTypeIntoContext(behaviorInterfaceSelf);
+        behaviorSelf = dc->getSelfTypeInContext();
         assert(behaviorSelf && "type context doesn't have self type?!");
         if (var->isStatic())
           behaviorSelf = MetatypeType::get(behaviorSelf);
       } else {
-        behaviorSelf = behaviorInterfaceSelf = TC.Context.TheEmptyTupleType;
+        behaviorSelf = TC.Context.TheEmptyTupleType;
       }
       
       conformance = TC.Context.getBehaviorConformance(behaviorSelf,
-                                            behaviorInterfaceSelf,
                                             behaviorProto,
                                             behavior->getLoc(), var,
                                             ProtocolConformanceState::Checking);
@@ -1798,10 +1838,10 @@ void swift::maybeAddAccessorsToVariable(VarDecl *var, TypeChecker &TC) {
 
     var->makeComputed(SourceLoc(), getter, setter, materializeForSet, SourceLoc());
 
-    addMemberToContextIfNeeded(getter, dc);
-    addMemberToContextIfNeeded(setter, dc);
+    addMemberToContextIfNeeded(getter, dc, var);
+    addMemberToContextIfNeeded(setter, dc, getter);
     if (materializeForSet)
-      addMemberToContextIfNeeded(materializeForSet, dc);
+      addMemberToContextIfNeeded(materializeForSet, dc, setter);
     return;
   }
 
@@ -2029,18 +2069,19 @@ swift::createDesignatedInitOverride(TypeChecker &tc,
   //
   // We might have to apply substitutions, if for example we have a declaration
   // like 'class A : B<Int>'.
-  if (auto *superclassSig = superclassDecl->getGenericSignatureOfContext()) {
+  if (superclassDecl->getGenericSignatureOfContext()) {
     auto *moduleDecl = classDecl->getParentModule();
-    auto subs = superclassTyInContext->gatherAllSubstitutions(
-        moduleDecl, nullptr, nullptr);
-    auto subsMap = superclassSig->getSubstitutionMap(subs);
+    auto subMap = superclassTyInContext->getContextSubstitutionMap(
+        moduleDecl,
+        superclassDecl,
+        classDecl->getGenericEnvironment());
 
     for (auto *decl : *bodyParams) {
       auto paramTy = decl->getInterfaceType();
 
       // Apply the superclass substitutions to produce a contextual
       // type in terms of the derived class archetypes.
-      auto paramSubstTy = paramTy.subst(subsMap, SubstOptions());
+      auto paramSubstTy = paramTy.subst(subMap);
       decl->setType(paramSubstTy);
 
       // Map it to an interface type in terms of the derived class

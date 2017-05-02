@@ -1,5 +1,5 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -assume-parsing-unqualified-ownership-sil -parse-as-library -emit-ir %s | %FileCheck %s
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -assume-parsing-unqualified-ownership-sil -parse-as-library -O -emit-ir %s | %FileCheck --check-prefix=OPT-CHECK %s
+// RUN: %target-swift-frontend -assume-parsing-unqualified-ownership-sil -parse-as-library -emit-ir %s | %FileCheck %s
+// RUN: %target-swift-frontend -assume-parsing-unqualified-ownership-sil -parse-as-library -O -emit-ir %s | %FileCheck --check-prefix=OPT-CHECK %s
 
 // Test that runtime functions are invoked using the new calling convention.
 // Test that wrappers are used to invoked them.
@@ -9,11 +9,11 @@
 public class C {
 }
 
-// CHECK-LABEL: define {{(protected )?}}void @_T027runtime_calling_conventions3fooyAA1CCF(%C27runtime_calling_conventions1C*)
+// CHECK-LABEL: define {{(protected )?}}swiftcc void @_T027runtime_calling_conventions3fooyAA1CCF(%T27runtime_calling_conventions1CC*)
 // Check that runtime functions use a proper calling convention.
 // CHECK: call void {{.*}} @swift_rt_swift_release
 
-// OPT-CHECK-LABEL: define {{(protected )?}}void @_T027runtime_calling_conventions3fooyAA1CCF(%C27runtime_calling_conventions1C*)
+// OPT-CHECK-LABEL: define {{(protected )?}}swiftcc void @_T027runtime_calling_conventions3fooyAA1CCF(%T27runtime_calling_conventions1CC*)
 // Check that runtime functions use a proper calling convention.
 // OPT-CHECK: tail call void @swift_rt_swift_release
 

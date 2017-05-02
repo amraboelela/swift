@@ -15,7 +15,10 @@
 //
 //===----------------------------------------------------------------------===//
 #include "ConstraintSystem.h"
+#include "swift/AST/ProtocolConformance.h"
+#include "swift/AST/ParameterList.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Support/Compiler.h"
 
 using namespace swift;
 using namespace constraints;
@@ -77,6 +80,9 @@ void ConstraintSystem::increaseScore(ScoreKind kind, unsigned value) {
     case SK_EmptyExistentialConversion:
       log << "empty-existential conversion";
       break;
+    case SK_KeyPathSubscript:
+      log << "key path subscript";
+      break;
     }
     log << ")\n";
   }
@@ -133,6 +139,7 @@ static bool sameOverloadChoice(const OverloadChoice &x,
 
   switch (x.getKind()) {
   case OverloadChoiceKind::BaseType:
+  case OverloadChoiceKind::KeyPathApplication:
     // FIXME: Compare base types after substitution?
     return true;
 
@@ -197,8 +204,7 @@ static Comparison compareWitnessAndRequirement(TypeChecker &tc, DeclContext *dc,
 
   // If the witness and the potential witness are not the same, there's no
   // ordering here.
-  if (conformance->getConcrete()->getWitness(req, &tc).getDecl()
-        != potentialWitness)
+  if (conformance->getConcrete()->getWitnessDecl(req, &tc) != potentialWitness)
     return Comparison::Unordered;
 
   // We have a requirement/witness match.
@@ -225,12 +231,12 @@ namespace {
 
 /// Determines whether the first type is nominally a superclass of the second
 /// type, ignore generic arguments.
-static bool isNominallySuperclassOf(TypeChecker &tc, Type type1, Type type2) {
+static bool isNominallySuperclassOf(Type type1, Type type2) {
   auto nominal1 = type1->getAnyNominal();
   if (!nominal1)
     return false;
 
-  for (auto super2 = type2; super2; super2 = super2->getSuperclass(&tc)) {
+  for (auto super2 = type2; super2; super2 = super2->getSuperclass()) {
     if (super2->getAnyNominal() == nominal1)
       return true;
   }
@@ -259,10 +265,10 @@ static SelfTypeRelationship computeSelfTypeRelationship(TypeChecker &tc,
   // If both types can have superclasses, which whether one is a superclass
   // of the other. The subclass is the common base type.
   if (type1->mayHaveSuperclass() && type2->mayHaveSuperclass()) {
-    if (isNominallySuperclassOf(tc, type1, type2))
+    if (isNominallySuperclassOf(type1, type2))
       return SelfTypeRelationship::Superclass;
 
-    if (isNominallySuperclassOf(tc, type2, type1))
+    if (isNominallySuperclassOf(type2, type1))
       return SelfTypeRelationship::Subclass;
 
     return SelfTypeRelationship::Unrelated;
@@ -296,10 +302,16 @@ static Type addCurriedSelfType(ASTContext &ctx, Type type, DeclContext *dc) {
   if (!dc->isTypeContext())
     return type;
 
-  auto nominal = dc->getAsNominalTypeOrNominalTypeExtensionContext();
-  auto selfTy = nominal->getInterfaceType()->castTo<MetatypeType>()
-                  ->getInstanceType();
-  if (auto sig = nominal->getGenericSignatureOfContext())
+  GenericSignature *sig = dc->getGenericSignatureOfContext();
+  if (auto *genericFn = type->getAs<GenericFunctionType>()) {
+    sig = genericFn->getGenericSignature();
+    type = FunctionType::get(genericFn->getInput(),
+                             genericFn->getResult(),
+                             genericFn->getExtInfo());
+  }
+
+  auto selfTy = dc->getDeclaredInterfaceType();
+  if (sig)
     return GenericFunctionType::get(sig, selfTy, type,
                                     AnyFunctionType::ExtInfo());
   return FunctionType::get(selfTy, type);
@@ -314,31 +326,38 @@ static bool isDeclMoreConstrainedThan(ValueDecl *decl1, ValueDecl *decl2) {
   
   if (decl1->getKind() != decl2->getKind() || isa<TypeDecl>(decl1))
     return false;
-  
+
+  GenericParamList *gp1 = nullptr, *gp2 = nullptr;
+
   auto func1 = dyn_cast<FuncDecl>(decl1);
   auto func2 = dyn_cast<FuncDecl>(decl2);
-  
   if (func1 && func2) {
-    
-    auto gp1 = func1->getGenericParams();
-    auto gp2 = func2->getGenericParams();
-    
-    if (gp1 && gp2) {
-      auto params1 = gp1->getParams();
-      auto params2 = gp2->getParams();
+    gp1 = func1->getGenericParams();
+    gp2 = func2->getGenericParams();
+  }
+
+  auto subscript1 = dyn_cast<SubscriptDecl>(decl1);
+  auto subscript2 = dyn_cast<SubscriptDecl>(decl2);
+  if (subscript1 && subscript2) {
+    gp1 = subscript1->getGenericParams();
+    gp2 = subscript2->getGenericParams();
+  }
+
+  if (gp1 && gp2) {
+    auto params1 = gp1->getParams();
+    auto params2 = gp2->getParams();
       
-      if (params1.size() == params2.size()) {
-        for (size_t i = 0; i < params1.size(); i++) {
-          auto p1 = params1[i];
-          auto p2 = params2[i];
+    if (params1.size() == params2.size()) {
+      for (size_t i = 0; i < params1.size(); i++) {
+        auto p1 = params1[i];
+        auto p2 = params2[i];
           
-          int np1 = static_cast<int>(p1->getConformingProtocols().size());
-          int np2 = static_cast<int>(p2->getConformingProtocols().size());
-          int aDelta = np1 - np2;
+        int np1 = static_cast<int>(p1->getConformingProtocols().size());
+        int np2 = static_cast<int>(p2->getConformingProtocols().size());
+        int aDelta = np1 - np2;
           
-          if (aDelta)
-            return aDelta > 0;
-        }
+        if (aDelta)
+          return aDelta > 0;
       }
     }
   }
@@ -426,7 +445,7 @@ static bool isProtocolExtensionAsSpecializedAs(TypeChecker &tc,
   // Form a constraint system where we've opened up all of the requirements of
   // the second protocol extension.
   ConstraintSystem cs(tc, dc1, None);
-  llvm::DenseMap<CanType, TypeVariableType *> replacements;
+  OpenedTypeMap replacements;
   cs.openGeneric(dc2, dc2, sig2,
                  /*skipProtocolSelfConstraint=*/false,
                  ConstraintLocatorBuilder(nullptr),
@@ -437,7 +456,7 @@ static bool isProtocolExtensionAsSpecializedAs(TypeChecker &tc,
   Type selfType1 = sig1->getGenericParams()[0];
   Type selfType2 = sig2->getGenericParams()[0];
   cs.addConstraint(ConstraintKind::Bind,
-                   replacements[selfType2->getCanonicalType()],
+                   replacements[cast<GenericTypeParamType>(selfType2->getCanonicalType())],
                    dc1->mapTypeIntoContext(selfType1),
                    nullptr);
 
@@ -474,9 +493,14 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
       // A non-generic declaration is more specialized than a generic declaration.
       if (auto func1 = dyn_cast<AbstractFunctionDecl>(decl1)) {
         auto func2 = cast<AbstractFunctionDecl>(decl2);
-        if (static_cast<bool>(func1->getGenericParams()) !=
-              static_cast<bool>(func2->getGenericParams()))
-          return func2->getGenericParams();
+        if (func1->isGeneric() != func2->isGeneric())
+          return func2->isGeneric();
+      }
+
+      if (auto subscript1 = dyn_cast<SubscriptDecl>(decl1)) {
+        auto subscript2 = cast<SubscriptDecl>(decl2);
+        if (subscript1->isGeneric() != subscript2->isGeneric())
+          return subscript2->isGeneric();
       }
 
       // A witness is always more specialized than the requirement it satisfies.
@@ -530,8 +554,6 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
         }
       } else {
         // Add a curried 'self' type.
-        assert(!type1->is<GenericFunctionType>() && "Odd generic function type?");
-        assert(!type2->is<GenericFunctionType>() && "Odd generic function type?");
         type1 = addCurriedSelfType(tc.Context, type1, decl1->getDeclContext());
         type2 = addCurriedSelfType(tc.Context, type2, decl2->getDeclContext());
 
@@ -545,11 +567,12 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
 
       // Construct a constraint system to compare the two declarations.
       ConstraintSystem cs(tc, dc, ConstraintSystemOptions());
+      bool knownNonSubtype = false;
 
       auto locator = cs.getConstraintLocator(nullptr);
       // FIXME: Locator when anchored on a declaration.
       // Get the type of a reference to the second declaration.
-      llvm::DenseMap<CanType, TypeVariableType *> unused;
+      OpenedTypeMap unused;
       Type openedType2;
       if (auto *funcType = type2->getAs<AnyFunctionType>()) {
         openedType2 = cs.openFunctionType(
@@ -564,7 +587,7 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
 
       // Get the type of a reference to the first declaration, swapping in
       // archetypes for the dependent types.
-      llvm::DenseMap<CanType, TypeVariableType *> replacements;
+      OpenedTypeMap replacements;
       auto dc1 = decl1->getInnermostDeclContext();
       Type openedType1;
       if (auto *funcType = type1->getAs<AnyFunctionType>()) {
@@ -661,6 +684,35 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
         unsigned numParams2 = params2.size();
         if (numParams1 > numParams2) return false;
 
+        // If they both have trailing closures, compare those separately.
+        bool compareTrailingClosureParamsSeparately = false;
+        if (!tc.getLangOpts().isSwiftVersion3()) {
+          if (numParams1 > 0 && numParams2 > 0 &&
+              params1.back().Ty->is<AnyFunctionType>() &&
+              params2.back().Ty->is<AnyFunctionType>()) {
+            compareTrailingClosureParamsSeparately = true;
+            --numParams1;
+            --numParams2;
+          }
+        }
+
+        auto maybeAddSubtypeConstraint =
+            [&](const CallArgParam &param1, const CallArgParam &param2) -> bool{
+          // If one parameter is variadic and the other is not...
+          if (param1.isVariadic() != param2.isVariadic()) {
+            // If the first parameter is the variadic one, it's not
+            // more specialized.
+            if (param1.isVariadic()) return false;
+
+            fewerEffectiveParameters = true;
+          }
+
+          // Check whether the first parameter is a subtype of the second.
+          cs.addConstraint(ConstraintKind::Subtype, param1.Ty, param2.Ty,
+                           locator);
+          return true;
+        };
+
         for (unsigned i = 0; i != numParams2; ++i) {
           // If there is no corresponding argument in the first
           // parameter list...
@@ -676,30 +728,26 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
             continue;
           }
 
-          // If one parameter is variadic and the other is not...
-          if (params1[i].isVariadic() != params2[i].isVariadic()) {
-            // If the first parameter is the variadic one, it's not
-            // more specialized.
-            if (params1[i].isVariadic()) return false;
-
-            fewerEffectiveParameters = true;
-          }
-
-          // Check whether the first parameter is a subtype of the second.
-          cs.addConstraint(ConstraintKind::Subtype,
-                           params1[i].Ty, params2[i].Ty, locator);
+          if (!maybeAddSubtypeConstraint(params1[i], params2[i]))
+            return false;
         }
+
+        if (compareTrailingClosureParamsSeparately)
+          if (!maybeAddSubtypeConstraint(params1.back(), params2.back()))
+            knownNonSubtype = true;
 
         break;
       }
       }
 
-      // Solve the system.
-      auto solution = cs.solveSingle(FreeTypeVariableBinding::Allow);
+      if (!knownNonSubtype) {
+        // Solve the system.
+        auto solution = cs.solveSingle(FreeTypeVariableBinding::Allow);
 
-      // Ban value-to-optional conversions.
-      if (solution && solution->getFixedScore().Data[SK_ValueToOptional] == 0)
-        return true;
+        // Ban value-to-optional conversions.
+        if (solution && solution->getFixedScore().Data[SK_ValueToOptional] == 0)
+          return true;
+      }
 
       // If the first function has fewer effective parameters than the
       // second, it is more specialized.
@@ -835,6 +883,7 @@ ConstraintSystem::compareSolutions(ConstraintSystem &cs,
       continue;
 
     case OverloadChoiceKind::BaseType:
+    case OverloadChoiceKind::KeyPathApplication:
       llvm_unreachable("Never considered different");
 
     case OverloadChoiceKind::DeclViaDynamic:
@@ -1185,7 +1234,7 @@ ConstraintSystem::findBestSolution(SmallVectorImpl<Solution> &viable,
 
     case SolutionCompareResult::Worse:
       losers[bestIdx] = true;
-      SWIFT_FALLTHROUGH;
+      LLVM_FALLTHROUGH;
 
     case SolutionCompareResult::Incomparable:
       // If we're not supposed to minimize the result set, just return eagerly.

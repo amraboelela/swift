@@ -37,6 +37,7 @@
 
 #if HAVE_UNICODE_LIBEDIT
 #include <histedit.h>
+#include <wchar.h>
 #endif
 
 using namespace swift;
@@ -223,7 +224,7 @@ public:
   
   void print(llvm::raw_ostream &out) const override;
 };
-}
+} // end anonymous namespace
 
 /// EditLine wrapper that implements the user interface behavior for reading
 /// user input to the REPL. All of its methods must be usable from a separate
@@ -361,10 +362,11 @@ public:
         CurrentLines.append(indent, ' ');
       }
       
-      convertToUTF8(llvm::makeArrayRef(WLine, WLine + wcslen(WLine)),
+      size_t WLineLength = wcslen(WLine);
+      convertToUTF8(llvm::makeArrayRef(WLine, WLine + WLineLength),
                     CurrentLines);
 
-      wcslcat(TotalLine, WLine, sizeof(TotalLine) / sizeof(*TotalLine));
+      wcsncat(TotalLine, WLine, WLineLength);
 
       ++CurChunkLines;
 
@@ -833,6 +835,7 @@ private:
                                  RC.CurIRGenElem);
       performSILLinking(sil.get());
       runSILDiagnosticPasses(*sil);
+      runSILLoweringPasses(*sil);
     }
 
     if (CI.getASTContext().hadError()) {

@@ -17,8 +17,7 @@
 #ifndef SWIFT_SIL_GENERICS_H
 #define SWIFT_SIL_GENERICS_H
 
-#include "swift/AST/Mangle.h"
-#include "swift/SIL/Mangle.h"
+#include "swift/AST/SubstitutionMap.h"
 #include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SILOptimizer/Utils/Local.h"
@@ -27,6 +26,8 @@
 #include "llvm/Support/Debug.h"
 
 namespace swift {
+
+class FunctionSignaturePartialSpecializer;
 
 /// Tries to specialize an \p Apply of a generic function. It can be a full
 /// apply site or a partial apply.
@@ -49,6 +50,10 @@ class ReabstractionInfo {
   /// to direct.
   llvm::SmallBitVector Conversions;
 
+  /// If set, indirect to direct conversions should be performed by the generic
+  /// specializer.
+  bool ConvertIndirectToDirect;
+
   /// The first NumResults bits in Conversions refer to formal indirect
   /// out-parameters.
   unsigned NumFormalIndirectResults;
@@ -68,24 +73,28 @@ class ReabstractionInfo {
   /// It is nullptr if the specialization is not polymorphic.
   GenericSignature *SpecializedGenericSig;
 
-  // Set of the substitutions used by the caller's apply instruction before
+  // Set of substitutions from callee's invocation before
   // any transformations performed by the generic specializer.
-  // It uses archetypes.
-  SubstitutionList OriginalParamSubs;
+  //
+  // Maps callee's generic parameters to caller's archetypes.
+  SubstitutionList CalleeParamSubs;
 
-  // Set of substitutions to be used by the caller's apply when it calls a
-  // specialized function.
-  // It uses archetypes.
+  // Set of substitutions to be used to invoke a specialized function.
+  //
+  // Maps generic parameters of the specialized callee function to caller's
+  // archetypes.
   SubstitutionList CallerParamSubs;
 
-  // Set of substitutions to be used by the cloner during cloning.
-  // It maps to concrete types for any types which were replaced by
-  // concrete types in the caller's apply substitution list. All other
-  // types are replaced by their respective archetypes.
+  // Replaces archetypes of the original callee with archetypes
+  // or concrete types, if they were made concrete) of the specialized
+  // callee.
+  //
+  // Maps original callee's generic parameters to specialized
+  // callee archetypes.
   SubstitutionList ClonerParamSubs;
 
-  // Reference to the original generic non-specialized function.
-  SILFunction *OriginalF;
+  // Reference to the original generic non-specialized callee function.
+  SILFunction *Callee;
 
   // The apply site which invokes the generic function.
   ApplySite Apply;
@@ -95,6 +104,9 @@ class ReabstractionInfo {
 
   // Substitutions to be used for creating a new function type
   // for the specialized function.
+  //
+  // Maps original callee's generic parameters to specialized callee's
+  // generic parameters.
   // It uses interface types.
   SubstitutionMap CallerInterfaceSubs;
 
@@ -104,30 +116,43 @@ class ReabstractionInfo {
                                            bool HasUnboundGenericParams);
 
   void createSubstitutedAndSpecializedTypes();
+  bool prepareAndCheck(ApplySite Apply, SILFunction *Callee,
+                       SubstitutionList ParamSubs);
+  void performFullSpecializationPreparation(SILFunction *Callee,
+                                            SubstitutionList ParamSubs);
+  void performPartialSpecializationPreparation(SILFunction *Caller,
+                                               SILFunction *Callee,
+                                               SubstitutionList ParamSubs);
+  void finishPartialSpecializationPreparation(
+      FunctionSignaturePartialSpecializer &FSPS);
+
+  ReabstractionInfo() {}
 public:
-  /// Constructs the ReabstractionInfo for generic function \p Orig with
+  /// Constructs the ReabstractionInfo for generic function \p Callee with
   /// substitutions \p ParamSubs.
   /// If specialization is not possible getSpecializedType() will return an
   /// invalid type.
   ReabstractionInfo(ApplySite Apply, SILFunction *Callee,
-                    SubstitutionList ParamSubs);
+                    SubstitutionList ParamSubs,
+                    bool ConvertIndirectToDirect = true);
 
-  /// Constructs the ReabstractionInfo for generic function \p Orig with
+  /// Constructs the ReabstractionInfo for generic function \p Callee with
   /// additional requirements. Requirements may contain new layout,
   /// conformances or same concrete type requirements.
-  ReabstractionInfo(SILFunction *Orig, ArrayRef<Requirement> Requirements);
+  ReabstractionInfo(SILFunction *Callee, ArrayRef<Requirement> Requirements);
 
   /// Returns true if the \p ParamIdx'th (non-result) formal parameter is
   /// converted from indirect to direct.
   bool isParamConverted(unsigned ParamIdx) const {
-    return Conversions.test(ParamIdx + NumFormalIndirectResults);
+    return ConvertIndirectToDirect &&
+           Conversions.test(ParamIdx + NumFormalIndirectResults);
   }
 
   /// Returns true if the \p ResultIdx'th formal result is converted from
   /// indirect to direct.
   bool isFormalResultConverted(unsigned ResultIdx) const {
     assert(ResultIdx < NumFormalIndirectResults);
-    return Conversions.test(ResultIdx);
+    return ConvertIndirectToDirect && Conversions.test(ResultIdx);
   }
 
   /// Gets the total number of original function arguments.
@@ -173,6 +198,10 @@ public:
     return SpecializedGenericEnv;
   }
 
+  GenericSignature *getSpecializedGenericSignature() const {
+    return SpecializedGenericSig;
+  }
+
   SubstitutionList getCallerParamSubstitutions() const {
     return CallerParamSubs;
   }
@@ -181,8 +210,8 @@ public:
     return ClonerParamSubs;
   }
 
-  SubstitutionList getOriginalParamSubstitutions() const {
-    return OriginalParamSubs;
+  SubstitutionList getCalleeParamSubstitutions() const {
+    return CalleeParamSubs;
   }
 
   /// Create a specialized function type for a specific substituted type \p
@@ -190,7 +219,7 @@ public:
   CanSILFunctionType createSpecializedType(CanSILFunctionType SubstFTy,
                                            SILModule &M) const;
 
-  SILFunction *getNonSpecializedFunction() const { return OriginalF; }
+  SILFunction *getNonSpecializedFunction() const { return Callee; }
 
   /// Map type into a context of the specialized function.
   Type mapTypeIntoContext(Type type) const;
@@ -198,7 +227,7 @@ public:
   /// Map SIL type into a context of the specialized function.
   SILType mapTypeIntoContext(SILType type) const;
 
-  SILModule &getModule() const { return OriginalF->getModule(); }
+  SILModule &getModule() const { return Callee->getModule(); }
 
   /// Returns true if generic specialization is possible.
   bool canBeSpecialized() const;
@@ -208,6 +237,12 @@ public:
 
   /// Returns true if it is a partial generic specialization.
   bool isPartialSpecialization() const;
+
+  /// Returns true if a given apply can be specialized.
+  static bool canBeSpecialized(ApplySite Apply, SILFunction *Callee,
+                               SubstitutionList ParamSubs);
+
+  void verify() const;
 };
 
 /// Helper class for specializing a generic function given a list of
@@ -216,7 +251,7 @@ class GenericFuncSpecializer {
   SILModule &M;
   SILFunction *GenericFunc;
   SubstitutionList ParamSubs;
-  IsFragile_t Fragile;
+  IsSerialized_t Serialized;
   const ReabstractionInfo &ReInfo;
 
   SubstitutionMap ContextSubs;
@@ -225,7 +260,7 @@ class GenericFuncSpecializer {
 public:
   GenericFuncSpecializer(SILFunction *GenericFunc,
                          SubstitutionList ParamSubs,
-                         IsFragile_t Fragile,
+                         IsSerialized_t Serialized,
                          const ReabstractionInfo &ReInfo);
 
   /// If we already have this specialization, reuse it.

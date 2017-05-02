@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen %s | %FileCheck %s
 
 struct Int {
   mutating func foo() {}
@@ -40,10 +40,13 @@ func inOutFunc(_ f: inout ((Int) -> Int)) { }
 // CHECK: bb0([[ARG:%.*]] : $Foo<Int, Int>):
 // CHECK:   [[XBOX:%.*]] = alloc_box ${ var Foo<Int, Int> }, var, name "x"
 // CHECK:   [[XBOX_PB:%.*]] = project_box [[XBOX]] : ${ var Foo<Int, Int> }, 0
-// CHECK:   [[ARG_COPY:%.*]] = copy_value [[ARG]]
+// CHECK:   [[BORROWED_ARG:%.*]] = begin_borrow [[ARG]]
+// CHECK:   [[ARG_COPY:%.*]] = copy_value [[BORROWED_ARG]]
 // CHECK:   store [[ARG_COPY]] to [init] [[XBOX_PB]]
+// CHECK:   end_borrow [[BORROWED_ARG]] from [[ARG]]
 // CHECK:   [[INOUTFUNC:%.*]] = function_ref @_T020property_abstraction9inOutFunc{{[_0-9a-zA-Z]*}}F
-// CHECK:   [[F_ADDR:%.*]] = struct_element_addr [[XBOX_PB]] : $*Foo<Int, Int>, #Foo.f
+// CHECK:   [[WRITE:%.*]] = begin_access [modify] [unknown] [[XBOX_PB]] : $*Foo<Int, Int>
+// CHECK:   [[F_ADDR:%.*]] = struct_element_addr [[WRITE]] : $*Foo<Int, Int>, #Foo.f
 // CHECK:   [[F_SUBST_MAT:%.*]] = alloc_stack
 // CHECK:   [[F_ORIG:%.*]] = load [copy] [[F_ADDR]]
 // CHECK:   [[REABSTRACT_FN:%.*]] = function_ref @_T0{{.*}}TR :
@@ -139,7 +142,8 @@ func setBuilder<F: Factory where F.Product == MyClass>(_ factory: inout F) {
 // CHECK: bb0(%0 : $*F):
 // CHECK:   [[F0:%.*]] = function_ref @_T020property_abstraction10setBuilder{{[_0-9a-zA-Z]*}} : $@convention(thin) () -> @owned MyClass
 // CHECK:   [[F1:%.*]] = thin_to_thick_function [[F0]]
+// CHECK:   [[WRITE:%.*]] = begin_access [modify] [unknown] %0 : $*F
 // CHECK:   [[SETTER:%.*]] = witness_method $F, #Factory.builder!setter.1
 // CHECK:   [[REABSTRACTOR:%.*]] = function_ref @_T0{{.*}}TR :
 // CHECK:   [[F2:%.*]] = partial_apply [[REABSTRACTOR]]([[F1]])
-// CHECK:   apply [[SETTER]]<F>([[F2]], %0)
+// CHECK:   apply [[SETTER]]<F>([[F2]], [[WRITE]])

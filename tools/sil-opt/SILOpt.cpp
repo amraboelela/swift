@@ -43,11 +43,11 @@
 #include <cstdio>
 using namespace swift;
 
+namespace cl = llvm::cl;
+
 namespace {
 
-enum class OptGroup {
-  Unknown, Diagnostics, Performance
-};
+enum class OptGroup { Unknown, Diagnostics, Performance, Lowering };
 
 } // end anonymous namespace
 
@@ -83,6 +83,28 @@ static llvm::cl::opt<bool>
 EnableSILOpaqueValues("enable-sil-opaque-values",
                       llvm::cl::desc("Compile the module with sil-opaque-values enabled."));
 
+namespace {
+enum EnforceExclusivityMode {
+  Unchecked, // static only
+  Checked,   // static and dynamic
+  DynamicOnly,
+  None
+};
+} // end anonymous namespace
+
+static cl::opt<EnforceExclusivityMode> EnforceExclusivity(
+  "enforce-exclusivity", cl::desc("Enforce law of exclusivity "
+                                  "(and support memory access markers)."),
+    cl::init(EnforceExclusivityMode::None),
+    cl::values(clEnumValN(EnforceExclusivityMode::Unchecked, "unchecked",
+                          "Static checking only."),
+               clEnumValN(EnforceExclusivityMode::Checked, "checked",
+                          "Static and dynamic checking."),
+               clEnumValN(EnforceExclusivityMode::DynamicOnly, "dynamic-only",
+                          "Dynamic checking only."),
+               clEnumValN(EnforceExclusivityMode::None, "none",
+                          "No exclusivity checking.")));
+
 static llvm::cl::opt<std::string>
 ResourceDir("resource-dir",
     llvm::cl::desc("The directory that holds the compiler resource files"));
@@ -97,16 +119,17 @@ Target("target", llvm::cl::desc("target triple"));
 
 static llvm::cl::opt<OptGroup> OptimizationGroup(
     llvm::cl::desc("Predefined optimization groups:"),
-    llvm::cl::values(clEnumValN(OptGroup::Diagnostics, "diagnostics",
-                                "Run diagnostic passes"),
-                     clEnumValN(OptGroup::Performance, "O",
-                                "Run performance passes")),
+    llvm::cl::values(
+        clEnumValN(OptGroup::Diagnostics, "diagnostics",
+                   "Run diagnostic passes"),
+        clEnumValN(OptGroup::Performance, "O", "Run performance passes"),
+        clEnumValN(OptGroup::Lowering, "lowering", "Run lowering passes")),
     llvm::cl::init(OptGroup::Unknown));
 
 static llvm::cl::list<PassKind>
 Passes(llvm::cl::desc("Passes:"),
        llvm::cl::values(
-#define PASS(ID, NAME, DESCRIPTION) clEnumValN(PassKind::ID, NAME, DESCRIPTION),
+#define PASS(ID, TAG, NAME) clEnumValN(PassKind::ID, TAG, NAME),
 #include "swift/SILOptimizer/PassManager/Passes.def"
        clEnumValN(0, "", "")));
 
@@ -121,6 +144,10 @@ VerifyMode("verify",
 static llvm::cl::opt<unsigned>
 AssertConfId("assert-conf-id", llvm::cl::Hidden,
              llvm::cl::init(0));
+
+static llvm::cl::opt<bool>
+DisableSILLinking("disable-sil-linking",
+                  llvm::cl::desc("Disable SIL linking"));
 
 static llvm::cl::opt<int>
 SILInlineThreshold("sil-inline-threshold", llvm::cl::Hidden,
@@ -179,8 +206,8 @@ static void runCommandLineSelectedPasses(SILModule *Module,
                                          irgen::IRGenModule *IRGenMod) {
   SILPassManager PM(Module, IRGenMod);
   for (auto P : Passes) {
-#define PASS(ID, Name, Description)
-#define IRGEN_PASS(ID, Name, Description)                                      \
+#define PASS(ID, Tag, Name)
+#define IRGEN_PASS(ID, Tag, Name)                                              \
   if (P == PassKind::ID)                                                       \
     PM.registerIRGenPass(swift::PassKind::ID, irgen::create##ID());
 #include "swift/SILOptimizer/PassManager/Passes.def"
@@ -216,7 +243,11 @@ int main(int argc, char **argv) {
 
   // Give the context the list of search paths to use for modules.
   Invocation.setImportSearchPaths(ImportPaths);
-  Invocation.setFrameworkSearchPaths(FrameworkPaths);
+  std::vector<SearchPathOptions::FrameworkSearchPath> FramePaths;
+  for (const auto &path : FrameworkPaths) {
+    FramePaths.push_back({path, /*isSystem=*/false});
+  }
+  Invocation.setFrameworkSearchPaths(FramePaths);
   // Set the SDK path and target if given.
   if (SDKPath.getNumOccurrences() == 0) {
     const char *SDKROOT = getenv("SDKROOT");
@@ -237,6 +268,8 @@ int main(int argc, char **argv) {
   Invocation.getLangOptions().DisableAvailabilityChecking = true;
   Invocation.getLangOptions().EnableAccessControl = false;
   Invocation.getLangOptions().EnableObjCAttrRequiresFoundation = false;
+  Invocation.getLangOptions().EnableObjCInterop =
+    llvm::Triple(Target).isOSDarwin();
 
   Invocation.getLangOptions().ASTVerifierProcessCount =
       ASTVerifierProcessCount;
@@ -255,6 +288,30 @@ int main(int argc, char **argv) {
   SILOpts.EnableSILOwnership = EnableSILOwnershipOpt;
   SILOpts.AssumeUnqualifiedOwnershipWhenParsing =
     AssumeUnqualifiedOwnershipWhenParsing;
+
+  switch (EnforceExclusivity) {
+  case EnforceExclusivityMode::Unchecked:
+    // This option is analogous to the -Ounchecked optimization setting.
+    // It will disable dynamic checking but still diagnose statically.
+    SILOpts.EnforceExclusivityStatic = true;
+    SILOpts.EnforceExclusivityDynamic = false;
+    break;
+  case EnforceExclusivityMode::Checked:
+    SILOpts.EnforceExclusivityStatic = true;
+    SILOpts.EnforceExclusivityDynamic = true;
+    break;
+  case EnforceExclusivityMode::DynamicOnly:
+    // This option is intended for staging purposes. The intent is that
+    // it will eventually be removed.
+    SILOpts.EnforceExclusivityStatic = false;
+    SILOpts.EnforceExclusivityDynamic = true;
+    break;
+  case EnforceExclusivityMode::None:
+    // This option is for staging purposes.
+    SILOpts.EnforceExclusivityStatic = false;
+    SILOpts.EnforceExclusivityDynamic = false;
+    break;
+  }
 
   // Load the input file.
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> FileBufOrErr =
@@ -319,7 +376,7 @@ int main(int argc, char **argv) {
     std::unique_ptr<SerializedSILLoader> SL = SerializedSILLoader::create(
         CI.getASTContext(), CI.getSILModule(), nullptr);
 
-    if (extendedInfo.isSIB())
+    if (extendedInfo.isSIB() || DisableSILLinking)
       SL->getAllForModule(CI.getMainModule()->getName(), nullptr);
     else
       SL->getAll();
@@ -333,7 +390,10 @@ int main(int argc, char **argv) {
   if (OptimizationGroup == OptGroup::Diagnostics) {
     runSILDiagnosticPasses(*CI.getSILModule());
   } else if (OptimizationGroup == OptGroup::Performance) {
+    runSILOptPreparePasses(*CI.getSILModule());
     runSILOptimizationPasses(*CI.getSILModule());
+  } else if (OptimizationGroup == OptGroup::Lowering) {
+    runSILLoweringPasses(*CI.getSILModule());
   } else {
     auto *SILMod = CI.getSILModule();
     {

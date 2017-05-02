@@ -27,13 +27,6 @@ public protocol _MutableIndexable : _Indexable {
   // `Iterator` type from a minimal collection, but it is also used in
   // exposed places like as a constraint on `IndexingIterator`.
 
-  /// A type that represents a valid position in the collection.
-  ///
-  /// Valid indices consist of the position of every element and a
-  /// "past the end" position that's not valid for use as a subscript.
-  // TODO: swift-3-indexing-model - Index only needs to be comparable or must be comparable..?
-  associatedtype Index : Comparable
-
   /// The position of the first element in a nonempty collection.
   ///
   /// If the collection is empty, `startIndex` is equal to `endIndex`.
@@ -56,16 +49,6 @@ public protocol _MutableIndexable : _Indexable {
   /// If the collection is empty, `endIndex` is equal to `startIndex`.
   var endIndex: Index { get }
 
-  // The declaration of _Element and subscript here is a trick used to
-  // break a cyclic conformance/deduction that Swift can't handle.  We
-  // need something other than a Collection.Iterator.Element that can
-  // be used as IndexingIterator<T>'s Element.  Here we arrange for
-  // the Collection itself to have an Element type that's deducible from
-  // its subscript.  Ideally we'd like to constrain this Element to be the same
-  // as Collection.Iterator.Element (see below), but we have no way of
-  // expressing it today.
-  associatedtype _Element
-
   /// Accesses the element at the specified position.
   ///
   /// For example, you can replace an element of an array by using its
@@ -86,10 +69,6 @@ public protocol _MutableIndexable : _Indexable {
   ///   `endIndex` property.
   subscript(position: Index) -> _Element { get set }
 
-  /// A collection that represents a contiguous subrange of the collection's
-  /// elements.
-  associatedtype SubSequence
-  
   /// Accesses a contiguous subrange of the collection's elements.
   ///
   /// The accessed slice uses the same indices for the same elements as the
@@ -309,6 +288,11 @@ public protocol MutableCollection : _MutableIndexable, Collection {
   mutating func partition(
     by belongsInSecondPartition: (Iterator.Element) throws -> Bool
   ) rethrows -> Index
+
+  /// Exchange the values at indices `i` and `j`.
+  ///
+  /// Has no effect when `i` and `j` are equal.
+  mutating func swapAt(_ i: Index, _ j: Index)  
   
   /// Call `body(p)`, where `p` is a pointer to the collection's
   /// mutable contiguous storage.  If no such storage exists, it is
@@ -333,6 +317,7 @@ public protocol MutableCollection : _MutableIndexable, Collection {
 
 // TODO: swift-3-indexing-model - review the following
 extension MutableCollection {
+  @_inlineable
   public mutating func _withUnsafeMutableBufferPointerIfSupported<R>(
     _ body: (UnsafeMutablePointer<Iterator.Element>, Int) throws -> R
   ) rethrows -> R? {
@@ -361,6 +346,7 @@ extension MutableCollection {
   ///
   /// - Parameter bounds: A range of the collection's indices. The bounds of
   ///   the range must be valid indices of the collection.
+  @_inlineable
   public subscript(bounds: Range<Index>) -> MutableSlice<Self> {
     get {
       _failEarlyRangeCheck(bounds, bounds: startIndex..<endIndex)
@@ -369,6 +355,17 @@ extension MutableCollection {
     set {
       _writeBackMutableSlice(&self, bounds: bounds, slice: newValue)
     }
+  }
+
+  /// Exchange the values at indices `i` and `j`.
+  ///
+  /// Has no effect when `i` and `j` are equal.
+  @_inlineable
+  public mutating func swapAt(_ i: Index, _ j: Index) {
+    guard i != j else { return }
+    let tmp = self[i]
+    self[i] = self[j]
+    self[j] = tmp
   }
 }
 

@@ -726,7 +726,7 @@ static void diagSyntacticUseRestrictions(TypeChecker &TC, const Expr *E,
   
       // Casting to the same type or a superclass is a no-op.
       if (toTy->isEqual(fromTy) ||
-          toTy->isExactSuperclassOf(fromTy, &TC)) {
+          toTy->isExactSuperclassOf(fromTy)) {
         auto d = TC.diagnose(DRE->getLoc(), diag::bitcasting_is_no_op,
                              fromTy, toTy);
         if (subExpr) {
@@ -757,7 +757,7 @@ static void diagSyntacticUseRestrictions(TypeChecker &TC, const Expr *E,
       }
       
       // Unchecked casting to a subclass is better done by unsafeDowncast.
-      if (fromTy->isBindableToSuperclassOf(toTy, &TC)) {
+      if (fromTy->isBindableToSuperclassOf(toTy)) {
         TC.diagnose(DRE->getLoc(), diag::bitcasting_to_downcast,
                     fromTy, toTy)
           .fixItReplace(DRE->getNameLoc().getBaseNameLoc(),
@@ -1286,7 +1286,8 @@ static void diagRecursivePropertyAccess(TypeChecker &TC, const Expr *E,
               shouldDiagnose = isStore;
 
             // But silence the warning if the base was explicitly qualified.
-            if (dyn_cast_or_null<DotSyntaxBaseIgnoredExpr>(Parent.getAsExpr()))
+            auto parentAsExpr = Parent.getAsExpr();
+            if (parentAsExpr && isa<DotSyntaxBaseIgnoredExpr>(parentAsExpr))
               shouldDiagnose = false;
 
             if (shouldDiagnose) {
@@ -1468,53 +1469,46 @@ bool TypeChecker::getDefaultGenericArgumentsString(
   genericParamText << "<";
 
   auto printGenericParamSummary =
-      [&](const GenericTypeParamType *genericParamTy) {
+      [&](GenericTypeParamType *genericParamTy) {
     const GenericTypeParamDecl *genericParam = genericParamTy->getDecl();
     if (Type result = getPreferredType(genericParam)) {
       result.print(genericParamText);
       return;
     }
 
-    ArrayRef<ProtocolDecl *> protocols =
-        genericParam->getConformingProtocols();
+    auto contextTy = typeDecl->mapTypeIntoContext(genericParamTy);
+    if (auto archetypeTy = contextTy->getAs<ArchetypeType>()) {
+      SmallVector<Type, 2> members;
 
-    Type superclass = genericParam->getSuperclass();
-    if (superclass && !superclass->hasError()) {
-      if (protocols.empty()) {
-        superclass.print(genericParamText);
+      bool hasExplicitAnyObject = archetypeTy->requiresClass();
+      if (auto superclass = archetypeTy->getSuperclass()) {
+        hasExplicitAnyObject = false;
+        members.push_back(superclass);
+      }
+
+      for (auto proto : archetypeTy->getConformsTo()) {
+        members.push_back(proto->getDeclaredType());
+        if (proto->requiresClass())
+          hasExplicitAnyObject = false;
+      }
+
+      if (hasExplicitAnyObject)
+        members.push_back(typeDecl->getASTContext().getAnyObjectType());
+
+      auto type = ProtocolCompositionType::get(typeDecl->getASTContext(),
+                                               members, hasExplicitAnyObject);
+
+      if (type->isObjCExistentialType() || type->isAny()) {
+        genericParamText << type;
         return;
       }
 
       genericParamText << "<#" << genericParam->getName() << ": ";
-      superclass.print(genericParamText);
-      for (const ProtocolDecl *proto : protocols) {
-        if (proto->isSpecificProtocol(KnownProtocolKind::AnyObject))
-          continue;
-        genericParamText << " & " << proto->getName();
-      }
-      genericParamText << "#>";
+      genericParamText << type << "#>";
       return;
     }
 
-    if (protocols.empty()) {
-      genericParamText << Context.Id_Any;
-      return;
-    }
-
-    if (protocols.size() == 1 &&
-        (protocols.front()->isObjC() ||
-         protocols.front()->isSpecificProtocol(KnownProtocolKind::AnyObject))) {
-      genericParamText << protocols.front()->getName();
-      return;
-    }
-
-    genericParamText << "<#" << genericParam->getName() << ": ";
-    interleave(protocols,
-               [&](const ProtocolDecl *proto) {
-                 genericParamText << proto->getName();
-               },
-               [&] { genericParamText << " & "; });
-    genericParamText << "#>";
+    genericParamText << contextTy;
   };
 
   interleave(typeDecl->getInnermostGenericParamTypes(),
@@ -1738,9 +1732,7 @@ bool swift::fixItOverrideDeclarationTypes(InFlightDiagnostic &diag,
     // bridging---that doesn't count.
     Type bridged;
     if (normalizedBaseTy->isAny()) {
-      const ProtocolDecl *anyObjectProto =
-          ctx.getProtocol(KnownProtocolKind::AnyObject);
-      bridged = anyObjectProto->getDeclaredType();
+      bridged = ctx.getAnyObjectType();
     } else {
       bridged = ctx.getBridgedToObjC(DC, normalizedBaseTy);
     }
@@ -1989,7 +1981,8 @@ public:
         unsigned defaultFlags = 0;
         // If this VarDecl is nested inside of a CaptureListExpr, remember that
         // fact for better diagnostics.
-        if (dyn_cast_or_null<CaptureListExpr>(Parent.getAsExpr()))
+        auto parentAsExpr = Parent.getAsExpr();
+        if (parentAsExpr && isa<CaptureListExpr>(parentAsExpr))
           defaultFlags = RK_CaptureList;
         VarDecls[vd] |= defaultFlags;
       }
@@ -2094,8 +2087,11 @@ VarDeclUsageChecker::~VarDeclUsageChecker() {
 
     // If this is a 'let' value, any stores to it are actually initializations,
     // not mutations.
-    if (var->isLet())
+    auto isWrittenLet = false;
+    if (var->isLet()) {
+      isWrittenLet = (access & RK_Written) != 0;
       access &= ~RK_Written;
+    }
     
     // If this variable has WeakStorageType, then it can be mutated in ways we
     // don't know.
@@ -2200,11 +2196,17 @@ VarDeclUsageChecker::~VarDeclUsageChecker() {
       
       // Otherwise, this is something more complex, perhaps
       //    let (a,b) = foo()
-      // Just rewrite the one variable with a _.
-      unsigned varKind = var->isLet();
-      Diags.diagnose(var->getLoc(), diag::variable_never_used,
-                     var->getName(), varKind)
-        .fixItReplace(var->getLoc(), "_");
+      if (isWrittenLet) {
+        Diags.diagnose(var->getLoc(),
+                       diag::immutable_value_never_used_but_assigned,
+                       var->getName());
+      } else {
+        unsigned varKind = var->isLet();
+        // Just rewrite the one variable with a _.
+        Diags.diagnose(var->getLoc(), diag::variable_never_used,
+                       var->getName(), varKind)
+          .fixItReplace(var->getLoc(), "_");
+      }
       continue;
     }
     

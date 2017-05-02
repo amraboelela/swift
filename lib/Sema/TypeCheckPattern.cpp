@@ -21,6 +21,7 @@
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/ParameterList.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include <utility>
 using namespace swift;
@@ -394,7 +395,7 @@ public:
   // Unresolved member syntax '.Element' forms an EnumElement pattern. The
   // element will be resolved when we type-check the pattern.
   Pattern *visitUnresolvedMemberExpr(UnresolvedMemberExpr *ume) {
-    // We the unresolved member has an argument, turn it into a subpattern.
+    // If the unresolved member has an argument, turn it into a subpattern.
     Pattern *subPattern = nullptr;
     if (auto arg = ume->getArgument()) {
       subPattern = getSubExprPattern(arg);
@@ -402,11 +403,11 @@ public:
     
     // FIXME: Compound names.
     return new (TC.Context) EnumElementPattern(
-                              TypeLoc(), ume->getDotLoc(),
+                              ume->getDotLoc(),
                               ume->getNameLoc().getBaseNameLoc(),
                               ume->getName().getBaseName(),
-                              nullptr,
-                              subPattern);
+                              subPattern,
+                              ume);
   }
   
   // Member syntax 'T.Element' forms a pattern if 'T' is an enum and the
@@ -602,7 +603,8 @@ Pattern *TypeChecker::resolvePattern(Pattern *P, DeclContext *DC,
         .fixItInsert(TE->getStartLoc(), "is ");
       
       P = new (Context) IsPattern(TE->getStartLoc(), TE->getTypeLoc(),
-                                  /*subpattern*/nullptr);
+                                  /*subpattern*/nullptr,
+                                  CheckedCastKind::Unresolved);
     }
   
   // Look through a TypedPattern if present.
@@ -1004,6 +1006,7 @@ bool TypeChecker::coercePatternToType(Pattern *&P, DeclContext *dc, Type type,
                                       TypeResolutionOptions options,
                                       GenericTypeResolver *resolver,
                                       TypeLoc tyLoc) {
+recur:
   if (tyLoc.isNull()) {
     tyLoc = TypeLoc::withoutLoc(type);
   }
@@ -1123,10 +1126,8 @@ bool TypeChecker::coercePatternToType(Pattern *&P, DeclContext *dc, Type type,
     } else if (diagTy->isEqual(Context.TheEmptyTupleType)) {
       shouldRequireType = true;
     } else if (auto MTT = diagTy->getAs<AnyMetatypeType>()) {
-      if (auto protoTy = MTT->getInstanceType()->getAs<ProtocolType>()) {
-        shouldRequireType =
-          protoTy->getDecl()->isSpecificProtocol(KnownProtocolKind::AnyObject);
-      }
+      if (MTT->getInstanceType()->isAnyObject())
+        shouldRequireType = true;
     }
     
     if (shouldRequireType && 
@@ -1377,6 +1378,14 @@ bool TypeChecker::coercePatternToType(Pattern *&P, DeclContext *dc, Type type,
 
               return true;
             }
+          
+          // If we have the original expression parse tree, try reinterpreting
+          // it as an expr-pattern if enum element lookup failed, since `.foo`
+          // could also refer to a static member of the context type.
+          } else if (EEP->hasUnresolvedOriginalExpr()) {
+            P = new (Context) ExprPattern(EEP->getUnresolvedOriginalExpr(),
+                                          nullptr, nullptr);
+            goto recur;
           }
 
           diagnose(EEP->getLoc(), diag::enum_element_pattern_member_not_found,

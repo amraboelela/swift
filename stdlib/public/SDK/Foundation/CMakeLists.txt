@@ -1,8 +1,12 @@
+cmake_minimum_required(VERSION 3.4.3)
+include("../../../../cmake/modules/StandaloneOverlay.cmake")
+
 add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SDK_OVERLAY
   AffineTransform.swift
   Boxing.swift
   Calendar.swift
   CharacterSet.swift
+  Codable.swift
   Data.swift
   DataThunks.m
   Date.swift
@@ -11,13 +15,10 @@ add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SD
   Decimal.swift
   ExtraStringAPIs.swift
   FileManager.swift
-  FileManagerThunks.m
   Foundation.swift
-  Hashing.m
-  Hashing.swift
   IndexPath.swift
   IndexSet.swift
-  IndexSetThunks.m
+  JSONEncoder.swift
   Locale.swift
   Measurement.swift
   Notification.swift
@@ -42,9 +43,9 @@ add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SD
   NSURL.swift
   NSValue.swift.gyb
   PersonNameComponents.swift
+  PlistEncoder.swift
   ReferenceConvertible.swift
   String.swift
-  Thunks.mm
   TimeZone.swift
   TypePreservingNSNumber.mm
   URL.swift

@@ -21,7 +21,6 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/ProtocolConformance.h"
-#include "swift/Basic/Fallthrough.h"
 #include "clang/AST/DeclObjC.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -175,9 +174,8 @@ Type TypeConverter::getLoweredCBridgedType(AbstractionPattern pattern,
   }
   
   // `Any` can bridge to `AnyObject` (`id` in ObjC).
-  if (t->isAny()) {
-    return Context.getProtocol(KnownProtocolKind::AnyObject)->getDeclaredType();
-  }
+  if (t->isAny())
+    return Context.getAnyObjectType();
   
   if (auto funTy = t->getAs<FunctionType>()) {
     switch (funTy->getExtInfo().getSILRepresentation()) {

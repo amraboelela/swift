@@ -19,12 +19,14 @@
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/Initializer.h"
+#include "swift/AST/ParameterList.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/TypeWalker.h"
 #include "swift/AST/TypeMatcher.h"
 #include "swift/Basic/Defer.h"
 #include "swift/Basic/StringExtras.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/SaveAndRestore.h"
 
 using namespace swift;
@@ -207,7 +209,7 @@ void constraints::simplifyLocator(Expr *&anchor,
         path = path.slice(1);
         continue;
       }
-      SWIFT_FALLTHROUGH;
+      LLVM_FALLTHROUGH;
 
     case ConstraintLocator::Member:
     case ConstraintLocator::MemberRefBase:
@@ -480,6 +482,11 @@ static bool diagnoseAmbiguity(ConstraintSystem &cs,
         // FIXME: show deduced types, etc, etc.
         if (EmittedDecls.insert(choice.getDecl()).second)
           tc.diagnose(choice.getDecl(), diag::found_candidate);
+        break;
+
+      case OverloadChoiceKind::KeyPathApplication:
+        // Skip key path applications, since we don't want them to noise up
+        // unrelated subscript diagnostics.
         break;
 
       case OverloadChoiceKind::BaseType:
@@ -2876,7 +2883,7 @@ bool FailureDiagnosis::diagnoseGeneralOverloadFailure(Constraint *constraint) {
     bindOverload = constraint->getNestedConstraints().front();
 
   auto overloadChoice = bindOverload->getOverloadChoice();
-  auto overloadName = overloadChoice.getDecl()->getFullName();
+  auto overloadName = overloadChoice.getName();
 
   // Get the referenced expression from the failed constraint.
   auto anchor = expr;
@@ -2914,6 +2921,7 @@ bool FailureDiagnosis::diagnoseGeneralOverloadFailure(Constraint *constraint) {
   if (constraint->getKind() == ConstraintKind::Disjunction) {
     for (auto elt : constraint->getNestedConstraints()) {
       if (elt->getKind() != ConstraintKind::BindOverload) continue;
+      if (!elt->getOverloadChoice().isDecl()) continue;
       auto candidate = elt->getOverloadChoice().getDecl();
       diagnose(candidate, diag::found_candidate);
     }
@@ -3508,6 +3516,8 @@ Expr *FailureDiagnosis::typeCheckChildIndependently(
                                              TypeLoc::withoutLoc(convertType),
                                              convertTypePurpose, TCEOptions,
                                              listener, CS);
+
+  CS->cacheExprTypes(subExpr);
 
   // This is a terrible hack to get around the fact that typeCheckExpression()
   // might change subExpr to point to a new OpenExistentialExpr. In that case,
@@ -5269,15 +5279,25 @@ static bool diagnoseSingleCandidateFailures(CalleeCandidateInfo &CCI,
 bool FailureDiagnosis::diagnoseParameterErrors(CalleeCandidateInfo &CCI,
                                                Expr *fnExpr, Expr *argExpr,
                                                ArrayRef<Identifier> argLabels) {
-  // If we are invoking a constructor and there are absolutely no candidates,
-  // then they must all be private.
   if (auto *MTT = fnExpr->getType()->getAs<MetatypeType>()) {
-    if (!MTT->getInstanceType()->is<TupleType>() &&
-        (CCI.size() == 0 ||
-         (CCI.size() == 1 && CCI.candidates[0].getDecl() &&
-          isa<ProtocolDecl>(CCI.candidates[0].getDecl())))) {
-      CS->TC.diagnose(fnExpr->getLoc(), diag::no_accessible_initializers,
-                      MTT->getInstanceType());
+    auto instTy = MTT->getInstanceType();
+    if (instTy->getAnyNominal()) {
+      // If we are invoking a constructor on a nominal type and there are
+      // absolutely no candidates, then they must all be private.
+      if (CCI.size() == 0 || (CCI.size() == 1 && CCI.candidates[0].getDecl() &&
+                              isa<ProtocolDecl>(CCI.candidates[0].getDecl()))) {
+        CS->TC.diagnose(fnExpr->getLoc(), diag::no_accessible_initializers,
+                        instTy);
+        return true;
+      }
+      // continue below
+    } else if (!instTy->is<TupleType>()) {
+      // If we are invoking a constructor on a non-nominal type, the expression
+      // is malformed.
+      SourceRange initExprRange(fnExpr->getSourceRange().Start,
+                                argExpr->getSourceRange().End);
+      CS->TC.diagnose(fnExpr->getLoc(), diag::non_nominal_no_initializers,
+                      instTy).highlight(initExprRange);
       return true;
     }
   }
@@ -5376,17 +5396,22 @@ bool FailureDiagnosis::visitSubscriptExpr(SubscriptExpr *SE) {
     break;    // Interesting case. :-)
   }
   
+  // Don't noise up diagnostics with key path application candidates, since they
+  // appear on every type.
+  SmallVector<OverloadChoice, 4> viableCandidatesToReport;
+  for (auto candidate : result.ViableCandidates)
+    if (candidate.getKind() != OverloadChoiceKind::KeyPathApplication)
+      viableCandidatesToReport.push_back(candidate);
+  
   // If we have unviable candidates (e.g. because of access control or some
   // other problem) we should diagnose the problem.
-  if (result.ViableCandidates.empty()) {
+  if (viableCandidatesToReport.empty()) {
     diagnoseUnviableLookupResults(result, baseType, baseExpr, subscriptName,
                                   DeclNameLoc(SE->getLoc()), SE->getLoc());
     return true;
   }
 
-  
-  
-  CalleeCandidateInfo calleeInfo(Type(), result.ViableCandidates,
+  CalleeCandidateInfo calleeInfo(Type(), viableCandidatesToReport,
                                  SE->hasTrailingClosure(), CS,
                                  /*selfAlreadyApplied*/false);
 
@@ -5749,15 +5774,15 @@ bool FailureDiagnosis::diagnoseArgumentGenericRequirements(
     }
   };
 
+  auto dc = env->getOwningDeclContext();
   RequirementsListener genericReqListener;
-  auto result =
-    TC.checkGenericArguments(env->getOwningDeclContext(), argExpr->getLoc(),
-                             AFD->getLoc(), AFD->getInterfaceType(),
-                             env->getGenericSignature(), substitutions, nullptr,
-                             ConformanceCheckFlags::SuppressDependencyTracking,
-                             &genericReqListener);
+  auto result = TC.checkGenericArguments(
+      dc, argExpr->getLoc(), AFD->getLoc(), AFD->getInterfaceType(),
+      env->getGenericSignature(), QueryTypeSubstitutionMap{substitutions},
+      LookUpConformanceInModule{dc->getParentModule()}, nullptr,
+      ConformanceCheckFlags::SuppressDependencyTracking, &genericReqListener);
 
-  return !result.second;
+  return result != RequirementCheckResult::Success;
 }
 
 /// When initializing Unsafe[Mutable]Pointer<T> from Unsafe[Mutable]RawPointer,
@@ -5912,14 +5937,6 @@ bool FailureDiagnosis::visitApplyExpr(ApplyExpr *callExpr) {
   if (auto fn = fnType->getAs<AnyFunctionType>()) {
     using Closeness = CalleeCandidateInfo::ClosenessResultTy;
 
-    auto isGenericType = [](Type type) -> bool {
-      if (type->hasError() || type->hasTypeVariable() ||
-          type->hasUnresolvedType())
-        return false;
-
-      return type->isCanonical() && type->isUnspecializedGeneric();
-    };
-
     calleeInfo.filterList([&](UncurriedCandidate candidate) -> Closeness {
       auto resultType = candidate.getResultType();
       if (!resultType)
@@ -5930,8 +5947,7 @@ bool FailureDiagnosis::visitApplyExpr(ApplyExpr *callExpr) {
       // because there is no easy way to do that, and candidate set is going
       // to be pruned by matching of the argument types later on anyway, so
       // it's better to over report than to be too conservative.
-      if ((isGenericType(resultType) && isGenericType(fn->getResult())) ||
-          resultType->isEqual(fn->getResult()))
+      if (resultType->isEqual(fn->getResult()))
         return {CC_ExactMatch, {}};
 
       return {CC_GeneralMismatch, {}};
@@ -6083,9 +6099,13 @@ bool FailureDiagnosis::visitApplyExpr(ApplyExpr *callExpr) {
 
     if (callExpr->isImplicit() && overloadName == "~=") {
       // This binop was synthesized when typechecking an expression pattern.
-      auto diag = diagnose(lhsExpr->getLoc(),
-                    diag::cannot_match_expr_pattern_with_value,
-                           lhsType, rhsType);
+      auto diag = lhsType->is<UnresolvedType>()
+        ? diagnose(lhsExpr->getLoc(),
+                   diag::cannot_match_unresolved_expr_pattern_with_value,
+                   rhsType)
+        : diagnose(lhsExpr->getLoc(),
+                   diag::cannot_match_expr_pattern_with_value,
+                   lhsType, rhsType);
       diag.highlight(lhsExpr->getSourceRange());
       diag.highlight(rhsExpr->getSourceRange());
       if (auto optUnwrappedType = rhsType->getOptionalObjectType()) {
@@ -6999,9 +7019,7 @@ bool FailureDiagnosis::visitUnresolvedMemberExpr(UnresolvedMemberExpr *E) {
   case CC_Unavailable:
   case CC_Inaccessible:
     // Diagnose some simple and common errors.
-    if (candidateInfo.diagnoseSimpleErrors(E))
-      return true;
-    return false;
+    return candidateInfo.diagnoseSimpleErrors(E);
       
   case CC_ArgumentLabelMismatch: { // Argument labels are not correct.
     auto argExpr = typeCheckArgumentChildIndependently(E->getArgument(),

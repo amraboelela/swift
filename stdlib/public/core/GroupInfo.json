@@ -21,10 +21,16 @@
     "StringUTF16.swift",
     "StringUTF8.swift",
     "StringUnicodeScalarView.swift",
+    "Substring.swift",
     "Unicode.swift",
+    "UnicodeEncoding.swift",
+    "UnicodeParser.swift",
     "UnicodeScalar.swift",
     "UnicodeTrie.swift",
-    "UnavailableStringAPIs.swift"
+    "UnavailableStringAPIs.swift",
+    "UTFEncoding.swift",
+    "UTF8.swift",
+    "UTF16.swift"
   ],
   "Bool": [
     "Bool.swift"
@@ -51,6 +57,7 @@
     "Existential.swift",
     "WriteBackMutableSlice.swift",
     "UnfoldSequence.swift",
+    "UIntBuffer.swift",
     {
       "Type-erased": [
         "ExistentialCollection.swift"
@@ -94,6 +101,9 @@
     "VarArgs.swift",
     "CTypes.swift",
     "MemoryLayout.swift"
+  ],
+  "KeyPaths": [
+    "KeyPath.swift"
   ],
   "Reflection": [
     "Dump.swift",
@@ -158,6 +168,7 @@
     "DebuggerSupport.swift",
     "Equatable.swift",
     "Comparable.swift",
-    "Hashable.swift"
+    "Hashable.swift",
+    "Codable.swift"
   ]
 }

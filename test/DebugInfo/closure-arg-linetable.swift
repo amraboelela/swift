@@ -1,9 +1,9 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests %s -emit-ir -g -o - | %FileCheck %s
+// RUN: %target-swift-frontend %s -emit-ir -g -o - | %FileCheck %s
 
 public class C {
 
   // Test that curry thunks don't have line table entries.
-  // CHECK: define {{.*}}@_T04main1CC11someHandleryyFTc(%C4main1C*)
+  // CHECK: define {{.*}}@_T04main1CC11someHandleryyFTc(%T4main1CC*)
   // CHECK-SAME:         !dbg ![[CURRY_THUNK:[0-9]+]]
   // CHECK-NOT: ret {{.*}},
   // CHECK: {{.*}}, !dbg ![[DBG:[0-9]+]]

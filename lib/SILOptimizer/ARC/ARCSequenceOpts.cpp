@@ -11,9 +11,9 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "arc-sequence-opts"
+
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "ARCSequenceOpts.h"
-#include "swift/Basic/Fallthrough.h"
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILVisitor.h"
 #include "swift/SILOptimizer/Utils/Local.h"
@@ -309,8 +309,6 @@ class ARCSequenceOpts : public SILFunctionTransform {
     }
 
   }
-
-  StringRef getName() override { return "ARC Sequence Opts"; }
 };
 
 } // end anonymous namespace

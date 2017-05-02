@@ -77,12 +77,12 @@ class SILModule::SerializationCallback : public SerializedSILLoader::Callback {
 };
 
 SILModule::SILModule(ModuleDecl *SwiftModule, SILOptions &Options,
-                     const DeclContext *associatedDC,
-                     bool wholeModule)
-  : TheSwiftModule(SwiftModule), AssociatedDeclContext(associatedDC),
-    Stage(SILStage::Raw), Callback(new SILModule::SerializationCallback()),
-    wholeModule(wholeModule), Options(Options), Types(*this) {
-}
+                     const DeclContext *associatedDC, bool wholeModule,
+                     bool wholeModuleSerialized)
+    : TheSwiftModule(SwiftModule), AssociatedDeclContext(associatedDC),
+      Stage(SILStage::Raw), Callback(new SILModule::SerializationCallback()),
+      wholeModule(wholeModule), WholeModuleSerialized(wholeModuleSerialized),
+      Options(Options), Types(*this) {}
 
 SILModule::~SILModule() {
   // Decrement ref count for each SILGlobalVariable with static initializers.
@@ -232,9 +232,9 @@ SILFunction *SILModule::getOrCreateFunction(SILLocation loc,
                                             CanSILFunctionType type,
                                             IsBare_t isBareSILFunction,
                                             IsTransparent_t isTransparent,
-                                            IsFragile_t isFragile,
+                                            IsSerialized_t isSerialized,
                                             IsThunk_t isThunk,
-                                            SILFunction::ClassVisibility_t CV) {
+                                            SubclassScope subclassScope) {
   if (auto fn = lookUpFunction(name)) {
     assert(fn->getLoweredFunctionType() == type);
     assert(fn->getLinkage() == linkage ||
@@ -244,51 +244,9 @@ SILFunction *SILModule::getOrCreateFunction(SILLocation loc,
 
   auto fn = SILFunction::create(*this, linkage, name, type, nullptr,
                                 loc, isBareSILFunction, isTransparent,
-                                isFragile, isThunk, CV);
+                                isSerialized, isThunk, subclassScope);
   fn->setDebugScope(new (*this) SILDebugScope(loc, fn));
   return fn;
-}
-
-static SILFunction::ClassVisibility_t getClassVisibility(SILDeclRef constant) {
-  if (!constant.hasDecl())
-    return SILFunction::NotRelevant;
-
-  // If this declaration is a function which goes into a vtable, then it's
-  // symbol must be as visible as its class. Derived classes even have to put
-  // all less visible methods of the base class into their vtables.
-
-  auto *FD = dyn_cast<AbstractFunctionDecl>(constant.getDecl());
-  if (!FD)
-    return SILFunction::NotRelevant;
-
-  DeclContext *context = FD->getDeclContext();
-
-  // Methods from extensions don't go into vtables (yet).
-  if (context->isExtensionContext())
-    return SILFunction::NotRelevant;
-
-  auto *classType = context->getAsClassOrClassExtensionContext();
-  if (!classType || classType->isFinal())
-    return SILFunction::NotRelevant;
-
-  if (FD->isFinal() && !FD->getOverriddenDecl())
-    return SILFunction::NotRelevant;
-
-  assert(FD->getEffectiveAccess() <= classType->getEffectiveAccess() &&
-         "class must be as visible as its members");
-
-  switch (classType->getEffectiveAccess()) {
-    case Accessibility::Private:
-    case Accessibility::FilePrivate:
-      return SILFunction::NotRelevant;
-    case Accessibility::Internal:
-      return SILFunction::InternalClass;
-    case Accessibility::Public:
-    case Accessibility::Open:
-      return SILFunction::PublicClass;
-  }
-
-  llvm_unreachable("Unhandled Accessibility in switch.");
 }
 
 static bool verifySILSelfParameterType(SILDeclRef DeclRef,
@@ -347,9 +305,7 @@ SILFunction *SILModule::getOrCreateFunction(SILLocation loc,
   IsTransparent_t IsTrans = constant.isTransparent()
                             ? IsTransparent
                             : IsNotTransparent;
-  IsFragile_t IsFrag = constant.isFragile()
-                       ? IsFragile
-                       : IsNotFragile;
+  IsSerialized_t IsSer = constant.isSerialized();
 
   EffectsKind EK = constant.hasEffectsAttribute()
                    ? constant.getEffectsAttribute()
@@ -363,8 +319,8 @@ SILFunction *SILModule::getOrCreateFunction(SILLocation loc,
 
   auto *F = SILFunction::create(*this, linkage, name,
                                 constantType, nullptr,
-                                None, IsNotBare, IsTrans, IsFrag, IsNotThunk,
-                                getClassVisibility(constant),
+                                None, IsNotBare, IsTrans, IsSer, IsNotThunk,
+                                constant.getSubclassScope(),
                                 inlineStrategy, EK);
   F->setDebugScope(new (*this) SILDebugScope(loc, F));
 
@@ -376,11 +332,10 @@ SILFunction *SILModule::getOrCreateFunction(SILLocation loc,
       F->setClangNodeOwner(decl);
 
     auto Attrs = decl->getAttrs();
-    for (auto *A : Attrs.getAttributes<SemanticsAttr, false /*AllowInvalid*/>())
+    for (auto *A : Attrs.getAttributes<SemanticsAttr>())
       F->addSemanticsAttr(cast<SemanticsAttr>(A)->Value);
 
-    for (auto *A :
-           Attrs.getAttributes<SpecializeAttr, false /*AllowInvalid*/>()) {
+    for (auto *A : Attrs.getAttributes<SpecializeAttr>()) {
       auto *SA = cast<SpecializeAttr>(A);
       auto kind = SA->getSpecializationKind() ==
                           SpecializeAttr::SpecializationKind::Full
@@ -412,23 +367,23 @@ SILFunction *SILModule::getOrCreateSharedFunction(SILLocation loc,
                                                   CanSILFunctionType type,
                                                   IsBare_t isBareSILFunction,
                                                   IsTransparent_t isTransparent,
-                                                  IsFragile_t isFragile,
+                                                  IsSerialized_t isSerialized,
                                                   IsThunk_t isThunk) {
   return getOrCreateFunction(loc, name, SILLinkage::Shared,
-                             type, isBareSILFunction, isTransparent, isFragile,
-                             isThunk, SILFunction::NotRelevant);
+                             type, isBareSILFunction, isTransparent, isSerialized,
+                             isThunk, SubclassScope::NotApplicable);
 }
 
 SILFunction *SILModule::createFunction(
     SILLinkage linkage, StringRef name, CanSILFunctionType loweredType,
     GenericEnvironment *genericEnv, Optional<SILLocation> loc,
-    IsBare_t isBareSILFunction, IsTransparent_t isTrans, IsFragile_t isFragile,
-    IsThunk_t isThunk, SILFunction::ClassVisibility_t classVisibility,
+    IsBare_t isBareSILFunction, IsTransparent_t isTrans,
+    IsSerialized_t isSerialized, IsThunk_t isThunk, SubclassScope subclassScope,
     Inline_t inlineStrategy, EffectsKind EK, SILFunction *InsertBefore,
     const SILDebugScope *DebugScope) {
   return SILFunction::create(*this, linkage, name, loweredType, genericEnv, loc,
-                             isBareSILFunction, isTrans, isFragile, isThunk,
-                             classVisibility, inlineStrategy, EK, InsertBefore,
+                             isBareSILFunction, isTrans, isSerialized, isThunk,
+                             subclassScope, inlineStrategy, EK, InsertBefore,
                              DebugScope);
 }
 
@@ -499,28 +454,12 @@ bool SILModule::linkFunction(StringRef Name, SILModule::LinkingMode Mode) {
   return SILLinkerVisitor(*this, getSILLoader(), Mode).processFunction(Name);
 }
 
-/// Check if a given SIL linkage matches the required linkage.
-/// If the required linkage is Private, then anything matches it.
-static bool isMatchingLinkage(SILLinkage ActualLinkage,
-                              Optional<SILLinkage> Linkage) {
-  if (!Linkage)
-    return true;
-  return ActualLinkage == Linkage;
-}
-
-bool SILModule::hasFunction(StringRef Name) {
-  if (lookUpFunction(Name))
-    return true;
-  SILLinkerVisitor Visitor(*this, getSILLoader(),
-                           SILModule::LinkingMode::LinkNormal);
-  return Visitor.hasFunction(Name);
-}
-
-SILFunction *SILModule::findFunction(StringRef Name,
-                                     Optional<SILLinkage> Linkage) {
+SILFunction *SILModule::findFunction(StringRef Name, SILLinkage Linkage) {
+  assert((Linkage == SILLinkage::Public ||
+          Linkage == SILLinkage::PublicExternal) &&
+         "Only a lookup of public functions is supported currently");
 
   SILFunction *F = nullptr;
-  SILLinkage RequiredLinkage = Linkage ? *Linkage : SILLinkage::Private;
 
   // First, check if there is a function with a required name in the
   // current module.
@@ -528,10 +467,10 @@ SILFunction *SILModule::findFunction(StringRef Name,
 
   // Nothing to do if the current module has a required function
   // with a proper linkage already.
-  if (CurF && isMatchingLinkage(CurF->getLinkage(), Linkage)) {
+  if (CurF && CurF->getLinkage() == Linkage) {
     F = CurF;
   } else {
-    assert((!CurF || CurF->getLinkage() != RequiredLinkage) &&
+    assert((!CurF || CurF->getLinkage() != Linkage) &&
            "hasFunction should be only called for functions that are not "
            "contained in the SILModule yet or do not have a required linkage");
   }
@@ -544,7 +483,7 @@ SILFunction *SILModule::findFunction(StringRef Name,
       // name is present in the current module.
       // This is done to reduce the amount of IO from the
       // swift module file.
-      if (!Visitor.hasFunction(Name, RequiredLinkage))
+      if (!Visitor.hasFunction(Name, Linkage))
         return nullptr;
       // The function in the current module will be changed.
       F = CurF;
@@ -554,14 +493,13 @@ SILFunction *SILModule::findFunction(StringRef Name,
     // or if it is known to exist, perform a lookup.
     if (!F) {
       // Try to load the function from other modules.
-      F = Visitor.lookupFunction(Name, RequiredLinkage);
+      F = Visitor.lookupFunction(Name, Linkage);
       // Bail if nothing was found and we are not sure if
       // this function exists elsewhere.
       if (!F)
         return nullptr;
       assert(F && "SILFunction should be present in one of the modules");
-      assert(isMatchingLinkage(F->getLinkage(), Linkage) &&
-             "SILFunction has a wrong linkage");
+      assert(F->getLinkage() == Linkage && "SILFunction has a wrong linkage");
     }
   }
 
@@ -573,20 +511,23 @@ SILFunction *SILModule::findFunction(StringRef Name,
           SILOptions::SILOptMode::Optimize) {
     F->convertToDeclaration();
   }
-  if (F->isExternalDeclaration()) {
-    F->setFragile(IsFragile_t::IsNotFragile);
-    if (isAvailableExternally(F->getLinkage()) &&
-        !hasPublicVisibility(F->getLinkage()) && !Linkage) {
-      // We were just asked if a given function exists anywhere.
-      // It is not going to be used by the current module.
-      // Since external non-public function declarations should not
-      // exist, strip the "external" part from the linkage.
-      F->setLinkage(stripExternalFromLinkage(F->getLinkage()));
-    }
-  }
-  if (Linkage)
-    F->setLinkage(RequiredLinkage);
+  if (F->isExternalDeclaration())
+    F->setSerialized(IsSerialized_t::IsNotSerialized);
+  F->setLinkage(Linkage);
   return F;
+}
+
+bool SILModule::hasFunction(StringRef Name) {
+  if (lookUpFunction(Name))
+    return true;
+  SILLinkerVisitor Visitor(*this, getSILLoader(),
+                           SILModule::LinkingMode::LinkNormal);
+  return Visitor.hasFunction(Name);
+}
+
+void SILModule::linkAllFromCurrentModule() {
+  getSILLoader()->getAllForModule(getSwiftModule()->getName(),
+                                  /*PrimaryFile=*/nullptr);
 }
 
 void SILModule::linkAllWitnessTables() {

@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-sil %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-sil %s | %FileCheck %s
 
 // CHECK-LABEL: sil hidden [noinline] @_T010super_init3FooCACSicfC : $@convention(method) (Int, @thick Foo.Type) -> @owned Foo
 // CHECK-NOT:     class_method
@@ -53,15 +53,6 @@ class Zang: Foo {
   // CHECK-NOT:         super_method {{%[0-9]+}} : $Zang, #Foo.init!initializer.1
   // CHECK:             function_ref @_T010super_init3FooCACycfC
   // CHECK:             function_ref @_T010super_init3FooCACycfc
-}
-
-class Bad: Foo {
-  // Invalid code, but it's not diagnosed till DI. We at least shouldn't
-  // crash on it.
-  @inline(never)
-  override init() {
-    super.init(self)
-  }
 }
 
 class Good: Foo {

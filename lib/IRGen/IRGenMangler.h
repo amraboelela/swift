@@ -14,13 +14,13 @@
 #define SWIFT_IRGEN_IRGENMANGLER_H
 
 #include "swift/AST/ASTMangler.h"
-#include "ValueWitness.h"
+#include "swift/IRGen/ValueWitness.h"
 
 namespace swift {
 namespace irgen {
 
 /// The mangler for all kind of symbols produced in IRGen.
-class IRGenMangler : public NewMangling::ASTMangler {
+class IRGenMangler : public Mangle::ASTMangler {
 public:
   IRGenMangler() { }
 
@@ -58,17 +58,6 @@ public:
     beginMangling();
     appendProtocolName(Decl);
     appendOperator("Mp");
-    return finalize();
-  }
-
-  std::string mangleWitnessTableOffset(const ValueDecl *Decl) {
-    beginMangling();
-    if (auto ctor = dyn_cast<ConstructorDecl>(Decl)) {
-      appendConstructorEntity(ctor, /*isAllocating=*/true);
-    } else {
-      appendEntity(Decl);
-    }
-    appendOperator("Wo");
     return finalize();
   }
 
@@ -120,14 +109,23 @@ public:
 
   std::string mangleAssociatedTypeWitnessTableAccessFunction(
                                       const ProtocolConformance *Conformance,
-                                      StringRef AssocTyName,
+                                      CanType AssociatedType,
                                       const ProtocolDecl *Proto) {
     beginMangling();
     appendProtocolConformance(Conformance);
-    appendIdentifier(AssocTyName);
-    appendNominalType(Proto);
+    appendAssociatedTypePath(AssociatedType);
+    appendAnyGenericType(Proto);
     appendOperator("WT");
     return finalize();
+  }
+
+  void appendAssociatedTypePath(CanType associatedType) {
+    if (auto memberType = dyn_cast<DependentMemberType>(associatedType)) {
+      appendAssociatedTypePath(memberType.getBase());
+      appendIdentifier(memberType->getName().str());
+    } else {
+      assert(isa<GenericTypeParamType>(associatedType));
+    }
   }
 
   std::string mangleReflectionBuiltinDescriptor(Type type) {
@@ -147,16 +145,29 @@ public:
     return mangleNominalTypeSymbol(Decl, "MC");
   }
 
-  std::string mangleOutlinedCopyFunction(const NominalTypeDecl *Decl) {
+  std::string mangleOutlinedCopyFunction(const GenericTypeDecl *Decl) {
     beginMangling();
-    appendNominalType(Decl);
+    appendAnyGenericType(Decl);
     appendOperator("Wy");
     return finalize();
   }
-  std::string mangleOutlinedConsumeFunction(const NominalTypeDecl *Decl) {
+  std::string mangleOutlinedConsumeFunction(const GenericTypeDecl *Decl) {
     beginMangling();
-    appendNominalType(Decl);
+    appendAnyGenericType(Decl);
     appendOperator("We");
+    return finalize();
+  }
+
+  std::string mangleOutlinedRetainFunction(const Type t) {
+    beginMangling();
+    appendType(t);
+    appendOperator("Wr");
+    return finalize();
+  }
+  std::string mangleOutlinedReleaseFunction(const Type t) {
+    beginMangling();
+    appendType(t);
+    appendOperator("Ws");
     return finalize();
   }
 
@@ -166,8 +177,19 @@ public:
     return mangleTypeWithoutPrefix(type);
   }
 
+  std::string mangleForProtocolDescriptor(ProtocolType *Proto) {
+    beginMangling();
+    appendType(Proto->getCanonicalType());
+    appendOperator("D");
+    return finalize();
+  }
+
   std::string mangleTypeForReflection(Type Ty, ModuleDecl *Module,
                                       bool isSingleFieldOfBox);
+
+  std::string mangleTypeForLLVMTypeName(CanType Ty);
+
+  std::string mangleProtocolForLLVMTypeName(ProtocolCompositionType *type);
 
 protected:
 
@@ -181,7 +203,7 @@ protected:
   std::string mangleNominalTypeSymbol(const NominalTypeDecl *Decl,
                                       const char *Op) {
     beginMangling();
-    appendNominalType(Decl);
+    appendAnyGenericType(Decl);
     appendOperator(Op);
     return finalize();
   }

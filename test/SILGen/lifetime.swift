@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -Xllvm -sil-full-demangle -parse-as-library -emit-silgen -primary-file %s | %FileCheck %s
+// RUN: %target-swift-frontend -Xllvm -sil-full-demangle -parse-as-library -emit-silgen -primary-file %s | %FileCheck %s
 
 struct Buh<T> {
   var x: Int {
@@ -17,7 +17,8 @@ struct Val {
 func local_valtype() {
     var b: Val
     // CHECK: [[B:%[0-9]+]] = alloc_box ${ var Val }
-    // CHECK: destroy_value [[B]]
+    // CHECK: [[MARKED_B:%.*]] = mark_uninitialized [var] [[B]]
+    // CHECK: destroy_value [[MARKED_B]]
     // CHECK: return
 }
 
@@ -33,11 +34,12 @@ func local_valtype_branch(_ a: Bool) {
 
     var x:Int
     // CHECK: [[X:%[0-9]+]] = alloc_box ${ var Int }
+    // CHECK: [[MARKED_X:%.*]] = mark_uninitialized [var] [[X]]
 
     if a { return }
     // CHECK: cond_br
     // CHECK: {{bb.*:}}
-    // CHECK: destroy_value [[X]]
+    // CHECK: destroy_value [[MARKED_X]]
     // CHECK: br [[EPILOG]]
 
     while a {
@@ -51,63 +53,65 @@ func local_valtype_branch(_ a: Bool) {
         if a { return }
         // CHECK: cond_br
         // CHECK: {{bb.*:}}
-        // CHECK: destroy_value [[X]]
+        // CHECK: destroy_value [[MARKED_X]]
         // CHECK: br [[EPILOG]]
 
         var y:Int
         // CHECK: [[Y:%[0-9]+]] = alloc_box ${ var Int }
+        // CHECK: [[MARKED_Y:%.*]] = mark_uninitialized [var] [[Y]]
 
         if a { break }
         // CHECK: cond_br
         // CHECK: {{bb.*:}}
-        // CHECK: destroy_value [[Y]]
-        // CHECK-NOT: destroy_value [[X]]
+        // CHECK: destroy_value [[MARKED_Y]]
+        // CHECK-NOT: destroy_value [[MARKED_X]]
         // CHECK-NOT: destroy_value [[A]]
         // CHECK: br
 
         if a { return }
         // CHECK: cond_br
         // CHECK: {{bb.*:}}
-        // CHECK: destroy_value [[Y]]
-        // CHECK: destroy_value [[X]]
+        // CHECK: destroy_value [[MARKED_Y]]
+        // CHECK: destroy_value [[MARKED_X]]
         // CHECK: br [[EPILOG]]
 
         if true {
             var z:Int
             // CHECK: [[Z:%[0-9]+]] = alloc_box ${ var Int }
+            // CHECK: [[MARKED_Z:%.*]] = mark_uninitialized [var] [[Z]]
 
             if a { break }
             // CHECK: cond_br
             // CHECK: {{bb.*:}}
-            // CHECK: destroy_value [[Z]]
-            // CHECK: destroy_value [[Y]]
-            // CHECK-NOT: destroy_value [[X]]
+            // CHECK: destroy_value [[MARKED_Z]]
+            // CHECK: destroy_value [[MARKED_Y]]
+            // CHECK-NOT: destroy_value [[MARKED_X]]
             // CHECK-NOT: destroy_value [[A]]
             // CHECK: br
 
             if a { return }
             // CHECK: cond_br
             // CHECK: {{bb.*:}}
-            // CHECK: destroy_value [[Z]]
-            // CHECK: destroy_value [[Y]]
-            // CHECK: destroy_value [[X]]
+            // CHECK: destroy_value [[MARKED_Z]]
+            // CHECK: destroy_value [[MARKED_Y]]
+            // CHECK: destroy_value [[MARKED_X]]
             // CHECK: br [[EPILOG]]
 
-            // CHECK: destroy_value [[Z]]
+            // CHECK: destroy_value [[MARKED_Z]]
         }
         if a { break }
         // CHECK: cond_br
         // CHECK: {{bb.*:}}
-        // CHECK: destroy_value [[Y]]
-        // CHECK-NOT: destroy_value [[X]]
+        // CHECK: destroy_value [[MARKED_Y]]
+        // CHECK-NOT: destroy_value [[MARKED_X]]
         // CHECK-NOT: destroy_value [[A]]
         // CHECK: br
 
         // CHECK: {{bb.*:}}
-        // CHECK: destroy_value [[Y]]
+        // CHECK: destroy_value [[MARKED_Y]]
         // CHECK: br
     }
-    // CHECK: destroy_value [[X]]
+    // CHECK: destroy_value [[MARKED_X]]
     // CHECK: [[EPILOG]]:
     // CHECK: return
 }
@@ -126,18 +130,20 @@ func reftype_return() -> Ref {
 }
 
 // CHECK-LABEL: sil hidden @_T08lifetime11reftype_argyAA3RefCF : $@convention(thin) (@owned Ref) -> () {
+// CHECK: bb0([[A:%[0-9]+]] : $Ref):
+// CHECK:   [[AADDR:%[0-9]+]] = alloc_box ${ var Ref }
+// CHECK:   [[PA:%[0-9]+]] = project_box [[AADDR]]
+// CHECK:   [[BORROWED_A:%.*]] = begin_borrow [[A]]
+// CHECK:   [[A_COPY:%.*]] = copy_value [[BORROWED_A]]
+// CHECK:   store [[A_COPY]] to [init] [[PA]]
+// CHECK:   end_borrow [[BORROWED_A]] from [[A]]
+// CHECK:   destroy_value [[AADDR]]
+// CHECK:   destroy_value [[A]]
+// CHECK:   return
+// CHECK: } // end sil function '_T08lifetime11reftype_argyAA3RefCF'
 func reftype_arg(_ a: Ref) {
     var a = a
-    // CHECK: bb0([[A:%[0-9]+]] : $Ref):
-    // CHECK: [[AADDR:%[0-9]+]] = alloc_box ${ var Ref }
-    // CHECK: [[PA:%[0-9]+]] = project_box [[AADDR]]
-    // CHECK: [[A_COPY:%.*]] = copy_value [[A]]
-    // CHECK: store [[A_COPY]] to [init] [[PA]]
-    // CHECK: destroy_value [[AADDR]]
-    // CHECK: destroy_value [[A]]
-    // CHECK: return
 }
-// CHECK: } // end sil function '_T08lifetime11reftype_argyAA3RefCF'
 
 // CHECK-LABEL: sil hidden @_T08lifetime26reftype_call_ignore_returnyyF
 func reftype_call_ignore_return() {
@@ -175,22 +181,25 @@ func reftype_call_arg() {
 }
 
 // CHECK-LABEL: sil hidden @_T08lifetime21reftype_call_with_arg{{[_0-9a-zA-Z]*}}F
+// CHECK: bb0([[A1:%[0-9]+]] : $Ref):
+// CHECK:   [[AADDR:%[0-9]+]] = alloc_box ${ var Ref }
+// CHECK:   [[PB:%.*]] = project_box [[AADDR]]
+// CHECK:   [[BORROWED_A1:%.*]] = begin_borrow [[A1]]
+// CHECK:   [[A1_COPY:%.*]] = copy_value [[BORROWED_A1]]
+// CHECK:   store [[A1_COPY]] to [init] [[PB]]
+// CHECK:   end_borrow [[BORROWED_A1]] from [[A1]]
+// CHECK:   [[RFWA:%[0-9]+]] = function_ref @_T08lifetime21reftype_func_with_arg{{[_0-9a-zA-Z]*}}F
+// CHECK:   [[READ:%.*]] = begin_access [read] [unknown] [[PB]]
+// CHECK:   [[A2:%[0-9]+]] = load [copy] [[READ]]
+// CHECK:   [[RESULT:%.*]] = apply [[RFWA]]([[A2]])
+// CHECK:   destroy_value [[RESULT]]
+// CHECK:   destroy_value [[AADDR]]
+// CHECK:   destroy_value [[A1]]
+// CHECK:   return
 func reftype_call_with_arg(_ a: Ref) {
     var a = a
-    // CHECK: bb0([[A1:%[0-9]+]] : $Ref):
-    // CHECK: [[AADDR:%[0-9]+]] = alloc_box ${ var Ref }
-    // CHECK: [[PB:%.*]] = project_box [[AADDR]]
-    // CHECK: [[A1_COPY:%.*]] = copy_value [[A1]]
-    // CHECK: store [[A1_COPY]] to [init] [[PB]]
 
     reftype_func_with_arg(a)
-    // CHECK: [[RFWA:%[0-9]+]] = function_ref @_T08lifetime21reftype_func_with_arg{{[_0-9a-zA-Z]*}}F
-    // CHECK: [[A2:%[0-9]+]] = load [copy] [[PB]]
-    // CHECK: [[RESULT:%.*]] = apply [[RFWA]]([[A2]])
-    // CHECK: destroy_value [[RESULT]]
-    // CHECK: destroy_value [[AADDR]]
-    // CHECK: destroy_value [[A1]]
-    // CHECK: return
 }
 
 // CHECK-LABEL: sil hidden @_T08lifetime16reftype_reassign{{[_0-9a-zA-Z]*}}F
@@ -266,6 +275,17 @@ struct Daleth {
 }
 
 class He {
+  
+  // -- default allocator:
+  // CHECK-LABEL: sil hidden @_T08lifetime2HeC{{[_0-9a-zA-Z]*}}fC : $@convention(method) (@thick He.Type) -> @owned He {
+  // CHECK: bb0({{%.*}} : $@thick He.Type):
+  // CHECK-NEXT:   [[THIS:%.*]] = alloc_ref $He
+  // CHECK-NEXT:   // function_ref lifetime.He.init
+  // CHECK-NEXT:   [[INIT:%.*]] = function_ref @_T08lifetime2HeC{{[_0-9a-zA-Z]*}}fc : $@convention(method) (@owned He) -> @owned He
+  // CHECK-NEXT:   [[THIS1:%.*]] = apply [[INIT]]([[THIS]])
+  // CHECK-NEXT:   return [[THIS1]]
+  // CHECK-NEXT: }
+
   // -- default initializer:
   // CHECK-LABEL: sil hidden @_T08lifetime2HeC{{[_0-9a-zA-Z]*}}fc : $@convention(method) (@owned He) -> @owned He {
   // CHECK: bb0([[SELF:%.*]] : $He):
@@ -276,15 +296,6 @@ class He {
   // CHECK-NEXT: return [[UNINITIALIZED_SELF_COPY]]
   // CHECK: } // end sil function '_T08lifetime2HeC{{[_0-9a-zA-Z]*}}fc'
 
-  // -- default allocator:
-  // CHECK-LABEL: sil hidden @_T08lifetime2HeC{{[_0-9a-zA-Z]*}}fC : $@convention(method) (@thick He.Type) -> @owned He {
-  // CHECK: bb0({{%.*}} : $@thick He.Type):
-  // CHECK-NEXT:   [[THIS:%.*]] = alloc_ref $He
-  // CHECK-NEXT:   // function_ref lifetime.He.init
-  // CHECK-NEXT:   [[INIT:%.*]] = function_ref @_T08lifetime2HeC{{[_0-9a-zA-Z]*}}fc : $@convention(method) (@owned He) -> @owned He
-  // CHECK-NEXT:   [[THIS1:%.*]] = apply [[INIT]]([[THIS]])
-  // CHECK-NEXT:   return [[THIS1]]
-  // CHECK-NEXT: }
   init() { }
 }
 
@@ -358,13 +369,15 @@ func logical_lvalue_lifetime(_ r: RefWithProp, _ i: Int, _ v: Val) {
 
   // -- Reference types need to be copy_valued as property method args.
   r.int_prop = i
-  // CHECK: [[R1:%[0-9]+]] = load [copy] [[PR]]
+  // CHECK:   [[READ:%.*]] = begin_access [read] [unknown] [[PR]]
+  // CHECK: [[R1:%[0-9]+]] = load [copy] [[READ]]
   // CHECK: [[SETTER_METHOD:%[0-9]+]] = class_method {{.*}} : $RefWithProp, #RefWithProp.int_prop!setter.1 : (RefWithProp) -> (Int) -> (), $@convention(method) (Int, @guaranteed RefWithProp) -> ()
   // CHECK: apply [[SETTER_METHOD]]({{.*}}, [[R1]])
   // CHECK: destroy_value [[R1]]
 
   r.aleph_prop.b = v
-  // CHECK: [[R2:%[0-9]+]] = load [copy] [[PR]]
+  // CHECK: [[READ:%.*]] = begin_access [read] [unknown] [[PR]]
+  // CHECK: [[R2:%[0-9]+]] = load [copy] [[READ]]
   // CHECK: [[STORAGE:%.*]] = alloc_stack $Builtin.UnsafeValueBuffer
   // CHECK: [[ALEPH_PROP_TEMP:%[0-9]+]] = alloc_stack $Aleph
   // CHECK: [[BORROWED_R2:%.*]] = begin_borrow [[R2]]
@@ -376,7 +389,7 @@ func logical_lvalue_lifetime(_ r: RefWithProp, _ i: Int, _ v: Val) {
   // CHECK: [[ADDR:%.*]] = pointer_to_address [[PTR]]
   // CHECK: [[MARKED_ADDR:%.*]] = mark_dependence [[ADDR]] : $*Aleph on [[R2]]
   // CHECK: {{.*}}([[CALLBACK_ADDR:%.*]] : 
-  // CHECK: [[CALLBACK:%.*]] = pointer_to_thin_function [[CALLBACK_ADDR]] : $Builtin.RawPointer to $@convention(thin) (Builtin.RawPointer, @inout Builtin.UnsafeValueBuffer, @inout RefWithProp, @thick RefWithProp.Type) -> ()
+  // CHECK: [[CALLBACK:%.*]] = pointer_to_thin_function [[CALLBACK_ADDR]] : $Builtin.RawPointer to $@convention(method) (Builtin.RawPointer, @inout Builtin.UnsafeValueBuffer, @inout RefWithProp, @thick RefWithProp.Type) -> ()
   // CHECK: [[TEMP:%.*]] = alloc_stack $RefWithProp
   // CHECK: store [[R2]] to [init] [[TEMP]]
   // CHECK: apply [[CALLBACK]]({{.*}}, [[STORAGE]], [[TEMP]], {{%.*}})
@@ -394,21 +407,51 @@ class Foo<T> {
 
   // Class initializer
   init() {
+  // -- allocating entry point
+  // CHECK-LABEL: sil hidden @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fC :
+    // CHECK: bb0([[METATYPE:%[0-9]+]] : $@thick Foo<T>.Type):
+    // CHECK: [[THIS:%[0-9]+]] = alloc_ref $Foo<T>
+    // CHECK: [[INIT_METHOD:%[0-9]+]] = function_ref @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fc
+    // CHECK: [[INIT_THIS:%[0-9]+]] = apply [[INIT_METHOD]]<{{.*}}>([[THIS]])
+    // CHECK: return [[INIT_THIS]]
+
   // -- initializing entry point
   // CHECK-LABEL: sil hidden @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fc :
     // CHECK: bb0([[THISIN:%[0-9]+]] : $Foo<T>):
     // CHECK: [[THIS:%[0-9]+]] = mark_uninitialized
 
-    // initialization for y
+    // -- initialization for y
     // CHECK: [[Y_INIT:%[0-9]+]] = function_ref @_T08lifetime3FooC1ySi_AA3RefCtvfi : $@convention(thin) <τ_0_0> () -> (Int, @owned Ref)
     // CHECK: [[Y_VALUE:%[0-9]+]] = apply [[Y_INIT]]<T>()
+    // CHECK: [[BORROWED_Y_VALUE:%.*]] = begin_borrow [[Y_VALUE]]
+    // CHECK: [[Y_EXTRACTED_0:%.*]] = tuple_extract [[BORROWED_Y_VALUE]] : $(Int, Ref), 0
+    // CHECK: [[Y_EXTRACTED_1:%.*]] = tuple_extract [[BORROWED_Y_VALUE]] : $(Int, Ref), 1
+    // CHECK: [[COPIED_Y_EXTRACTED_1:%.*]] = copy_value [[Y_EXTRACTED_1]]
+    // CHECK: end_borrow [[BORROWED_Y_VALUE]] from [[Y_VALUE]]
+    // CHECK: destroy_value [[Y_VALUE]]
+    // CHECK: [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
+    // CHECK: [[THIS_Y:%.*]] = ref_element_addr [[BORROWED_THIS]] : {{.*}}, #Foo.y
+    // CHECK: [[THIS_Y_0:%.*]] = tuple_element_addr [[THIS_Y]] : $*(Int, Ref), 0
+    // CHECK: assign [[Y_EXTRACTED_0]] to [[THIS_Y_0]]
+    // CHECK: [[THIS_Y_1:%.*]] = tuple_element_addr [[THIS_Y]] : $*(Int, Ref), 1
+    // CHECK: assign [[COPIED_Y_EXTRACTED_1]] to [[THIS_Y_1]]
+    // CHECK: end_borrow [[BORROWED_THIS]] from [[THIS]]
 
-    x = bar()
-    // CHECK: function_ref @_T08lifetime3barSiyF : $@convention(thin) () -> Int
+    // -- Initialization for w
+    // CHECK: [[Z_FUNC:%.*]] = function_ref @_T{{.*}}8lifetime3FooC1wAA3RefCvfi : $@convention(thin) <τ_0_0> () -> @owned Ref
+    // CHECK: [[Z_RESULT:%.*]] = apply [[Z_FUNC]]<T>()
+    // CHECK: [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
+    // CHECK: [[THIS_Z:%.*]] = ref_element_addr [[BORROWED_THIS]]
+    // CHECK: assign [[Z_RESULT]] to [[THIS_Z]]
+    // CHECK: end_borrow [[BORROWED_THIS]] from [[THIS]]
+
+    // -- Initialization for x
     // CHECK: [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
     // CHECK: [[THIS_X:%[0-9]+]] = ref_element_addr [[BORROWED_THIS]] : {{.*}}, #Foo.x
     // CHECK: assign {{.*}} to [[THIS_X]]
     // CHECK: end_borrow [[BORROWED_THIS]] from [[THIS]]
+
+    x = bar()
 
     z = Foo<T>.makeT()
     // CHECK: [[FOOMETA:%[0-9]+]] = metatype $@thick Foo<T>.Type
@@ -421,19 +464,19 @@ class Foo<T> {
     // CHECK: destroy_value [[THIS]]
     // CHECK: return [[THIS_RESULT]]
 
-  // -- allocating entry point
-  // CHECK-LABEL: sil hidden @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fC :
-    // CHECK: bb0([[METATYPE:%[0-9]+]] : $@thick Foo<T>.Type):
-    // CHECK: [[THIS:%[0-9]+]] = alloc_ref $Foo<T>
-    // CHECK: [[INIT_METHOD:%[0-9]+]] = function_ref @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fc
-    // CHECK: [[INIT_THIS:%[0-9]+]] = apply [[INIT_METHOD]]<{{.*}}>([[THIS]])
-    // CHECK: return [[INIT_THIS]]
-
   }
 
   init(chi:Int) {
     var chi = chi
     z = Foo<T>.makeT()
+
+  // -- allocating entry point
+  // CHECK-LABEL: sil hidden @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fC :
+    // CHECK: bb0([[CHI:%[0-9]+]] : $Int, [[METATYPE:%[0-9]+]] : $@thick Foo<T>.Type):
+    // CHECK: [[THIS:%[0-9]+]] = alloc_ref $Foo<T>
+    // CHECK: [[INIT_METHOD:%[0-9]+]] = function_ref @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fc
+    // CHECK: [[INIT_THIS:%[0-9]+]] = apply [[INIT_METHOD]]<{{.*}}>([[CHI]], [[THIS]])
+    // CHECK: return [[INIT_THIS]]
 
   // -- initializing entry point
   // CHECK-LABEL: sil hidden @_T08lifetime3FooCACyxGSi3chi_tcfc : $@convention(method) <T> (Int, @owned Foo<T>) -> @owned Foo<T> {
@@ -463,8 +506,10 @@ class Foo<T> {
     // -- Then initialize #Foo.x using the earlier stored value of CHI to THIS_Z.
     x = chi
     // CHECK:   [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
+    // CHECK:   [[READ:%.*]] = begin_access [read] [unknown] [[PCHI]]
+    // CHECK:   [[X:%.*]] = load [trivial] [[READ]]
     // CHECK:   [[THIS_X:%[0-9]+]] = ref_element_addr [[BORROWED_THIS]] : {{.*}}, #Foo.x
-    // CHECK:   copy_addr [[PCHI]] to [[THIS_X]]
+    // CHECK:   assign [[X]] to [[THIS_X]]
     // CHECK:   end_borrow [[BORROWED_THIS]] from [[THIS]]
 
     // -- cleanup chi
@@ -475,37 +520,21 @@ class Foo<T> {
     // CHECK: destroy_value [[THIS]]
     // CHECK: return [[THIS_RETURN]]
   // CHECK: } // end sil function '_T08lifetime3FooCACyxGSi3chi_tcfc'
+  }
 
   // -- allocating entry point
   // CHECK-LABEL: sil hidden @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fC :
-    // CHECK: bb0([[CHI:%[0-9]+]] : $Int, [[METATYPE:%[0-9]+]] : $@thick Foo<T>.Type):
-    // CHECK: [[THIS:%[0-9]+]] = alloc_ref $Foo<T>
     // CHECK: [[INIT_METHOD:%[0-9]+]] = function_ref @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fc
-    // CHECK: [[INIT_THIS:%[0-9]+]] = apply [[INIT_METHOD]]<{{.*}}>([[CHI]], [[THIS]])
-    // CHECK: return [[INIT_THIS]]
-  }
 
   // -- initializing entry point
   // CHECK-LABEL: sil hidden @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fc :
 
-  // -- allocating entry point
-  // CHECK-LABEL: sil hidden @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fC :
-    // CHECK: [[INIT_METHOD:%[0-9]+]] = function_ref @_T08lifetime3FooC{{[_0-9a-zA-Z]*}}fc
   init<U:Intifiable>(chi:U) {
     z = Foo<T>.makeT()
 
     x = chi.intify()
   }
-
-  // Deallocating destructor for Foo.
-  // CHECK-LABEL: sil hidden @_T08lifetime3FooCfD : $@convention(method) <T> (@owned Foo<T>) -> ()
-  // CHECK: bb0([[SELF:%[0-9]+]] : $Foo<T>):
-  // CHECK:   [[DESTROYING_REF:%[0-9]+]] = function_ref @_T08lifetime3FooCfd : $@convention(method) <τ_0_0> (@guaranteed Foo<τ_0_0>) -> @owned Builtin.NativeObject
-  // CHECK-NEXT:   [[RESULT_SELF:%[0-9]+]] = apply [[DESTROYING_REF]]<T>([[SELF]]) : $@convention(method) <τ_0_0> (@guaranteed Foo<τ_0_0>) -> @owned Builtin.NativeObject
-  // CHECK-NEXT:   [[SELF:%[0-9]+]] = unchecked_ref_cast [[RESULT_SELF]] : $Builtin.NativeObject to $Foo<T>
-  // CHECK-NEXT:   dealloc_ref [[SELF]] : $Foo<T>
-  // CHECK-NEXT:   [[RESULT:%[0-9]+]] = tuple ()
-  // CHECK-NEXT:   return [[RESULT]] : $()
+  
   // CHECK-LABEL: sil hidden @_T08lifetime3FooCfd : $@convention(method) <T> (@guaranteed Foo<T>) -> @owned Builtin.NativeObject
 
   deinit {
@@ -513,8 +542,6 @@ class Foo<T> {
     bar()
     // CHECK: function_ref @_T08lifetime3barSiyF
     // CHECK: apply
-
-    // CHECK: [[PTR:%.*]] = unchecked_ref_cast [[THIS]] : ${{.*}} to $Builtin.NativeObject
 
     // -- don't need to destroy_value x because it's trivial
     // CHECK-NOT: ref_element_addr [[THIS]] : {{.*}}, #Foo.x
@@ -528,9 +555,44 @@ class Foo<T> {
     // CHECK: [[WADDR:%[0-9]+]] = ref_element_addr [[THIS]] : {{.*}}, #Foo.w
     // CHECK: destroy_addr [[WADDR]]
     // -- return back this
-    // CHECK: return [[PTR]]
+    // CHECK: [[PTR:%.*]] = unchecked_ref_cast [[THIS]] : $Foo<T> to $Builtin.NativeObject
+    // CHECK: [[PTR_OWNED:%.*]] = unchecked_ownership_conversion [[PTR]] : $Builtin.NativeObject, @guaranteed to @owned
+    // CHECK: return [[PTR_OWNED]]
+    // CHECK: } // end sil function '_T08lifetime3FooCfd'
   }
 
+  // Deallocating destructor for Foo.
+  // CHECK-LABEL: sil hidden @_T08lifetime3FooCfD : $@convention(method) <T> (@owned Foo<T>) -> ()
+  // CHECK: bb0([[SELF:%[0-9]+]] : $Foo<T>):
+  // CHECK:   [[DESTROYING_REF:%[0-9]+]] = function_ref @_T08lifetime3FooCfd : $@convention(method) <τ_0_0> (@guaranteed Foo<τ_0_0>) -> @owned Builtin.NativeObject
+  // CHECK-NEXT:   [[BORROWED_SELF:%.*]] = begin_borrow [[SELF]]
+  // CHECK-NEXT:   [[RESULT_SELF:%[0-9]+]] = apply [[DESTROYING_REF]]<T>([[BORROWED_SELF]]) : $@convention(method) <τ_0_0> (@guaranteed Foo<τ_0_0>) -> @owned Builtin.NativeObject
+  // CHECK-NEXT:   end_borrow [[BORROWED_SELF]] from [[SELF]]
+  // CHECK-NEXT:   end_lifetime [[SELF]]
+  // CHECK-NEXT:   [[SELF:%[0-9]+]] = unchecked_ref_cast [[RESULT_SELF]] : $Builtin.NativeObject to $Foo<T>
+  // CHECK-NEXT:   dealloc_ref [[SELF]] : $Foo<T>
+  // CHECK-NEXT:   [[RESULT:%[0-9]+]] = tuple ()
+  // CHECK-NEXT:   return [[RESULT]] : $()
+  // CHECK-NEXT: } // end sil function '_T08lifetime3FooCfD'
+
+}
+
+class FooSubclass<T> : Foo<T> {
+
+  // CHECK-LABEL: sil hidden @_T08lifetime11FooSubclassCfd : $@convention(method) <T> (@guaranteed FooSubclass<T>) -> @owned Builtin.NativeObject
+  // CHECK: bb0([[THIS:%[0-9]+]] : $FooSubclass<T>):
+  // -- base dtor
+  // CHECK: [[BASE:%[0-9]+]] = upcast [[THIS]] : ${{.*}} to $Foo<T>
+  // CHECK: [[BASE_DTOR:%[0-9]+]] = function_ref @_T08lifetime3FooCfd : $@convention(method) <τ_0_0> (@guaranteed Foo<τ_0_0>) -> @owned Builtin.NativeObject
+  // CHECK: [[PTR:%.*]] = apply [[BASE_DTOR]]<T>([[BASE]])
+  // CHECK: [[BORROWED_PTR:%.*]] = begin_borrow [[PTR]]
+  // CHECK: end_borrow [[BORROWED_PTR]] from [[PTR]]
+  // CHECK: return [[PTR]]
+  
+
+  deinit {
+    bar()
+  }
 }
 
 class ImplicitDtor {
@@ -560,14 +622,22 @@ class ImplicitDtorDerived<T> : ImplicitDtor {
     self.z = z
   }
 
+  // CHECK: sil hidden @_T08lifetime19ImplicitDtorDerivedCfd : $@convention(method) <T> (@guaranteed ImplicitDtorDerived<T>) -> @owned Builtin.NativeObject {
   // CHECK: bb0([[THIS:%[0-9]+]] : $ImplicitDtorDerived<T>):
   // -- base dtor
   // CHECK: [[BASE:%[0-9]+]] = upcast [[THIS]] : ${{.*}} to $ImplicitDtor
   // CHECK: [[BASE_DTOR:%[0-9]+]] = function_ref @_T08lifetime12ImplicitDtorCfd
-  // CHECK: apply [[BASE_DTOR]]([[BASE]])
+  // CHECK: [[PTR:%.*]] = apply [[BASE_DTOR]]([[BASE]])
   // -- destroy_value z
-  // CHECK: [[ZADDR:%[0-9]+]] = ref_element_addr [[THIS]] : {{.*}}, #ImplicitDtorDerived.z
+  // CHECK: [[BORROWED_PTR:%.*]] = begin_borrow [[PTR]]
+  // CHECK: [[CAST_BORROWED_PTR:%.*]] = unchecked_ref_cast [[BORROWED_PTR]] : $Builtin.NativeObject to $ImplicitDtorDerived<T>
+  // CHECK: [[ZADDR:%[0-9]+]] = ref_element_addr [[CAST_BORROWED_PTR]] : {{.*}}, #ImplicitDtorDerived.z
   // CHECK: destroy_addr [[ZADDR]]
+  // CHECK: end_borrow [[BORROWED_PTR]] from [[PTR]]
+  // -- epilog
+  // CHECK-NOT: unchecked_ref_cast
+  // CHECK-NOT: unchecked_ownership_conversion
+  // CHECK: return [[PTR]]
 }
 
 class ImplicitDtorDerivedFromGeneric<T> : ImplicitDtorDerived<Int> {
@@ -593,18 +663,19 @@ struct Bar {
   // CHECK-LABEL: sil hidden @_T08lifetime3BarV{{[_0-9a-zA-Z]*}}fC
   init() {
     // CHECK: bb0([[METATYPE:%[0-9]+]] : $@thin Bar.Type):
-    // CHECK: [[THISADDRBOX:%[0-9]+]] = alloc_box ${ var Bar }
-    // CHECK: [[PB:%.*]] = project_box [[THISADDRBOX]]
-    // CHECK: [[THISADDR:%[0-9]+]] = mark_uninitialized [rootself] [[PB]]
+    // CHECK: [[SELF_BOX:%[0-9]+]] = alloc_box ${ var Bar }
+    // CHECK: [[MARKED_SELF_BOX:%[0-9]+]] = mark_uninitialized [rootself] [[SELF_BOX]]
+    // CHECK: [[PB_BOX:%.*]] = project_box [[MARKED_SELF_BOX]]
 
     x = bar()
-    // CHECK: [[THIS_X:%[0-9]+]] = struct_element_addr [[THISADDR]] : $*Bar, #Bar.x
-    // CHECK: assign {{.*}} to [[THIS_X]]
+    // CHECK:   [[WRITE:%.*]] = begin_access [modify] [unknown] [[PB_BOX]]
+    // CHECK: [[SELF_X:%[0-9]+]] = struct_element_addr [[WRITE]] : $*Bar, #Bar.x
+    // CHECK: assign {{.*}} to [[SELF_X]]
 
     // -- load and return this
-    // CHECK: [[THISVAL:%[0-9]+]] = load [trivial] [[THISADDR]]
-    // CHECK: destroy_value [[THISADDRBOX]]
-    // CHECK: return [[THISVAL]]
+    // CHECK: [[SELF_VAL:%[0-9]+]] = load [trivial] [[PB_BOX]]
+    // CHECK: destroy_value [[MARKED_SELF_BOX]]
+    // CHECK: return [[SELF_VAL]]
   }
 
   init<T:Intifiable>(xx:T) {
@@ -620,17 +691,19 @@ struct Bas<T> {
   // CHECK-LABEL: sil hidden @_T08lifetime3BasV{{[_0-9a-zA-Z]*}}fC
   init(yy:T) {
     // CHECK: bb0([[THISADDRPTR:%[0-9]+]] : $*Bas<T>, [[YYADDR:%[0-9]+]] : $*T, [[META:%[0-9]+]] : $@thin Bas<T>.Type):
-    // CHECK: [[THISADDRBOX:%[0-9]+]] = alloc_box $<τ_0_0> { var Bas<τ_0_0> } <T>
-    // CHECK: [[PB:%.*]] = project_box [[THISADDRBOX]]
-    // CHECK: [[THISADDR:%[0-9]+]] = mark_uninitialized [rootself] [[PB]]
+    // CHECK: [[SELF_BOX:%[0-9]+]] = alloc_box $<τ_0_0> { var Bas<τ_0_0> } <T>
+    // CHECK: [[MARKED_SELF_BOX:%[0-9]+]] = mark_uninitialized [rootself] [[SELF_BOX]]
+    // CHECK: [[PB_BOX:%.*]] = project_box [[MARKED_SELF_BOX]]
 
     x = bar()
-    // CHECK: [[THIS_X:%[0-9]+]] = struct_element_addr [[THISADDR]] : $*Bas<T>, #Bas.x
-    // CHECK: assign {{.*}} to [[THIS_X]]
+    // CHECK: [[WRITE:%.*]] = begin_access [modify] [unknown] [[PB_BOX]]
+    // CHECK: [[SELF_X:%[0-9]+]] = struct_element_addr [[WRITE]] : $*Bas<T>, #Bas.x
+    // CHECK: assign {{.*}} to [[SELF_X]]
 
     y = yy
-    // CHECK: [[THIS_Y:%[0-9]+]] = struct_element_addr [[THISADDR]] : $*Bas<T>, #Bas.y
-    // CHECK: copy_addr {{.*}} to [[THIS_Y]]
+    // CHECK: [[WRITE:%.*]] = begin_access [modify] [unknown] [[PB_BOX]]
+    // CHECK: [[SELF_Y:%[0-9]+]] = struct_element_addr [[WRITE]] : $*Bas<T>, #Bas.y
+    // CHECK: copy_addr {{.*}} to [[SELF_Y]]
     // CHECK: destroy_value
 
     // -- 'self' was emplaced into indirect return slot
@@ -646,14 +719,14 @@ struct Bas<T> {
 class B { init(y:Int) {} }
 class D : B {
   // CHECK-LABEL: sil hidden @_T08lifetime1DCACSi1x_Si1ytcfc
-  // CHECK: bb0([[X:%[0-9]+]] : $Int, [[Y:%[0-9]+]] : $Int, [[THIS:%[0-9]+]] : $D):
+  // CHECK: bb0([[X:%[0-9]+]] : $Int, [[Y:%[0-9]+]] : $Int, [[SELF:%[0-9]+]] : $D):
   init(x: Int, y: Int) {
     var x = x
     var y = y
-    // CHECK: [[THISADDR1:%[0-9]+]] = alloc_box ${ var D }
-    // CHECK: [[PTHIS:%[0-9]+]] = project_box [[THISADDR1]]
-    // CHECK: [[THISADDR:%[0-9]+]] = mark_uninitialized [derivedself] [[PTHIS]]
-    // CHECK: store [[THIS]] to [init] [[THISADDR]]
+    // CHECK: [[SELF_BOX:%[0-9]+]] = alloc_box ${ var D }
+    // CHECK: [[MARKED_SELF_BOX:%[0-9]+]] = mark_uninitialized [derivedself] [[SELF_BOX]]
+    // CHECK: [[PB_BOX:%[0-9]+]] = project_box [[MARKED_SELF_BOX]]
+    // CHECK: store [[SELF]] to [init] [[PB_BOX]]
     // CHECK: [[XADDR:%[0-9]+]] = alloc_box ${ var Int }
     // CHECK: [[PX:%[0-9]+]] = project_box [[XADDR]]
     // CHECK: store [[X]] to [trivial] [[PX]]
@@ -662,14 +735,15 @@ class D : B {
     // CHECK: store [[Y]] to [trivial] [[PY]]
 
     super.init(y: y)
-    // CHECK: [[THIS1:%[0-9]+]] = load_borrow [[THISADDR]]
+    // CHECK: [[THIS1:%[0-9]+]] = load [take] [[PB_BOX]]
     // CHECK: [[THIS1_SUP:%[0-9]+]] = upcast [[THIS1]] : ${{.*}} to $B
     // CHECK: [[SUPER_CTOR:%[0-9]+]] = function_ref @_T08lifetime1BCACSi1y_tcfc : $@convention(method) (Int, @owned B) -> @owned B
-    // CHECK: [[Y:%[0-9]+]] = load [trivial] [[PY]]
+    // CHECK: [[READ:%.*]] = begin_access [read] [unknown] [[PY]]
+    // CHECK: [[Y:%[0-9]+]] = load [trivial] [[READ]]
     // CHECK: [[THIS2_SUP:%[0-9]+]] = apply [[SUPER_CTOR]]([[Y]], [[THIS1_SUP]])
     // CHECK: [[THIS2:%[0-9]+]] = unchecked_ref_cast [[THIS2_SUP]] : $B to $D
-    // CHECK: [[THIS1:%[0-9]+]] = load [copy] [[THISADDR]]
-    // CHECK: destroy_value [[THISADDR1]]
+    // CHECK: [[THIS1:%[0-9]+]] = load [copy] [[PB_BOX]]
+    // CHECK: destroy_value [[MARKED_SELF_BOX]]
   }
 
   func foo() {}
@@ -681,7 +755,8 @@ func downcast(_ b: B) {
   // CHECK: [[BADDR:%[0-9]+]] = alloc_box ${ var B }
   // CHECK: [[PB:%[0-9]+]] = project_box [[BADDR]]
   (b as! D).foo()
-  // CHECK: [[B:%[0-9]+]] = load [copy] [[PB]]
+  // CHECK: [[READ:%.*]] = begin_access [read] [unknown] [[PB]]
+  // CHECK: [[B:%[0-9]+]] = load [copy] [[READ]]
   // CHECK: [[D:%[0-9]+]] = unconditional_checked_cast [[B]] : {{.*}} to $D
   // CHECK: apply {{.*}}([[D]])
   // CHECK-NOT: destroy_value [[B]]

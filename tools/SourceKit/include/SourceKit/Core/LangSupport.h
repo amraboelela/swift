@@ -258,6 +258,9 @@ struct CursorInfo {
   StringRef DocComment;
   StringRef TypeInterface;
   StringRef GroupName;
+  /// A key for documentation comment localization, if it exists in the doc
+  /// comment for the declaration.
+  StringRef LocalizationKey;
   /// Annotated XML pretty printed declaration.
   StringRef AnnotatedDeclaration;
   /// Fully annotated XML pretty printed declaration.
@@ -282,6 +285,7 @@ struct CursorInfo {
   /// All available actions on the code under cursor.
   ArrayRef<StringRef> AvailableActions;
   bool IsSystem = false;
+  llvm::Optional<unsigned> ParentNameOffset;
 };
 
 struct RangeInfo {
@@ -324,12 +328,14 @@ struct DocGenericParam {
 struct DocEntityInfo {
   UIdent Kind;
   llvm::SmallString<32> Name;
+  llvm::SmallString<32> SubModuleName;
   llvm::SmallString<32> Argument;
   llvm::SmallString<64> USR;
   llvm::SmallString<64> OriginalUSR;
   llvm::SmallString<64> ProvideImplementationOfUSR;
   llvm::SmallString<64> DocComment;
   llvm::SmallString<64> FullyAnnotatedDecl;
+  llvm::SmallString<64> LocalizationKey;
   std::vector<DocGenericParam> GenericParams;
   std::vector<std::string> GenericRequirements;
   unsigned Offset = 0;
@@ -458,6 +464,9 @@ public:
 
   virtual void editorExtractTextFromComment(StringRef Source,
                                             EditorConsumer &Consumer) = 0;
+
+  virtual void editorConvertMarkupToXML(StringRef Source,
+                                        EditorConsumer &Consumer) = 0;
 
   virtual void editorExpandPlaceholder(StringRef Name, unsigned Offset,
                                        unsigned Length,

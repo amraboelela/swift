@@ -1,4 +1,4 @@
-//===--- SubstitutionList.h - Compact SubstitutionMap -----------*- C++ -*-===//
+//===--- SubstitutionList.cpp - Compact SubstitutionMap -------------------===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -17,5 +17,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/SubstitutionList.h"
+#include "swift/AST/ProtocolConformanceRef.h"
+#include "llvm/ADT/FoldingSet.h"
 
 using namespace swift;
+
+void swift::profileSubstitutionList(llvm::FoldingSetNodeID &id,
+                                    SubstitutionList subs) {
+  id.AddInteger(subs.size());
+  for (auto &sub : subs) {
+    id.AddPointer(sub.getReplacement().getPointer());
+    for (auto conformance : sub.getConformances())
+      id.AddPointer(conformance.getOpaqueValue());
+  }
+}

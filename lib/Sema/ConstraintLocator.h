@@ -75,6 +75,8 @@ public:
     TupleElement,
     /// \brief A tuple element referenced by name.
     NamedTupleElement,
+    /// \brief An optional payload.
+    OptionalPayload,
     /// \brief A generic argument.
     /// FIXME: Add support for named generic arguments?
     GenericArgument,
@@ -119,6 +121,8 @@ public:
     /// This is referring to a type produced by opening a generic type at the
     /// base of the locator.
     OpenedGeneric,
+    /// A component of a key path.
+    KeyPathComponent,
   };
 
   /// \brief Determine the number of numeric values used for the given path
@@ -131,6 +135,7 @@ public:
     case AssociatedType:
     case FunctionArgument:
     case FunctionResult:
+    case OptionalPayload:
     case Member:
     case MemberRefBase:
     case UnresolvedMember:
@@ -155,6 +160,7 @@ public:
     case GenericArgument:
     case NamedTupleElement:
     case TupleElement:
+    case KeyPathComponent:
       return 1;
 
     case ApplyArgToParam:
@@ -188,6 +194,7 @@ public:
     case ConstructorMember:
     case InstanceType:
     case Load:
+    case OptionalPayload:
     case Member:
     case MemberRefBase:
     case UnresolvedMember:
@@ -205,6 +212,7 @@ public:
     case TupleElement:
     case Requirement:
     case Witness:
+    case KeyPathComponent:
       return 0;
 
     case FunctionArgument:
@@ -329,6 +337,11 @@ public:
     /// its position.
     static PathElement getGenericArgument(unsigned position) {
       return PathElement(GenericArgument, position);
+    }
+    
+    /// Get a path element for a key path component.
+    static PathElement getKeyPathComponent(unsigned position) {
+      return PathElement(KeyPathComponent, position);
     }
 
     /// \brief Retrieve the kind of path element.

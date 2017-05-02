@@ -1,3 +1,4 @@
+
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the Swift.org open source project
@@ -41,12 +42,22 @@ public struct DispatchTime : Comparable {
 	/// - Returns: A new `DispatchTime`
 	/// - Discussion: This clock is the same as the value returned by
 	///               `mach_absolute_time` when converted into nanoseconds.
+	///               On some platforms, the nanosecond value is rounded up to a
+	///               multiple of the Mach timebase, using the conversion factors
+	///               returned by `mach_timebase_info()`. The nanosecond equivalent
+	///               of the rounded result can be obtained by reading the
+	///               `uptimeNanoseconds` property.
 	///               Note that `DispatchTime(uptimeNanoseconds: 0)` is
 	///               equivalent to `DispatchTime.now()`, that is, its value
 	///               represents the number of nanoseconds since boot (excluding
 	///               system sleep time), not zero nanoseconds since boot.
 	public init(uptimeNanoseconds: UInt64) {
-		self.rawValue = dispatch_time_t(uptimeNanoseconds)
+		var rawValue = uptimeNanoseconds
+		if (DispatchTime.timebaseInfo.numer != DispatchTime.timebaseInfo.denom) {
+			rawValue = (rawValue * UInt64(DispatchTime.timebaseInfo.denom) 
+				+ UInt64(DispatchTime.timebaseInfo.numer - 1)) / UInt64(DispatchTime.timebaseInfo.numer)
+		}
+		self.rawValue = dispatch_time_t(rawValue)
 	}
 
 	public var uptimeNanoseconds: UInt64 {
@@ -58,12 +69,14 @@ public struct DispatchTime : Comparable {
 	}
 }
 
-public func <(a: DispatchTime, b: DispatchTime) -> Bool {
-	return a.rawValue < b.rawValue
-}
+extension DispatchTime {
+  public static func < (a: DispatchTime, b: DispatchTime) -> Bool {
+    return a.rawValue < b.rawValue
+  }
 
-public func ==(a: DispatchTime, b: DispatchTime) -> Bool {
-	return a.rawValue == b.rawValue
+  public static func ==(a: DispatchTime, b: DispatchTime) -> Bool {
+    return a.rawValue == b.rawValue
+  }
 }
 
 public struct DispatchWallTime : Comparable {
@@ -85,17 +98,20 @@ public struct DispatchWallTime : Comparable {
 	}
 }
 
-public func <(a: DispatchWallTime, b: DispatchWallTime) -> Bool {
-	if b.rawValue == ~0 {
-		return a.rawValue != ~0
-	} else if a.rawValue == ~0 {
-		return false
-	}
-	return -Int64(bitPattern: a.rawValue) < -Int64(bitPattern: b.rawValue)
-}
+extension DispatchWallTime {
+  public static func <(a: DispatchWallTime, b: DispatchWallTime) -> Bool {
+    let negativeOne: dispatch_time_t = ~0
+    if b.rawValue == negativeOne {
+      return a.rawValue != negativeOne
+    } else if a.rawValue == negativeOne {
+      return false
+    }
+    return -Int64(bitPattern: a.rawValue) < -Int64(bitPattern: b.rawValue)
+  }
 
-public func ==(a: DispatchWallTime, b: DispatchWallTime) -> Bool {
-	return a.rawValue == b.rawValue
+  public static func ==(a: DispatchWallTime, b: DispatchWallTime) -> Bool {
+    return a.rawValue == b.rawValue
+  }
 }
 
 public enum DispatchTimeInterval {

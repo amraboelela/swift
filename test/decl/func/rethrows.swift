@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift
+// RUN: %target-swift-frontend -typecheck -verify -module-name main %s
 
 /** Basics *******************************************************************/
 
@@ -454,3 +454,37 @@ class r24221830 : B24221830 {
   
 }
 
+// rdar://problem/30618853
+
+func gallant(_: () throws -> ()) rethrows {}
+
+func goofus(_ f: () -> ()) {
+  gallant(f)
+  main.gallant(f)
+}
+
+func goofus(_ f: () throws -> ()) rethrows {
+  try gallant(f)
+  try main.gallant(f)
+}
+
+struct Foo {
+  func foo() {}
+}
+
+func throwWhileGettingFoo() throws -> Foo.Type { return Foo.self }
+
+(throwWhileGettingFoo()).foo(Foo())() // expected-error {{can throw}}
+(try throwWhileGettingFoo()).foo(Foo())()
+
+// <rdar://problem/31794932> [Source compatibility] Call to sort(by):) can throw, but is not marked with 'try'
+func doRethrow(fn: (Int, Int) throws -> Int) rethrows { }
+
+struct DoRethrowGeneric<T> {
+  func method(fn: (T, T) throws -> T) rethrows { }
+}
+
+func testDoRethrow() {
+  doRethrow(fn:) { (a, b) in return a }
+  DoRethrowGeneric<Int>().method(fn:) { (a, b) in return a }
+}

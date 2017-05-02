@@ -35,6 +35,7 @@ set(SWIFTLIB_ESSENTIAL
   BuiltinMath.swift.gyb
   Character.swift
   CocoaArray.swift
+  Codable.swift
   Collection.swift
   CollectionAlgorithms.swift.gyb
   Comparable.swift
@@ -51,7 +52,7 @@ set(SWIFTLIB_ESSENTIAL
   ErrorType.swift
   Existential.swift
   Filter.swift.gyb
-  FixedPoint.swift.gyb
+  #FixedPoint.swift.gyb
   FlatMap.swift
   Flatten.swift.gyb
   FloatingPoint.swift.gyb
@@ -63,17 +64,18 @@ set(SWIFTLIB_ESSENTIAL
   # if we do so, the compiler crashes.
   AnyHashable.swift
   # END WORKAROUND
-  HashedCollectionsAnyHashableExtensions.swift.gyb
+  HashedCollectionsAnyHashableExtensions.swift
   Hashing.swift
   HeapBuffer.swift
   ImplicitlyUnwrappedOptional.swift
   Index.swift
   Indices.swift.gyb
   InputStream.swift
-  IntegerArithmetic.swift.gyb
+  #IntegerArithmetic.swift.gyb
   IntegerParsing.swift.gyb
   Integers.swift.gyb
   Join.swift
+  KeyPath.swift
   LazyCollection.swift.gyb
   LazySequence.swift
   LifetimeManager.swift
@@ -109,7 +111,7 @@ set(SWIFTLIB_ESSENTIAL
   ShadowProtocols.swift
   Shims.swift
   Slice.swift.gyb
-  Sort.swift.gyb
+  Sort.swift
   StaticString.swift
   Stride.swift.gyb
   StringCharacterView.swift # ORDER DEPENDENCY: Must precede String.swift
@@ -126,9 +128,13 @@ set(SWIFTLIB_ESSENTIAL
   StringUnicodeScalarView.swift
   StringUTF16.swift
   StringUTF8.swift
+  Substring.swift.gyb
   SwiftNativeNSArray.swift
+  UIntBuffer.swift
   UnavailableStringAPIs.swift.gyb
   Unicode.swift
+  UnicodeEncoding.swift
+  UnicodeParser.swift
   UnicodeScalar.swift
   UnicodeTrie.swift.gyb
   Unmanaged.swift
@@ -137,6 +143,9 @@ set(SWIFTLIB_ESSENTIAL
   UnsafeRawBufferPointer.swift.gyb
   UnsafePointer.swift.gyb
   UnsafeRawPointer.swift.gyb
+  UTFEncoding.swift
+  UTF8.swift
+  UTF16.swift
   WriteBackMutableSlice.swift
   )
 

@@ -26,6 +26,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Bitcode/BitstreamReader.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
 
 namespace llvm {
@@ -71,6 +72,9 @@ class ModuleFile : public LazyMemberLoader {
   /// The target the module was built for.
   StringRef TargetTriple;
 
+  /// The Swift compatibility version in use when this module was built.
+  StringRef CompatibilityVersion;
+
   /// The data blob containing all of the module's identifiers.
   StringRef IdentifierData;
 
@@ -83,6 +87,9 @@ class ModuleFile : public LazyMemberLoader {
   /// Declaration contexts with delayed generic environments, which will be
   /// completed as a pending action.
   ///
+  /// This should only be used on the module returned by
+  /// getModuleFileForDelayedActions().
+  ///
   /// FIXME: This is needed because completing a generic environment can
   /// require the type checker, which might be gone if we delay generic
   /// environments too far. It is a hack.
@@ -93,7 +100,8 @@ class ModuleFile : public LazyMemberLoader {
     ModuleFile &MF;
 
   public:
-    DeserializingEntityRAII(ModuleFile &MF) : MF(MF) {
+    DeserializingEntityRAII(ModuleFile &mf)
+        : MF(mf.getModuleFileForDelayedActions()) {
       ++MF.NumCurrentDeserializingEntities;
     }
     ~DeserializingEntityRAII() {
@@ -107,6 +115,13 @@ class ModuleFile : public LazyMemberLoader {
     }
   };
   friend class DeserializingEntityRAII;
+
+  /// Picks a specific ModuleFile instance to serve as the "delayer" for the
+  /// entire module.
+  ///
+  /// This is usually \c this, but when there are partial swiftmodules all
+  /// loaded for the same module it may be different.
+  ModuleFile &getModuleFileForDelayedActions();
 
   /// Finish any pending actions that were waiting for the topmost entity to
   /// be deserialized.
@@ -153,11 +168,16 @@ private:
   /// All modules this module depends on.
   SmallVector<Dependency, 8> Dependencies;
 
+  struct SearchPath {
+    StringRef Path;
+    bool IsFramework;
+    bool IsSystem;
+  };
   /// Search paths this module may provide.
   ///
   /// This is not intended for use by frameworks, but may show up in debug
   /// modules.
-  std::vector<std::pair<StringRef, bool>> SearchPaths;
+  std::vector<SearchPath> SearchPaths;
 
   /// Info for the (lone) imported header for this module.
   struct {
@@ -312,6 +332,10 @@ private:
   using SerializedDeclTable =
       llvm::OnDiskIterableChainedHashTable<DeclTableInfo>;
 
+  class ExtensionTableInfo;
+  using SerializedExtensionTable =
+      llvm::OnDiskIterableChainedHashTable<ExtensionTableInfo>;
+
   class LocalDeclTableInfo;
   using SerializedLocalDeclTable =
       llvm::OnDiskIterableChainedHashTable<LocalDeclTableInfo>;
@@ -323,9 +347,9 @@ private:
   std::unique_ptr<SerializedDeclTable> TopLevelDecls;
   std::unique_ptr<SerializedDeclTable> OperatorDecls;
   std::unique_ptr<SerializedDeclTable> PrecedenceGroupDecls;
-  std::unique_ptr<SerializedDeclTable> ExtensionDecls;
   std::unique_ptr<SerializedDeclTable> ClassMembersByName;
   std::unique_ptr<SerializedDeclTable> OperatorMethodDecls;
+  std::unique_ptr<SerializedExtensionTable> ExtensionDecls;
   std::unique_ptr<SerializedLocalDeclTable> LocalTypeDecls;
   std::unique_ptr<SerializedNestedTypeDeclsTable> NestedTypeDecls;
 
@@ -406,14 +430,20 @@ public:
   /// as being malformed.
   Status error(Status issue = Status::Malformed) {
     assert(issue != Status::Valid);
-    // This would normally be an assertion but it's more useful to print the
-    // PrettyStackTrace here even in no-asserts builds. Malformed modules are
-    // generally unrecoverable.
-    if (FileContext && issue == Status::Malformed)
-      abort();
+    if (FileContext && issue == Status::Malformed) {
+      // This would normally be an assertion but it's more useful to print the
+      // PrettyStackTrace here even in no-asserts builds. Malformed modules are
+      // generally unrecoverable.
+      fatal(llvm::make_error<llvm::StringError>(
+          "(see \"While...\" info below)", llvm::inconvertibleErrorCode()));
+    }
     setStatus(issue);
     return getStatus();
   }
+
+  /// Emits one last diagnostic, logs the error, and then aborts for the stack
+  /// trace.
+  void fatal(llvm::Error error) LLVM_ATTRIBUTE_NORETURN;
 
   ASTContext &getContext() const {
     assert(FileContext && "no associated context yet");
@@ -447,6 +477,11 @@ private:
   readObjCMethodTable(ArrayRef<uint64_t> fields, StringRef blobData);
 
   /// Read an on-disk local decl hash table stored in
+  /// index_block::ExtensionTableLayout format.
+  std::unique_ptr<SerializedExtensionTable>
+  readExtensionTable(ArrayRef<uint64_t> fields, StringRef blobData);
+
+  /// Read an on-disk local decl hash table stored in
   /// index_block::NestedTypeDeclsLayout format.
   std::unique_ptr<SerializedNestedTypeDeclsTable>
   readNestedTypeDeclsTable(ArrayRef<uint64_t> fields, StringRef blobData);
@@ -470,15 +505,10 @@ private:
   bool readCommentBlock(llvm::BitstreamCursor &cursor);
 
   /// Recursively reads a pattern from \c DeclTypeCursor.
-  ///
-  /// If the record at the cursor is not a pattern, returns null.
-  Pattern *maybeReadPattern(DeclContext *owningDC);
+  llvm::Expected<Pattern *> readPattern(DeclContext *owningDC);
 
   ParameterList *readParameterList();
   
-  GenericParamList *maybeGetOrReadGenericParams(serialization::DeclID contextID,
-                                                DeclContext *DC);
-
   /// Reads a generic param list from \c DeclTypeCursor.
   ///
   /// If the record at the cursor is not a generic param list, returns null
@@ -493,18 +523,8 @@ private:
   /// Set up a (potentially lazy) generic environment for the given type,
   /// function or extension.
   void configureGenericEnvironment(
-                   llvm::PointerUnion3<GenericTypeDecl *, ExtensionDecl *,
-                                       AbstractFunctionDecl *> genericDecl,
+                   GenericContext *genericDecl,
                    serialization::GenericEnvironmentID envID);
-
-  /// Populates the vector with members of a DeclContext from \c DeclTypeCursor.
-  ///
-  /// Returns true if there is an error.
-  ///
-  /// Note: this destroys the cursor's position in the stream. Furthermore,
-  /// because it reads from the cursor, it is not possible to reset the cursor
-  /// after reading. Nothing should ever follow a MEMBERS record.
-  bool readMembers(SmallVectorImpl<Decl *> &Members);
 
   /// Populates the protocol's default witness table.
   ///
@@ -521,12 +541,14 @@ private:
   /// because it reads from the cursor, it is not possible to reset the cursor
   /// after reading. Nothing should ever follow an XREF record except
   /// XREF_PATH_PIECE records.
-  Decl *resolveCrossReference(ModuleDecl *M, uint32_t pathLen);
+  llvm::Expected<Decl *> resolveCrossReference(ModuleDecl *M, uint32_t pathLen);
 
   /// Populates TopLevelIDs for name lookup.
   void buildTopLevelDeclMap();
 
-  void configureStorage(AbstractStorageDecl *storage, unsigned rawStorageKind,
+  /// Sets the accessors for \p storage based on \p rawStorageKind.
+  void configureStorage(AbstractStorageDecl *storage,
+                        unsigned rawStorageKind,
                         serialization::DeclID getter,
                         serialization::DeclID setter,
                         serialization::DeclID materializeForSet,
@@ -697,7 +719,7 @@ public:
   virtual void finishNormalConformance(NormalProtocolConformance *conformance,
                                        uint64_t contextData) override;
 
-  GenericEnvironment *loadGenericEnvironment(const Decl *decl,
+  GenericEnvironment *loadGenericEnvironment(const DeclContext *decl,
                                              uint64_t contextData) override;
 
   Optional<StringRef> getGroupNameById(unsigned Id) const;
@@ -722,7 +744,12 @@ public:
   }
 
   /// Returns the type with the given ID, deserializing it if needed.
+  ///
+  /// \sa getTypeChecked
   Type getType(serialization::TypeID TID);
+
+  /// Returns the type with the given ID, deserializing it if needed.
+  llvm::Expected<Type> getTypeChecked(serialization::TypeID TID);
 
   /// Returns the identifier with the given ID, deserializing it if needed.
   Identifier getIdentifier(serialization::IdentifierID IID);
@@ -733,8 +760,20 @@ public:
   /// \param ForcedContext Optional override for the decl context of certain
   ///                      kinds of decls, used to avoid re-entrant
   ///                      deserialization.
+  ///
+  /// \sa getDeclChecked
   Decl *getDecl(serialization::DeclID DID,
                 Optional<DeclContext *> ForcedContext = None);
+
+  /// Returns the decl with the given ID, deserializing it if needed.
+  ///
+  /// \param DID The ID for the decl within this module.
+  /// \param ForcedContext Optional override for the decl context of certain
+  ///                      kinds of decls, used to avoid re-entrant
+  ///                      deserialization.
+  llvm::Expected<Decl *>
+  getDeclChecked(serialization::DeclID DID,
+                 Optional<DeclContext *> ForcedContext = None);
 
   /// Returns the decl context with the given ID, deserializing it if needed.
   DeclContext *getDeclContext(serialization::DeclContextID DID);

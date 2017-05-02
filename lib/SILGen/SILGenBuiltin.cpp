@@ -22,7 +22,6 @@
 #include "swift/AST/Builtins.h"
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/Module.h"
-#include "swift/Basic/Fallthrough.h"
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILUndef.h"
 
@@ -70,9 +69,11 @@ static ManagedValue emitBuiltinRetain(SILGenFunction &gen,
                                        ArrayRef<ManagedValue> args,
                                        CanFunctionType formalApplyType,
                                        SGFContext C) {
-  // The value was produced at +1; we can produce an unbalanced
-  // retain simply by disabling the cleanup.
-  args[0].forward(gen);
+  // The value was produced at +1; we can produce an unbalanced retain simply by
+  // disabling the cleanup. But this would violate ownership semantics. Instead,
+  // we must allow for the cleanup and emit a new unmanaged retain value.
+  gen.B.createUnmanagedRetainValue(loc, args[0].getValue(),
+                                   gen.B.getDefaultAtomicity());
   return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));    
 }
 
@@ -85,7 +86,8 @@ static ManagedValue emitBuiltinRelease(SILGenFunction &gen,
   // The value was produced at +1, so to produce an unbalanced
   // release we need to leave the cleanup intact and then do a *second*
   // release.
-  gen.B.createDestroyValue(loc, args[0].getValue());
+  gen.B.createUnmanagedReleaseValue(loc, args[0].getValue(),
+                                    gen.B.getDefaultAtomicity());
   return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));    
 }
 
@@ -95,9 +97,8 @@ static ManagedValue emitBuiltinAutorelease(SILGenFunction &gen,
                                            ArrayRef<ManagedValue> args,
                                            CanFunctionType formalApplyType,
                                            SGFContext C) {
-  // The value was produced at +1, so to produce an unbalanced
-  // autorelease we need to leave the cleanup intact.
-  gen.B.createAutoreleaseValue(loc, args[0].getValue(), Atomicity::Atomic);
+  gen.B.createUnmanagedAutoreleaseValue(loc, args[0].getValue(),
+                                        gen.B.getDefaultAtomicity());
   return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));    
 }
 
@@ -129,7 +130,7 @@ static ManagedValue emitBuiltinTryPin(SILGenFunction &gen,
   // retain, so we have to leave the cleanup in place.  TODO: try to
   // emit the argument at +0.
   SILValue result =
-      gen.B.createStrongPin(loc, args[0].getValue(), Atomicity::Atomic);
+      gen.B.createStrongPin(loc, args[0].getValue(), gen.B.getDefaultAtomicity());
 
   // The handle, if non-null, is effectively +1.
   return gen.emitManagedRValueWithCleanup(result);
@@ -145,7 +146,7 @@ static ManagedValue emitBuiltinUnpin(SILGenFunction &gen,
 
   if (requireIsOptionalNativeObject(gen, loc, subs[0].getReplacement())) {
     // Unpinning takes responsibility for the +1 handle.
-    gen.B.createStrongUnpin(loc, args[0].forward(gen), Atomicity::Atomic);
+    gen.B.createStrongUnpin(loc, args[0].forward(gen), gen.B.getDefaultAtomicity());
   }
 
   return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));
@@ -159,7 +160,8 @@ static ManagedValue emitBuiltinLoadOrTake(SILGenFunction &gen,
                                           CanFunctionType formalApplyType,
                                           SGFContext C,
                                           IsTake_t isTake,
-                                          bool isStrict) {
+                                          bool isStrict,
+                                          bool isInvariant) {
   assert(substitutions.size() == 1 && "load should have single substitution");
   assert(args.size() == 1 && "load should have a single argument");
   
@@ -172,7 +174,7 @@ static ManagedValue emitBuiltinLoadOrTake(SILGenFunction &gen,
   // Convert the pointer argument to a SIL address.
   SILValue addr = gen.B.createPointerToAddress(loc, args[0].getUnmanagedValue(),
                                                loadedType.getAddressType(),
-                                               isStrict);
+                                               isStrict, isInvariant);
   // Perform the load.
   return gen.emitLoad(loc, addr, rvalueTL, C, isTake);
 }
@@ -185,7 +187,7 @@ static ManagedValue emitBuiltinLoad(SILGenFunction &gen,
                                     SGFContext C) {
   return emitBuiltinLoadOrTake(gen, loc, substitutions, args,
                                formalApplyType, C, IsNotTake,
-                               /*isStrict*/ true);
+                               /*isStrict*/ true, /*isInvariant*/ false);
 }
 
 static ManagedValue emitBuiltinLoadRaw(SILGenFunction &gen,
@@ -196,7 +198,17 @@ static ManagedValue emitBuiltinLoadRaw(SILGenFunction &gen,
                                        SGFContext C) {
   return emitBuiltinLoadOrTake(gen, loc, substitutions, args,
                                formalApplyType, C, IsNotTake,
-                               /*isStrict*/ false);
+                               /*isStrict*/ false, /*isInvariant*/ false);
+}
+static ManagedValue emitBuiltinLoadInvariant(SILGenFunction &gen,
+                                             SILLocation loc,
+                                             SubstitutionList substitutions,
+                                             ArrayRef<ManagedValue> args,
+                                             CanFunctionType formalApplyType,
+                                             SGFContext C) {
+  return emitBuiltinLoadOrTake(gen, loc, substitutions, args,
+                               formalApplyType, C, IsNotTake,
+                               /*isStrict*/ false, /*isInvariant*/ true);
 }
 
 static ManagedValue emitBuiltinTake(SILGenFunction &gen,
@@ -206,7 +218,8 @@ static ManagedValue emitBuiltinTake(SILGenFunction &gen,
                                     CanFunctionType formalApplyType,
                                     SGFContext C) {
   return emitBuiltinLoadOrTake(gen, loc, substitutions, args,
-                               formalApplyType, C, IsTake, /*isStrict*/ true);
+                               formalApplyType, C, IsTake,
+                               /*isStrict*/ true, /*isInvariant*/ false);
 }
 
 /// Specialized emitter for Builtin.destroy.
@@ -232,7 +245,8 @@ static ManagedValue emitBuiltinDestroy(SILGenFunction &gen,
   SILValue addr =
     gen.B.createPointerToAddress(loc, args[1].getUnmanagedValue(),
                                  destroyType.getAddressType(),
-                                 /*isStrict*/ true);
+                                 /*isStrict*/ true,
+                                 /*isInvariant*/ false);
   
   // Destroy the value indirectly. Canonicalization will promote to loads
   // and releases if appropriate.
@@ -259,7 +273,8 @@ static ManagedValue emitBuiltinAssign(SILGenFunction &gen,
   SILValue addr = gen.B.createPointerToAddress(loc,
                                                args.back().getUnmanagedValue(),
                                                assignType.getAddressType(),
-                                               /*isStrict*/ true);
+                                               /*isStrict*/ true,
+                                               /*isInvariant*/ false);
   
   // Build the value to be assigned, reconstructing tuples if needed.
   auto src = RValue::withPreExplodedElements(args.slice(0, args.size() - 1),
@@ -286,7 +301,8 @@ static ManagedValue emitBuiltinInit(SILGenFunction &gen,
   SILValue addr = gen.emitRValueAsSingleValue(args[1]).getUnmanagedValue();
   addr = gen.B.createPointerToAddress(
     loc, addr, formalTL.getLoweredType().getAddressType(),
-    /*isStrict*/ true);
+    /*isStrict*/ true,
+    /*isInvariant*/ false);
 
   TemporaryInitialization init(addr, CleanupHandle::invalid());
   gen.emitExprInto(args[0], &init);
@@ -324,12 +340,9 @@ static ManagedValue emitCastToReferenceType(SILGenFunction &gen,
     SILValue undef = SILUndef::get(objPointerType, gen.SGM.M);
     return ManagedValue::forUnmanaged(undef);
   }
-  
-  // Save the cleanup on the argument so we can forward it onto the cast
-  // result.
-  auto cleanup = args[0].getCleanup();
-  
-  SILValue arg = args[0].getValue();
+
+  // Grab the argument.
+  ManagedValue arg = args[0];
 
   // If the argument is existential, open it.
   if (substitutions[0].getReplacement()->isClassExistentialType()) {
@@ -337,16 +350,15 @@ static ManagedValue emitCastToReferenceType(SILGenFunction &gen,
       = ArchetypeType::getOpened(substitutions[0].getReplacement());
     SILType loweredOpenedTy = gen.getLoweredLoadableType(openedTy);
     arg = gen.B.createOpenExistentialRef(loc, arg, loweredOpenedTy);
-    gen.setArchetypeOpeningSite(openedTy, arg);
+    gen.setArchetypeOpeningSite(openedTy, arg.getValue());
   }
 
-  SILValue result = gen.B.createUncheckedRefCast(loc, arg, objPointerType);
-  // Return the cast result with the original cleanup.
-  return ManagedValue(result, cleanup);
+  // Return the cast result.
+  return gen.B.createUncheckedRefCast(loc, arg, objPointerType);
 }
 
-/// Specialized emitter for Builtin.castToNativeObject.
-static ManagedValue emitBuiltinCastToNativeObject(SILGenFunction &gen,
+/// Specialized emitter for Builtin.unsafeCastToNativeObject.
+static ManagedValue emitBuiltinUnsafeCastToNativeObject(SILGenFunction &gen,
                                          SILLocation loc,
                                          SubstitutionList substitutions,
                                          ArrayRef<ManagedValue> args,
@@ -355,6 +367,25 @@ static ManagedValue emitBuiltinCastToNativeObject(SILGenFunction &gen,
   return emitCastToReferenceType(gen, loc, substitutions, args, C,
                         SILType::getNativeObjectType(gen.F.getASTContext()));
 }
+
+
+/// Specialized emitter for Builtin.castToNativeObject.
+static ManagedValue emitBuiltinCastToNativeObject(SILGenFunction &gen,
+                                         SILLocation loc,
+                                         SubstitutionList substitutions,
+                                         ArrayRef<ManagedValue> args,
+                                         CanFunctionType formalApplyType,
+                                         SGFContext C) {
+  CanType ty = args[0].getType().getSwiftRValueType();
+  (void)ty;
+  assert(ty->usesNativeReferenceCounting(ResilienceExpansion::Maximal) &&
+         "Can only cast types that use native reference counting to native "
+         "object");
+  return emitBuiltinUnsafeCastToNativeObject(gen, loc, substitutions,
+                                             args, formalApplyType,
+                                             C);
+}
+
 
 /// Specialized emitter for Builtin.castToUnknownObject.
 static ManagedValue emitBuiltinCastToUnknownObject(SILGenFunction &gen,
@@ -507,7 +538,9 @@ static ManagedValue emitBuiltinGep(SILGenFunction &gen,
   SILType ElemTy = gen.getLoweredType(substitutions[0].getReplacement());
   SILType RawPtrType = args[0].getUnmanagedValue()->getType();
   SILValue addr = gen.B.createPointerToAddress(loc, args[0].getUnmanagedValue(),
-                                               ElemTy.getAddressType(), true);
+                                               ElemTy.getAddressType(),
+                                               /*strict*/ true,
+                                               /*invariant*/ false);
   addr = gen.B.createIndexAddr(loc, addr, args[1].getUnmanagedValue());
   addr = gen.B.createAddressToPointer(loc, addr, RawPtrType);
 
@@ -528,7 +561,9 @@ static ManagedValue emitBuiltinGetTailAddr(SILGenFunction &gen,
   SILType TailTy = gen.getLoweredType(substitutions[1].getReplacement());
   SILType RawPtrType = args[0].getUnmanagedValue()->getType();
   SILValue addr = gen.B.createPointerToAddress(loc, args[0].getUnmanagedValue(),
-                                               ElemTy.getAddressType(), true);
+                                               ElemTy.getAddressType(),
+                                               /*strict*/ true,
+                                               /*invariant*/ false);
   addr = gen.B.createTailAddr(loc, addr, args[1].getUnmanagedValue(),
                               TailTy.getAddressType());
   addr = gen.B.createAddressToPointer(loc, addr, RawPtrType);
@@ -651,9 +686,12 @@ static ManagedValue emitBuiltinReinterpretCast(SILGenFunction &gen,
 
     // Initialize the +1 result buffer without taking the incoming value. The
     // source and destination cleanups will be independent.
-    auto buffer = gen.getBufferForExprResult(loc, toTL.getLoweredType(), C);
-    gen.B.createCopyAddr(loc, toAddr, buffer, IsNotTake, IsInitialization);
-    return gen.manageBufferForExprResult(buffer, toTL, C);
+    return gen.B.bufferForExpr(
+        loc, toTL.getLoweredType(), toTL, C,
+        [&](SILValue bufferAddr) {
+          gen.B.createCopyAddr(loc, toAddr, bufferAddr, IsNotTake,
+                               IsInitialization);
+        });
   }
   // Create the appropriate bitcast based on the source and dest types.
   auto &in = args[0];
@@ -974,6 +1012,7 @@ SpecializedEmitter::forDecl(SILGenModule &SGM, SILDeclRef function) {
 #define BUILTIN(Id, Name, Attrs)                                            \
   case BuiltinValueKind::Id:
 #define BUILTIN_SIL_OPERATION(Id, Name, Overload)
+#define BUILTIN_SANITIZER_OPERATION(Id, Name, Attrs)
 #define BUILTIN_TYPE_TRAIT_OPERATION(Id, Name)
 #include "swift/AST/Builtins.def"
   case BuiltinValueKind::None:
@@ -987,7 +1026,13 @@ SpecializedEmitter::forDecl(SILGenModule &SGM, SILDeclRef function) {
 #define BUILTIN_SIL_OPERATION(Id, Name, Overload)                           \
   case BuiltinValueKind::Id:                                                \
     return SpecializedEmitter(&emitBuiltin##Id);
-  
+
+  // Sanitizer builtins should never directly be called; they should only
+  // be inserted as instrumentation by SILGen.
+#define BUILTIN_SANITIZER_OPERATION(Id, Name, Attrs)                        \
+  case BuiltinValueKind::Id:                                                \
+    llvm_unreachable("Sanitizer builtin called directly?");
+
   // Lower away type trait builtins when they're trivially solvable.
 #define BUILTIN_TYPE_TRAIT_OPERATION(Id, Name)                              \
   case BuiltinValueKind::Id:                                                \

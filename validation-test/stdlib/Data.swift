@@ -7,6 +7,7 @@ import StdlibCollectionUnittest
 import Foundation
 
 var DataTestSuite = TestSuite("Data")
+
 DataTestSuite.test("Data.Iterator semantics") {
   // Empty data
   checkSequence([], Data())
@@ -27,7 +28,10 @@ DataTestSuite.test("Data.Iterator semantics") {
       ptr[i] = UInt8(i % 23)
     }
   }
-  checkSequence((0..<65535).lazy.map({ UInt8($0 % 23) }), data)
+  // SR-4724: Should not need to be split out but if it is not it
+  // is considered ambiguous.
+  let temp = (0..<65535).lazy.map({ UInt8($0 % 23) })
+  checkSequence(temp, data)
 }
 
 DataTestSuite.test("associated types") {
@@ -35,11 +39,41 @@ DataTestSuite.test("associated types") {
   expectRandomAccessCollectionAssociatedTypes(
     collectionType: Subject.self,
     iteratorType: Data.Iterator.self,
-    subSequenceType: MutableRangeReplaceableRandomAccessSlice<Subject>.self,
+    subSequenceType: Subject.self,
     indexType: Int.self,
     indexDistanceType: Int.self,
     indicesType: CountableRange<Int>.self)
 }
 
+DataTestSuite.test("Data SubSequence") {
+  let array: [UInt8] = [0, 1, 2, 3, 4, 5, 6, 7]
+  var data = Data(bytes: array)
+
+  // FIXME: Iteration over Data slices is currently broken:
+  // [SR-4292] Foundation.Data.copyBytes is zero-based.
+  //           Data.Iterator assumes it is not.
+  // checkRandomAccessCollection(array, data)
+
+  for i in 0..<data.count {
+    for j in i..<data.count {
+      var dataSlice = data[i..<j]
+      let arraySlice = array[i..<j]
+      if dataSlice.count > 0 {
+        expectEqual(dataSlice.startIndex, i)
+        expectEqual(dataSlice.endIndex, j)
+        
+        // FIXME: Iteration over Data slices is currently broken:
+        // [SR-4292] Foundation.Data.copyBytes is zero-based.
+        //           Data.Iterator assumes it is not.
+        // expectEqual(dataSlice[i], arraySlice[i])
+
+        dataSlice[i] = 0xFF
+        
+        expectEqual(dataSlice.startIndex, i)
+        expectEqual(dataSlice.endIndex, j)
+      }
+    }
+  }
+}
 
 runAllTests()

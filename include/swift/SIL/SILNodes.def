@@ -108,6 +108,10 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
   INST(BeginBorrowInst, SILInstruction, begin_borrow, MayHaveSideEffects, DoesNotRelease)
   INST(EndBorrowInst, SILInstruction, end_borrow, MayHaveSideEffects, DoesNotRelease)
   INST(EndBorrowArgumentInst, SILInstruction, end_borrow_argument, MayHaveSideEffects, DoesNotRelease)
+  INST(BeginAccessInst, SILInstruction, begin_access, MayHaveSideEffects, DoesNotRelease)
+  INST(EndAccessInst, SILInstruction, end_access, MayHaveSideEffects, DoesNotRelease)
+  INST(BeginUnpairedAccessInst, SILInstruction, begin_unpaired_access, MayHaveSideEffects, DoesNotRelease)
+  INST(EndUnpairedAccessInst, SILInstruction, end_unpaired_access, MayHaveSideEffects, DoesNotRelease)
   INST(LoadUnownedInst, SILInstruction, load_unowned, MayRead, DoesNotRelease)
   INST(LoadWeakInst, SILInstruction, load_weak, MayRead, DoesNotRelease)
   INST(StoreInst, SILInstruction, store, MayWrite, DoesNotRelease)
@@ -148,7 +152,9 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
     INST(UnownedReleaseInst, RefCountingInst, unowned_release, MayHaveSideEffects,
          MayRelease)
     INST(RetainValueInst, RefCountingInst, retain_value, MayHaveSideEffects, DoesNotRelease)
+    INST(RetainValueAddrInst, RefCountingInst, retain_value_addr, MayHaveSideEffects, DoesNotRelease)
     INST(ReleaseValueInst, RefCountingInst, release_value, MayHaveSideEffects, MayRelease)
+    INST(ReleaseValueAddrInst, RefCountingInst, release_value_addr, MayHaveSideEffects, MayRelease)
     INST(SetDeallocatingInst, RefCountingInst, set_deallocating, MayHaveSideEffects,
          DoesNotRelease)
     INST(AutoreleaseValueInst, RefCountingInst, autorelease_value, MayHaveSideEffects,
@@ -164,6 +170,8 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
   INST(UnmanagedAutoreleaseValueInst, RefCountingInst, unmanaged_autorelease_value, MayHaveSideEffects, DoesNotRelease)
   INST(CopyUnownedValueInst, SILInstruction, copy_unowned_value, MayHaveSideEffects, DoesNotRelease)
   INST(DestroyValueInst, SILInstruction, destroy_value, MayHaveSideEffects, MayRelease)
+  INST(EndLifetimeInst, SILInstruction, end_lifetime, MayHaveSideEffects, MayRelease)
+  INST(UncheckedOwnershipConversionInst, SILInstruction, unchecked_ownership_conversion, MayHaveSideEffects, MayRelease)
 
   // IsUnique does not actually write to memory but should be modeled
   // as such. Its operand is a pointer to an object reference. The
@@ -181,7 +189,8 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
     INST(IntegerLiteralInst, LiteralInst, integer_literal, None, DoesNotRelease)
     INST(FloatLiteralInst, LiteralInst, float_literal, None, DoesNotRelease)
     INST(StringLiteralInst, LiteralInst, string_literal, None, DoesNotRelease)
-    VALUE_RANGE(LiteralInst, FunctionRefInst, StringLiteralInst)
+    INST(ConstStringLiteralInst, LiteralInst, const_string_literal, None, DoesNotRelease)
+    VALUE_RANGE(LiteralInst, FunctionRefInst, ConstStringLiteralInst)
 
   // Dynamic Dispatch
   ABSTRACT_VALUE(MethodInst, SILInstruction)
@@ -198,7 +207,7 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
 
   // Metatypes
   INST(MetatypeInst, SILInstruction, metatype, None, DoesNotRelease)
-  INST(ValueMetatypeInst, SILInstruction, value_metatype, None, DoesNotRelease)
+  INST(ValueMetatypeInst, SILInstruction, value_metatype, MayRead, DoesNotRelease)
   INST(ExistentialMetatypeInst, SILInstruction, existential_metatype, MayRead, DoesNotRelease)
   INST(ObjCProtocolInst, SILInstruction, objc_protocol, None, DoesNotRelease)
 
@@ -224,7 +233,10 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
 
   // Protocol and Protocol Composition Types
   INST(InitExistentialAddrInst, SILInstruction, init_existential_addr, MayWrite, DoesNotRelease)
+  INST(InitExistentialOpaqueInst, SILInstruction, init_existential_opaque, MayWrite, DoesNotRelease)
   INST(DeinitExistentialAddrInst, SILInstruction, deinit_existential_addr, MayHaveSideEffects,
+       DoesNotRelease)
+  INST(DeinitExistentialOpaqueInst, SILInstruction, deinit_existential_opaque, MayHaveSideEffects,
        DoesNotRelease)
   INST(OpenExistentialAddrInst, SILInstruction, open_existential_addr, MayRead, DoesNotRelease)
   INST(InitExistentialRefInst, SILInstruction, init_existential_ref, None, DoesNotRelease)
@@ -237,6 +249,9 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
   // Blocks
   INST(ProjectBlockStorageInst, SILInstruction, project_block_storage, None, DoesNotRelease)
   INST(InitBlockStorageHeaderInst, SILInstruction, init_block_storage_header, None, DoesNotRelease)
+
+  // Key paths
+  INST(KeyPathInst, SILInstruction, keypath, None, DoesNotRelease)
 
   // Conversions
   ABSTRACT_VALUE(ConversionInst, SILInstruction)
@@ -265,6 +280,7 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
     INST(ObjCMetatypeToObjectInst, ConversionInst, objc_metatype_to_object, None, DoesNotRelease)
     INST(ObjCExistentialMetatypeToObjectInst, ConversionInst, objc_existential_metatype_to_object, None,
          DoesNotRelease)
+    INST(UnconditionalCheckedCastValueInst, ConversionInst, unconditional_checked_cast_value, None, DoesNotRelease)
     INST(UnconditionalCheckedCastInst, ConversionInst, unconditional_checked_cast, None, DoesNotRelease)
     VALUE_RANGE(ConversionInst, UpcastInst, UnconditionalCheckedCastInst)
   INST(IsNonnullInst, SILInstruction, is_nonnull, None, DoesNotRelease)
@@ -292,9 +308,10 @@ ABSTRACT_VALUE(SILInstruction, ValueBase)
     TERMINATOR(CheckedCastBranchInst, TermInst, checked_cast_br, None, DoesNotRelease)
     TERMINATOR(CheckedCastAddrBranchInst, TermInst, checked_cast_addr_br, MayHaveSideEffects,
                MayRelease)
-    VALUE_RANGE(TermInst, UnreachableInst, CheckedCastAddrBranchInst)
+    TERMINATOR(CheckedCastValueBranchInst, TermInst, checked_cast_value_br, None, DoesNotRelease)
+    VALUE_RANGE(TermInst, UnreachableInst, CheckedCastValueBranchInst)
 
-  VALUE_RANGE(SILInstruction, AllocStackInst, CheckedCastAddrBranchInst)
+  VALUE_RANGE(SILInstruction, AllocStackInst, CheckedCastValueBranchInst)
 
 #undef VALUE_RANGE
 #undef ABSTRACT_VALUE

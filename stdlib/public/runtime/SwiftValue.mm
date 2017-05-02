@@ -24,6 +24,7 @@
 #include "SwiftObject.h"
 #include "SwiftValue.h"
 #include "swift/Basic/Lazy.h"
+#include "swift/Runtime/Casting.h"
 #include "swift/Runtime/HeapObject.h"
 #include "swift/Runtime/Metadata.h"
 #include "swift/Runtime/ObjCBridge.h"
@@ -212,8 +213,14 @@ _SwiftValue *swift::getAsSwiftValue(id object) {
 }
 
 bool
-swift::findSwiftValueConformances(const ProtocolDescriptorList &protocols,
+swift::findSwiftValueConformances(const ExistentialTypeMetadata *existentialType,
                                   const WitnessTable **tablesBuffer) {
+  // _SwiftValue never satisfies a superclass constraint.
+  if (existentialType->getSuperclassConstraint() != nullptr)
+    return false;
+
+  auto &protocols = existentialType->Protocols;
+
   Class cls = nullptr;
 
   // Note that currently we never modify tablesBuffer because
@@ -349,10 +356,21 @@ static NSString *getValueDescription(_SwiftValue *self) {
 
   // Copy the value, since it will be consumed by getSummary.
   ValueBuffer copyBuf;
+#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
+  auto copy = type->allocateBufferIn(&copyBuf);
+  type->vw_initializeWithCopy(copy, const_cast<OpaqueValue *>(value));
+#else
   auto copy = type->vw_initializeBufferWithCopy(&copyBuf,
                                               const_cast<OpaqueValue*>(value));
+#endif
+
   swift_getSummary(&tmp, copy, type);
+
+#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
+  type->deallocateBufferIn(&copyBuf);
+#else
   type->vw_deallocateBuffer(&copyBuf);
+#endif
   return convertStringToNSString(&tmp);
 }
 

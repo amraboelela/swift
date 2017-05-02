@@ -3,9 +3,9 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %target-swift-frontend -emit-module %S/Inputs/TestableMultifileHelper.swift -enable-testing -o %t
 
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen -I %t %s %S/testable-multifile-other.swift -module-name main | %FileCheck %s
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen -I %t %S/testable-multifile-other.swift %s -module-name main | %FileCheck %s
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen -I %t -primary-file %s %S/testable-multifile-other.swift -module-name main | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen -I %t %s %S/testable-multifile-other.swift -module-name main | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen -I %t %S/testable-multifile-other.swift %s -module-name main | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen -I %t -primary-file %s %S/testable-multifile-other.swift -module-name main | %FileCheck %s
 
 // Just make sure we don't crash later on.
 // RUN: %target-swift-frontend -emit-ir -I %t -primary-file %s %S/testable-multifile-other.swift -module-name main -o /dev/null
@@ -20,13 +20,13 @@ public protocol Fooable {
 struct FooImpl: Fooable, HasDefaultFoo {}
 public struct PublicFooImpl: Fooable, HasDefaultFoo {}
 
-// CHECK-LABEL: sil{{.*}} @_T04main7FooImplVAA7FooableAaaDP3fooyyFTW : $@convention(witness_method) (@in_guaranteed FooImpl) -> () {
+// CHECK-LABEL: sil{{.*}} @_T04main7FooImplVAA7FooableA2aDP3fooyyFTW : $@convention(witness_method) (@in_guaranteed FooImpl) -> () {
 // CHECK: function_ref @_T023TestableMultifileHelper13HasDefaultFooPAAE3fooyyF
-// CHECK: } // end sil function '_T04main7FooImplVAA7FooableAaaDP3fooyyFTW'
+// CHECK: } // end sil function '_T04main7FooImplVAA7FooableA2aDP3fooyyFTW'
 
-// CHECK-LABEL: sil{{.*}} @_T04main13PublicFooImplVAA7FooableAaaDP3fooyyFTW : $@convention(witness_method) (@in_guaranteed PublicFooImpl) -> () {
+// CHECK-LABEL: sil{{.*}} @_T04main13PublicFooImplVAA7FooableA2aDP3fooyyFTW : $@convention(witness_method) (@in_guaranteed PublicFooImpl) -> () {
 // CHECK: function_ref @_T023TestableMultifileHelper13HasDefaultFooPAAE3fooyyF
-// CHECK: } // end sil function '_T04main13PublicFooImplVAA7FooableAaaDP3fooyyFTW'
+// CHECK: } // end sil function '_T04main13PublicFooImplVAA7FooableA2aDP3fooyyFTW'
 
 private class PrivateSub: Base {
   fileprivate override func foo() {}
@@ -59,9 +59,9 @@ public class PublicSub: Base {
 
 
 // CHECK-LABEL: sil_witness_table hidden FooImpl: Fooable module main {
-// CHECK-NEXT:  method #Fooable.foo!1: {{.*}} : @_T04main7FooImplVAA7FooableAaaDP3fooyyFTW
+// CHECK-NEXT:  method #Fooable.foo!1: {{.*}} : @_T04main7FooImplVAA7FooableA2aDP3fooyyFTW
 // CHECK-NEXT: }
 
-// CHECK-LABEL: sil_witness_table [fragile] PublicFooImpl: Fooable module main {
-// CHECK-NEXT:  method #Fooable.foo!1: {{.*}} : @_T04main13PublicFooImplVAA7FooableAaaDP3fooyyFTW
+// CHECK-LABEL: sil_witness_table [serialized] PublicFooImpl: Fooable module main {
+// CHECK-NEXT:  method #Fooable.foo!1: {{.*}} : @_T04main13PublicFooImplVAA7FooableA2aDP3fooyyFTW
 // CHECK-NEXT: }

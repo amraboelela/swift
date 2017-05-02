@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/SIL/SILType.h"
+#include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/Type.h"
 #include "swift/SIL/SILModule.h"
@@ -61,6 +62,13 @@ SILType SILType::getBuiltinFloatType(BuiltinFloatType::FPKind Kind,
 
 SILType SILType::getBuiltinWordType(const ASTContext &C) {
   return getPrimitiveObjectType(CanType(BuiltinIntegerType::getWordType(C)));
+}
+
+SILType SILType::getOptionalType(SILType type) {
+  auto &ctx = type.getSwiftRValueType()->getASTContext();
+  auto optType = BoundGenericEnumType::get(ctx.getOptionalDecl(), Type(),
+                                           { type.getSwiftRValueType() });
+  return getPrimitiveType(CanType(optType), type.getCategory());
 }
 
 bool SILType::isTrivial(SILModule &M) const {
@@ -339,21 +347,16 @@ bool SILType::isAddressOnly(SILModule &M) const {
 
 SILType SILType::substGenericArgs(SILModule &M,
                                   SubstitutionList Subs) const {
-  SILFunctionType *fnTy = getSwiftRValueType()->castTo<SILFunctionType>();
-  if (Subs.empty()) {
-    assert(!fnTy->isPolymorphic() && "function type without subs must not "
-           "be polymorphic.");
-    return *this;
-  }
-  assert(fnTy->isPolymorphic() && "Can only subst interface generic args on "
-         "polymorphic function types.");
-  CanSILFunctionType canFnTy = fnTy->substGenericArgs(M, Subs);
+  auto fnTy = castTo<SILFunctionType>();
+  auto canFnTy = CanSILFunctionType(fnTy->substGenericArgs(M, Subs));
   return SILType::getPrimitiveObjectType(canFnTy);
 }
 
-SubstitutionList SILType::gatherAllSubstitutions(SILModule &M) {
-  return getSwiftRValueType()->gatherAllSubstitutions(M.getSwiftModule(),
-                                                      nullptr);
+SILType SILType::substGenericArgs(SILModule &M,
+                                  const SubstitutionMap &SubMap) const {
+  auto fnTy = castTo<SILFunctionType>();
+  auto canFnTy = CanSILFunctionType(fnTy->substGenericArgs(M, SubMap));
+  return SILType::getPrimitiveObjectType(canFnTy);
 }
 
 bool SILType::isHeapObjectReferenceType() const {
@@ -376,7 +379,6 @@ SILType SILType::getMetatypeInstanceType(SILModule &M) const {
   assert(MetatypeType->is<AnyMetatypeType>() &&
          "This method should only be called on SILTypes with an underlying "
          "metatype type.");
-  assert(isObject() && "Should only be called on object types.");
   Type instanceType =
     MetatypeType->castTo<AnyMetatypeType>()->getInstanceType();
 
@@ -460,6 +462,10 @@ SILType SILType::unwrapAnyOptionalType() const {
 /// Error existentials.
 static bool isBridgedErrorClass(SILModule &M,
                                 Type t) {
+  // There's no bridging if ObjC interop is disabled.
+  if (!M.getASTContext().LangOpts.EnableObjCInterop)
+    return false;
+
   if (!t)
     return false;
 
@@ -468,34 +474,27 @@ static bool isBridgedErrorClass(SILModule &M,
 
   // NSError (TODO: and CFError) can be bridged.
   auto nsErrorType = M.Types.getNSErrorType();
-  if (t && nsErrorType && nsErrorType->isExactSuperclassOf(t, nullptr)) {
+  if (t && nsErrorType && nsErrorType->isExactSuperclassOf(t)) {
     return true;
   }
   
   return false;
 }
 
-static bool isErrorExistential(ArrayRef<ProtocolDecl*> protocols) {
-  return protocols.size() == 1
-    && protocols[0]->isSpecificProtocol(KnownProtocolKind::Error);
-}
-
 ExistentialRepresentation
 SILType::getPreferredExistentialRepresentation(SILModule &M,
                                                Type containedType) const {
-  SmallVector<ProtocolDecl *, 4> protocols;
-  
   // Existential metatypes always use metatype representation.
   if (is<ExistentialMetatypeType>())
     return ExistentialRepresentation::Metatype;
   
-  // Get the list of existential constraints. If the type isn't existential,
-  // then there is no representation.
-  if (!getSwiftRValueType()->isAnyExistentialType(protocols))
+  // If the type isn't existential, then there is no representation.
+  if (!isExistentialType())
     return ExistentialRepresentation::None;
-  
-  // The (uncomposed) Error existential uses a special boxed representation.
-  if (isErrorExistential(protocols)) {
+
+  auto layout = getSwiftRValueType().getExistentialLayout();
+
+  if (layout.isErrorExistential()) {
     // NSError or CFError references can be adopted directly as Error
     // existentials.
     if (isBridgedErrorClass(M, containedType)) {
@@ -504,13 +503,11 @@ SILType::getPreferredExistentialRepresentation(SILModule &M,
       return ExistentialRepresentation::Boxed;
     }
   }
-  
+
   // A class-constrained protocol composition can adopt the conforming
   // class reference directly.
-  for (auto proto : protocols) {
-    if (proto->requiresClass())
-      return ExistentialRepresentation::Class;
-  }
+  if (layout.requiresClass())
+    return ExistentialRepresentation::Class;
   
   // Otherwise, we need to use a fixed-sized buffer.
   return ExistentialRepresentation::Opaque;
@@ -527,23 +524,24 @@ SILType::canUseExistentialRepresentation(SILModule &M,
   case ExistentialRepresentation::Class:
   case ExistentialRepresentation::Boxed: {
     // Look at the protocols to see what representation is appropriate.
-    SmallVector<ProtocolDecl *, 4> protocols;
-    if (!getSwiftRValueType()->isAnyExistentialType(protocols))
+    if (!getSwiftRValueType().isExistentialType())
       return false;
+
+    auto layout = getSwiftRValueType().getExistentialLayout();
+
     // The (uncomposed) Error existential uses a special boxed
     // representation. It can also adopt class references of bridged error types
     // directly.
-    if (isErrorExistential(protocols))
+    if (layout.isErrorExistential())
       return repr == ExistentialRepresentation::Boxed
         || (repr == ExistentialRepresentation::Class
             && isBridgedErrorClass(M, containedType));
     
     // A class-constrained composition uses ClassReference representation;
-    // otherwise, we use a fixed-sized buffer
-    for (auto *proto : protocols) {
-      if (proto->requiresClass())
-        return repr == ExistentialRepresentation::Class;
-    }
+    // otherwise, we use a fixed-sized buffer.
+    if (layout.requiresClass())
+      return repr == ExistentialRepresentation::Class;
+
     return repr == ExistentialRepresentation::Opaque;
   }
   case ExistentialRepresentation::Metatype:
@@ -565,21 +563,13 @@ SILBoxType::getFieldLoweredType(SILModule &M, unsigned index) const {
   
   // Apply generic arguments if the layout is generic.
   if (!getGenericArgs().empty()) {
-    // FIXME: Map the field type into the layout's generic context because
-    // SIL TypeLowering currently expects to lower abstract generic parameters
-    // with a generic context pushed, but nested generic contexts are not
-    // supported by TypeLowering. If TypeLowering were properly
-    // de-contextualized and plumbed through the generic signature, this could
-    // be avoided.
-    auto *env = getLayout()->getGenericSignature()
-      .getGenericEnvironment(*M.getSwiftModule());
-    auto substMap =
-      env->getSubstitutionMap(getGenericArgs());
-    fieldTy = env->mapTypeIntoContext(fieldTy)
-      ->getCanonicalType();
-    
-    fieldTy = SILType::getPrimitiveObjectType(fieldTy)
-      .subst(M, substMap)
+    auto sig = getLayout()->getGenericSignature();
+    auto subs = sig->getSubstitutionMap(getGenericArgs());
+    return SILType::getPrimitiveObjectType(fieldTy)
+      .subst(M,
+             QuerySubstitutionMap{subs},
+             LookUpConformanceInSubstitutionMap(subs),
+             sig)
       .getSwiftRValueType();
   }
   return fieldTy;
@@ -609,7 +599,8 @@ SILResultInfo::getOwnershipKind(SILModule &M,
 }
 
 SILModuleConventions::SILModuleConventions(const SILModule &M)
-    : loweredAddresses(!M.getASTContext().LangOpts.EnableSILOpaqueValues) {}
+    : loweredAddresses(!M.getASTContext().LangOpts.EnableSILOpaqueValues
+                       || M.getStage() == SILStage::Lowered) {}
 
 bool SILModuleConventions::isReturnedIndirectlyInSIL(SILType type,
                                                      SILModule &M) {
@@ -628,4 +619,92 @@ bool SILModuleConventions::isPassedIndirectlyInSIL(SILType type, SILModule &M) {
 
 bool SILFunctionType::isNoReturnFunction() {
   return getDirectFormalResultsType().getSwiftRValueType()->isUninhabited();
+}
+
+SILType SILType::wrapAnyOptionalType(SILFunction &F) const {
+  SILModule &M = F.getModule();
+  EnumDecl *OptionalDecl = M.getASTContext().getOptionalDecl(OTK_Optional);
+  BoundGenericType *BoundEnumDecl =
+      BoundGenericType::get(OptionalDecl, Type(), {getSwiftRValueType()});
+  AbstractionPattern Pattern(F.getLoweredFunctionType()->getGenericSignature(),
+                             BoundEnumDecl->getCanonicalType());
+  return M.Types.getLoweredType(Pattern, BoundEnumDecl);
+}
+
+#ifndef NDEBUG
+static bool areOnlyAbstractionDifferent(CanType type1, CanType type2) {
+  assert(type1->isLegalSILType());
+  assert(type2->isLegalSILType());
+
+  // Exact equality is fine.
+  if (type1 == type2)
+    return true;
+
+  // Either both types should be optional or neither should be.
+  if (auto object1 = type1.getAnyOptionalObjectType()) {
+    auto object2 = type2.getAnyOptionalObjectType();
+    if (!object2)
+      return false;
+    return areOnlyAbstractionDifferent(object1, object2);
+  }
+  if (type2.getAnyOptionalObjectType())
+    return false;
+
+  // Either both types should be tuples or neither should be.
+  if (auto tuple1 = dyn_cast<TupleType>(type1)) {
+    auto tuple2 = dyn_cast<TupleType>(type2);
+    if (!tuple2)
+      return false;
+    if (tuple1->getNumElements() != tuple2->getNumElements())
+      return false;
+    for (auto i : indices(tuple2->getElementTypes()))
+      if (!areOnlyAbstractionDifferent(tuple1.getElementType(i),
+                                       tuple2.getElementType(i)))
+        return false;
+    return true;
+  }
+  if (isa<TupleType>(type2))
+    return false;
+
+  // Either both types should be metatypes or neither should be.
+  if (auto meta1 = dyn_cast<AnyMetatypeType>(type1)) {
+    auto meta2 = dyn_cast<AnyMetatypeType>(type2);
+    if (!meta2)
+      return false;
+    if (meta1.getInstanceType() != meta2.getInstanceType())
+      return false;
+    return true;
+  }
+
+  // Either both types should be functions or neither should be.
+  if (auto fn1 = dyn_cast<SILFunctionType>(type1)) {
+    auto fn2 = dyn_cast<SILFunctionType>(type2);
+    if (!fn2)
+      return false;
+    // TODO: maybe there are checks we can do here?
+    (void)fn1;
+    (void)fn2;
+    return true;
+  }
+  if (isa<SILFunctionType>(type2))
+    return false;
+
+  llvm_unreachable("no other types should differ by abstraction");
+}
+#endif
+
+/// Given two SIL types which are representations of the same type,
+/// check whether they have an abstraction difference.
+bool SILType::hasAbstractionDifference(SILFunctionTypeRepresentation rep,
+                                       SILType type2) {
+  CanType ct1 = getSwiftRValueType();
+  CanType ct2 = type2.getSwiftRValueType();
+  assert(getSILFunctionLanguage(rep) == SILFunctionLanguage::C ||
+         areOnlyAbstractionDifferent(ct1, ct2));
+  (void)ct1;
+  (void)ct2;
+
+  // Assuming that we've applied the same substitutions to both types,
+  // abstraction equality should equal type equality.
+  return (*this != type2);
 }

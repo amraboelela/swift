@@ -506,13 +506,15 @@ void MemoryToRegisters::removeSingleBlockAllocation(AllocStackInst *ASI) {
       }
     }
 
+    SILValue InstVal = Inst;
+    
     // Remove dead address instructions that may be uses of the allocation.
-    while (Inst->use_empty() && (isa<StructElementAddrInst>(Inst) ||
-                                 isa<TupleElementAddrInst>(Inst))) {
-      SILValue Next = Inst->getOperand(0);
-      Inst->eraseFromParent();
+    while (InstVal->use_empty() && (isa<StructElementAddrInst>(InstVal) ||
+                                    isa<TupleElementAddrInst>(InstVal))) {
+      SILInstruction *I = cast<SILInstruction>(InstVal);
+      InstVal = I->getOperand(0);
+      I->eraseFromParent();
       NumInstRemoved++;
-      Inst = cast<SILInstruction>(Next);
     }
   }
 }
@@ -903,7 +905,6 @@ class SILMem2Reg : public SILFunctionTransform {
       invalidateAnalysis(SILAnalysis::InvalidationKind::Instructions);
   }
 
-  StringRef getName() override { return "SIL Mem2Reg"; }
 };
 } // end anonymous namespace
 

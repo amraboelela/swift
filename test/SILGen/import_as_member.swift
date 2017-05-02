@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen -I %S/../IDE/Inputs/custom-modules %s 2>&1 | %FileCheck --check-prefix=SIL %s
+// RUN: %target-swift-frontend -emit-silgen -I %S/../IDE/Inputs/custom-modules %s 2>&1 | %FileCheck --check-prefix=SIL %s
 // REQUIRES: objc_interop
 import ImportAsMember.A
 import ImportAsMember.Class
@@ -23,7 +23,10 @@ public func useClass(d: Double, opts: SomeClass.Options) {
   let o = SomeClass(value: d)
 
   // SIL: [[APPLY_FN:%[0-9]+]] = function_ref @IAMSomeClassApplyOptions : $@convention(c) (SomeClass, SomeClass.Options) -> ()
-  // SIL: apply [[APPLY_FN]]([[OBJ]], [[OPTS]])
+  // SIL: [[BORROWED_OBJ:%.*]] = begin_borrow [[OBJ]]
+  // SIL: apply [[APPLY_FN]]([[BORROWED_OBJ]], [[OPTS]])
+  // SIL: end_borrow [[BORROWED_OBJ]] from [[OBJ]]
+  // SIL: destroy_value [[OBJ]]
   o.applyOptions(opts)
 }
 

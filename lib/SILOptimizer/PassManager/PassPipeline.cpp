@@ -71,13 +71,25 @@ static void addOwnershipModelEliminatorPipeline(SILPassPipelinePlan &P) {
   P.addOwnershipModelEliminator();
 }
 
-static void addMandatoryOptPipeline(SILPassPipelinePlan &P) {
+static void addMandatoryOptPipeline(SILPassPipelinePlan &P,
+                                    const SILOptions &Options) {
   P.startPipeline("Guaranteed Passes");
+  if (Options.EnableMandatorySemanticARCOpts) {
+    P.addSemanticARCOpts();
+  }
+  P.addDiagnoseStaticExclusivity();
   P.addCapturePromotion();
+
+  // Select access kind after capture promotion and before stack promotion.
+  // This guarantees that stack-promotable boxes have [static] enforcement.
+  P.addAccessEnforcementSelection();
+  P.addInactiveAccessMarkerElimination();
+
   P.addAllocBoxToStack();
   P.addNoReturnFolding();
+  P.addOwnershipModelEliminator();
+  P.addMarkUninitializedFixup();
   P.addDefiniteInitialization();
-
   P.addMandatoryInlining();
   P.addPredictableMemoryOptimizations();
   P.addDiagnosticConstantPropagation();
@@ -89,7 +101,7 @@ static void addMandatoryOptPipeline(SILPassPipelinePlan &P) {
 }
 
 SILPassPipelinePlan
-SILPassPipelinePlan::getDiagnosticPassPipeline(SILOptions Options) {
+SILPassPipelinePlan::getDiagnosticPassPipeline(const SILOptions &Options) {
   SILPassPipelinePlan P;
 
   if (SILViewSILGenCFG) {
@@ -104,11 +116,8 @@ SILPassPipelinePlan::getDiagnosticPassPipeline(SILOptions Options) {
     return P;
   }
 
-  // Lower all ownership instructions right after SILGen for now.
-  addOwnershipModelEliminatorPipeline(P);
-
   // Otherwise run the rest of diagnostics.
-  addMandatoryOptPipeline(P);
+  addMandatoryOptPipeline(P, Options);
 
   if (SILViewGuaranteedCFG) {
     addCFGPrinterPipeline(P, "SIL View Guaranteed CFG");
@@ -212,6 +221,14 @@ void addSSAPasses(SILPassPipelinePlan &P, OptimizationLevelKind OpLevel) {
   // Promote stack allocations to values.
   P.addMem2Reg();
 
+  // Cleanup, which is important if the inliner has restarted the pass pipeline.
+  P.addPerformanceConstantPropagation();
+  P.addSimplifyCFG();
+  P.addSILCombine();
+
+  // Mainly for Array.append(contentsOf) optimization.
+  P.addArrayElementPropagation();
+  
   // Run the devirtualizer, specializer, and inliner. If any of these
   // makes a change we'll end up restarting the function passes on the
   // current function (after optimizing any new callees).
@@ -319,8 +336,8 @@ static void addMidLevelPassPipeline(SILPassPipelinePlan &P) {
   P.addDeadArgSignatureOpt();
 }
 
-static void addLoweringPassPipeline(SILPassPipelinePlan &P) {
-  P.startPipeline("Lower");
+static void addClosureSpecializePassPipeline(SILPassPipelinePlan &P) {
+  P.startPipeline("ClosureSpecialize");
   P.addDeadFunctionElimination();
   P.addDeadObjectElimination();
 
@@ -401,6 +418,18 @@ static void addSILDebugInfoGeneratorPipeline(SILPassPipelinePlan &P) {
   P.addSILDebugInfoGenerator();
 }
 
+/// Mandatory IRGen preparation. It is the caller's job to set the set stage to
+/// "lowered" after running this pipeline.
+SILPassPipelinePlan
+SILPassPipelinePlan::getLoweringPassPipeline() {
+  SILPassPipelinePlan P;
+  P.startPipeline("Address Lowering");
+  P.addSILCleanup();
+  P.addAddressLowering();
+
+  return P;
+}
+
 /// Non-mandatory passes that should run as preparation for IRGen.
 static void addIRGenPreparePipeline(SILPassPipelinePlan &P) {
   P.startPipeline("IRGen Preparation");
@@ -408,6 +437,7 @@ static void addIRGenPreparePipeline(SILPassPipelinePlan &P) {
   // Hoist generic alloc_stack instructions to the entry block to enable better
   // llvm-ir generation for dynamic alloca instructions.
   P.addAllocStackHoisting();
+  P.addLoadableByAddress();
 }
 
 SILPassPipelinePlan SILPassPipelinePlan::getIRGenPreparePassPipeline() {
@@ -417,7 +447,22 @@ SILPassPipelinePlan SILPassPipelinePlan::getIRGenPreparePassPipeline() {
 }
 
 SILPassPipelinePlan
-SILPassPipelinePlan::getPerformancePassPipeline(SILOptions Options) {
+SILPassPipelinePlan::getSILOptPreparePassPipeline(const SILOptions &Options) {
+  SILPassPipelinePlan P;
+
+  if (Options.DebugSerialization) {
+    addPerfDebugSerializationPipeline(P);
+    return P;
+  }
+
+  P.startPipeline("SILOpt Prepare Passes");
+  P.addFullAccessMarkerElimination();
+
+  return P;
+}
+
+SILPassPipelinePlan
+SILPassPipelinePlan::getPerformancePassPipeline(const SILOptions &Options) {
   SILPassPipelinePlan P;
 
   if (Options.DebugSerialization) {
@@ -436,8 +481,8 @@ SILPassPipelinePlan::getPerformancePassPipeline(SILOptions Options) {
   // Run an iteration of the mid-level SSA passes.
   addMidLevelPassPipeline(P);
 
-  // Perform lowering optimizations.
-  addLoweringPassPipeline(P);
+  // Perform optimizations that specialize.
+  addClosureSpecializePassPipeline(P);
 
   // Run another iteration of the SSA optimizations to optimize the
   // devirtualized inline caches and constants propagated into closures
@@ -507,7 +552,7 @@ void SILPassPipelinePlan::addPasses(ArrayRef<PassKind> PassKinds) {
     // updated.
     switch (K) {
 // Each pass gets its own add-function.
-#define PASS(ID, NAME, DESCRIPTION)                                            \
+#define PASS(ID, TAG, NAME)                                                    \
   case PassKind::ID: {                                                         \
     add##ID();                                                                 \
     break;                                                                     \
@@ -541,20 +586,17 @@ void SILPassPipelinePlan::print(llvm::raw_ostream &os) {
   // rather than use the yaml writer interface. We want to use the yaml reader
   // interface to be resilient against slightly different forms of yaml.
   os << "[\n";
-  bool First = true;
-  for (const SILPassPipeline &Pipeline : getPipelines()) {
-    if (!First) {
-      os << "\n    ],\n";
-    }
-    First = false;
-    os << "    [\n";
+  interleave(getPipelines(),
+             [&](const SILPassPipeline &Pipeline) {
+               os << "    [\n";
 
-    os << "        \"" << Pipeline.Name << "\"";
-    for (PassKind Kind : getPipelinePasses(Pipeline)) {
-      os << ",\n        [\"" << PassKindID(Kind) << "\"," << PassKindName(Kind)
-         << ']';
-    }
-  }
+               os << "        \"" << Pipeline.Name << "\"";
+               for (PassKind Kind : getPipelinePasses(Pipeline)) {
+                 os << ",\n        [\"" << PassKindID(Kind) << "\","
+                    << PassKindTag(Kind) << ']';
+               }
+             },
+             [&] { os << "\n    ],\n"; });
   os << "\n    ]\n";
   os << ']';
 }

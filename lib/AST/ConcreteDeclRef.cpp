@@ -19,6 +19,7 @@
 #include "swift/AST/ConcreteDeclRef.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/ProtocolConformance.h"
+#include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/Types.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace swift;
@@ -33,8 +34,7 @@ ConcreteDeclRef::SpecializedDeclRef::create(
 }
 
 ConcreteDeclRef
-ConcreteDeclRef::getOverriddenDecl(ASTContext &ctx,
-                                   LazyResolver *resolver) const {
+ConcreteDeclRef::getOverriddenDecl(ASTContext &ctx) const {
   auto *derivedDecl = getDecl();
   auto *baseDecl = derivedDecl->getOverriddenDecl();
 
@@ -49,7 +49,7 @@ ConcreteDeclRef::getOverriddenDecl(ASTContext &ctx,
     if (derivedSig)
       derivedSubMap = derivedSig->getSubstitutionMap(getSubstitutions());
     auto subMap = SubstitutionMap::getOverrideSubstitutions(
-        baseDecl, derivedDecl, derivedSubMap, resolver);
+        baseDecl, derivedDecl, derivedSubMap);
     baseSig->getSubstitutions(subMap, subs);
   }
   return ConcreteDeclRef(ctx, baseDecl, subs);
@@ -66,35 +66,26 @@ void ConcreteDeclRef::dump(raw_ostream &os) {
   // If specialized, dump the substitutions.
   if (isSpecialized()) {
     os << " [with ";
-    bool isFirst = true;
-    for (const auto &sub : getSubstitutions()) {
-      if (isFirst) {
-        isFirst = false;
-      } else {
-        os << ", ";
-      }
+    interleave(getSubstitutions(),
+               [&](const Substitution &sub) {
+                 os << sub.getReplacement().getString();
 
-      os << sub.getReplacement().getString();
-
-      if (sub.getConformances().size()) {
-        os << '[';
-        bool isFirst = true;
-        for (auto &c : sub.getConformances()) {
-          if (isFirst) {
-            isFirst = false;
-          } else {
-            os << ", ";
-          }
-
-          if (c.isConcrete()) {
-            c.getConcrete()->printName(os);
-          } else {
-            os << "abstract:" << c.getAbstract()->getName();
-          }
-        }
-        os << ']';
-      }
-    }
+                 if (sub.getConformances().size()) {
+                   os << '[';
+                   interleave(sub.getConformances(),
+                              [&](ProtocolConformanceRef c) {
+                                if (c.isConcrete()) {
+                                  c.getConcrete()->printName(os);
+                                } else {
+                                  os << "abstract:"
+                                     << c.getAbstract()->getName();
+                                }
+                              },
+                              [&] { os << ", "; });
+                   os << ']';
+                 }
+               },
+               [&] { os << ", "; });
     os << ']';
   }
 }

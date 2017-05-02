@@ -29,6 +29,7 @@
 #include "swift/AST/Type.h"
 #include "swift/AST/ForeignErrorConvention.h"
 #include "swift/Basic/StringExtras.h"
+#include "swift/Strings.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/Basic/IdentifierTable.h"
@@ -40,6 +41,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TinyPtrVector.h"
+#include "llvm/Support/Path.h"
 #include <set>
 
 namespace llvm {
@@ -272,9 +274,11 @@ public:
   const bool InferImportAsMember;
   const bool DisableSwiftBridgeAttr;
   const bool BridgingHeaderExplicitlyRequested;
+  const bool DisableAdapterModules;
 
   bool IsReadingBridgingPCH;
   llvm::SmallVector<clang::serialization::SubmoduleID, 2> PCHImportedSubmodules;
+  llvm::SmallVector<const clang::Module*, 2> DeferredHeaderImports;
 
   const Version CurrentVersion;
 
@@ -294,7 +298,13 @@ private:
   /// (through the Swift name lookup module file extension).
   LookupTableMap LookupTables;
 
+  /// \brief The fake buffer used to import modules.
+  ///
+  /// FIXME: Horrible hack for loadModule().
+  clang::FileID DummyImportBuffer;
+
   /// \brief A count of the number of load module operations.
+  ///
   /// FIXME: Horrible, horrible hack for \c loadModule().
   unsigned ImportCounter = 0;
 
@@ -377,6 +387,10 @@ public:
   /// been imported.
   llvm::DenseMap<std::pair<ObjCSelector, char>, unsigned>
     ActiveSelectors;
+
+  clang::CompilerInstance *getClangInstance() {
+    return Instance.get();
+  }
 
 private:
   /// \brief Generation number that is used for crude versioning.
@@ -523,6 +537,11 @@ private:
   /// For importing names. This is initialized by the ClangImporter::create()
   /// after having set up a suitable Clang instance.
   std::unique_ptr<importer::NameImporter> nameImporter = nullptr;
+
+  /// If there is a single .PCH file imported into the __ObjC module, this
+  /// is the filename of that PCH. When other files are imported, this should
+  /// be llvm::None.
+  Optional<std::string> SinglePCHImport = None;
 
 public:
   importer::NameImporter &getNameImporter() {
@@ -815,13 +834,15 @@ public:
 
   /// \brief Retrieves the Swift wrapper for the given Clang module, creating
   /// it if necessary.
-  ClangModuleUnit *getWrapperForModule(ClangImporter &importer,
-                                       const clang::Module *underlying);
+  ClangModuleUnit *getWrapperForModule(const clang::Module *underlying);
 
   /// \brief Constructs a Swift module for the given Clang module.
-  ModuleDecl *finishLoadingClangModule(ClangImporter &importer,
-                                   const clang::Module *clangModule,
-                                   bool preferAdapter);
+  ModuleDecl *finishLoadingClangModule(const clang::Module *clangModule,
+                                       bool preferAdapter);
+
+  /// \brief Call finishLoadingClangModule on each deferred import collected
+  /// while scanning a bridging header or PCH.
+  void handleDeferredImports();
 
   /// \brief Retrieve the named Swift type, e.g., Int32.
   ///
@@ -1105,6 +1126,8 @@ public:
     D->setAccessibility(access);
     if (auto ASD = dyn_cast<AbstractStorageDecl>(D))
       ASD->setSetterAccessibility(access);
+    // All imported decls are constructed fully validated.
+    D->setValidationStarted();
     return D;
   }
 
@@ -1146,12 +1169,56 @@ public:
 
   /// Dump the Swift-specific name lookup tables we generate.
   void dumpSwiftLookupTables();
+
+  void setSinglePCHImport(Optional<std::string> PCHFilename) {
+    if (PCHFilename.hasValue()) {
+      assert(llvm::sys::path::extension(PCHFilename.getValue())
+                 .endswith(PCH_EXTENSION) &&
+             "Single PCH imported filename doesn't have .pch extension!");
+    }
+    SinglePCHImport = PCHFilename;
+  }
+
+  /// If there was is a single .pch bridging header without other imported
+  /// files, we can provide the PCH filename for declaration caching,
+  /// especially in code completion.
+  StringRef getSinglePCHImport() const {
+    if (SinglePCHImport.hasValue())
+      return *SinglePCHImport;
+    return StringRef();
+  }
 };
 
 namespace importer {
 
 /// Whether we should suppress the import of the given Clang declaration.
 bool shouldSuppressDeclImport(const clang::Decl *decl);
+
+/// Finds a particular kind of nominal by looking through typealiases.
+template <typename T>
+static T *dynCastIgnoringCompatibilityAlias(Decl *D) {
+  static_assert(std::is_base_of<NominalTypeDecl, T>::value,
+                "only meant for use with NominalTypeDecl and subclasses");
+  if (auto *alias = dyn_cast_or_null<TypeAliasDecl>(D)) {
+    if (!alias->isCompatibilityAlias())
+      return nullptr;
+    D = alias->getDeclaredInterfaceType()->getAnyNominal();
+  }
+  return dyn_cast_or_null<T>(D);
+}
+
+/// Finds a particular kind of nominal by looking through typealiases.
+template <typename T>
+static T *castIgnoringCompatibilityAlias(Decl *D) {
+  static_assert(std::is_base_of<NominalTypeDecl, T>::value,
+                "only meant for use with NominalTypeDecl and subclasses");
+  if (auto *alias = dyn_cast_or_null<TypeAliasDecl>(D)) {
+    assert(alias->isCompatibilityAlias() &&
+           "non-compatible typealias found where nominal was expected");
+    D = alias->getDeclaredInterfaceType()->getAnyNominal();
+  }
+  return cast_or_null<T>(D);
+}
 
 class SwiftNameLookupExtension : public clang::ModuleFileExtension {
   std::unique_ptr<SwiftLookupTable> &pchLookupTable;

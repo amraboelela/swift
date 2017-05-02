@@ -27,6 +27,8 @@ namespace llvm {
 
 namespace swift {
 
+class ProtocolConformance;
+
 /// A ProtocolConformanceRef is a handle to a protocol conformance which
 /// may be either concrete or abstract.
 ///
@@ -89,6 +91,23 @@ public:
   /// conformance represents.
   ProtocolConformanceRef getInherited(ProtocolDecl *parent) const;
 
+  /// Apply a substitution to the conforming type.
+  ProtocolConformanceRef subst(Type origType,
+                               TypeSubstitutionFn subs,
+                               LookupConformanceFn conformances) const;
+
+  /// Given a dependent type (expressed in terms of this conformance's
+  /// protocol), follow it from the conforming type.
+  Type getAssociatedType(Type origType, Type dependentType,
+                         LazyResolver *resolver = nullptr) const;
+
+  /// Given a dependent type (expressed in terms of this conformance's
+  /// protocol) and conformance, follow it from the conforming type.
+  ProtocolConformanceRef
+  getAssociatedConformance(Type origType, Type dependentType,
+                           ProtocolDecl *requirement,
+                           LazyResolver *resolver = nullptr) const;
+
   void dump() const;
   void dump(llvm::raw_ostream &out, unsigned indent = 0) const;
 
@@ -108,6 +127,12 @@ public:
                        ProtocolConformanceRef conformance,
                        Identifier name,
                        LazyResolver *resolver);
+
+  /// Determine whether this conformance is canonical.
+  bool isCanonical() const;
+
+  /// Create a canonical conformance from the current one.
+  ProtocolConformanceRef getCanonicalConformanceRef() const;
 };
 
 } // end namespace swift

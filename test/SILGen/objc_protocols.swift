@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -sdk %S/Inputs -I %S/Inputs -enable-source-import %s -emit-silgen -disable-objc-attr-requires-foundation-module | %FileCheck %s
+// RUN: %target-swift-frontend -sdk %S/Inputs -I %S/Inputs -enable-source-import %s -emit-silgen -disable-objc-attr-requires-foundation-module | %FileCheck %s
 
 // REQUIRES: objc_interop
 
@@ -24,27 +24,34 @@ protocol Ansible {
   func anse()
 }
 
-// CHECK-LABEL: sil hidden  @_T014objc_protocols0A8_generic{{[_0-9a-zA-Z]*}}F
+// CHECK-LABEL: sil hidden @_T014objc_protocols0A8_generic{{[_0-9a-zA-Z]*}}F
+// CHECK: bb0([[THIS:%.*]] : $T):
+// -- Result of runce is autoreleased according to default objc conv
+// CHECK: [[METHOD:%.*]] = witness_method [volatile] {{\$.*}},  #NSRuncing.runce!1.foreign
+// CHECK: [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
+// CHECK: [[RESULT1:%.*]] = apply [[METHOD]]<T>([[BORROWED_THIS:%.*]]) : $@convention(objc_method) <τ_0_0 where τ_0_0 : NSRuncing> (τ_0_0) -> @autoreleased NSObject
+// CHECK: end_borrow [[BORROWED_THIS]] from [[THIS]]
+
+// -- Result of copyRuncing is received copy_valued according to -copy family
+// CHECK: [[METHOD:%.*]] = witness_method [volatile] {{\$.*}},  #NSRuncing.copyRuncing!1.foreign
+// CHECK: [[BORROWED_THIS:%.*]] = begin_borrow [[THIS]]
+// CHECK: [[RESULT2:%.*]] = apply [[METHOD]]<T>([[BORROWED_THIS:%.*]]) : $@convention(objc_method) <τ_0_0 where τ_0_0 : NSRuncing> (τ_0_0) -> @owned NSObject
+// CHECK: end_borrow [[BORROWED_THIS]] from [[THIS]]
+
+// -- Arguments are not consumed by objc calls
+// CHECK: destroy_value [[THIS]]
 func objc_generic<T : NSRuncing>(_ x: T) -> (NSObject, NSObject) {
   return (x.runce(), x.copyRuncing())
-  // -- Result of runce is autoreleased according to default objc conv
-  // CHECK: [[METHOD:%.*]] = witness_method [volatile] {{\$.*}},  #NSRuncing.runce!1.foreign
-  // CHECK: [[RESULT1:%.*]] = apply [[METHOD]]<T>([[THIS1:%.*]]) : $@convention(objc_method) <τ_0_0 where τ_0_0 : NSRuncing> (τ_0_0) -> @autoreleased NSObject
-
-  // -- Result of copyRuncing is received copy_valued according to -copy family
-  // CHECK: [[METHOD:%.*]] = witness_method [volatile] {{\$.*}},  #NSRuncing.copyRuncing!1.foreign
-  // CHECK: [[RESULT2:%.*]] = apply [[METHOD]]<T>([[THIS2:%.*]]) : $@convention(objc_method) <τ_0_0 where τ_0_0 : NSRuncing> (τ_0_0) -> @owned NSObject
-
-  // -- Arguments are not consumed by objc calls
-  // CHECK: destroy_value [[THIS2]]
 }
 
 // CHECK-LABEL: sil hidden @_T014objc_protocols0A22_generic_partial_applyyxAA9NSRuncingRzlF : $@convention(thin) <T where T : NSRuncing> (@owned T) -> () {
 func objc_generic_partial_apply<T : NSRuncing>(_ x: T) {
   // CHECK: bb0([[ARG:%.*]] : $T):
   // CHECK:   [[FN:%.*]] = function_ref @[[THUNK1:_T014objc_protocols9NSRuncingP5runceSo8NSObjectCyFTcTO]] :
-  // CHECK:   [[ARG_COPY:%.*]] = copy_value [[ARG]]
+  // CHECK:   [[BORROWED_ARG:%.*]] = begin_borrow [[ARG]]
+  // CHECK:   [[ARG_COPY:%.*]] = copy_value [[BORROWED_ARG]]
   // CHECK:   [[METHOD:%.*]] = apply [[FN]]<T>([[ARG_COPY]])
+  // CHECK:   end_borrow [[BORROWED_ARG]] from [[ARG]]
   // CHECK:   destroy_value [[METHOD]]
   _ = x.runce
 
@@ -62,14 +69,14 @@ func objc_generic_partial_apply<T : NSRuncing>(_ x: T) {
 }
 // CHECK: } // end sil function '_T014objc_protocols0A22_generic_partial_applyyxAA9NSRuncingRzlF'
 
-// CHECK: sil shared [thunk] @[[THUNK1]] :
+// CHECK: sil shared [serializable] [thunk] @[[THUNK1]] :
 // CHECK: bb0([[SELF:%.*]] : $Self):
 // CHECK:   [[FN:%.*]] = function_ref @[[THUNK1_THUNK:_T014objc_protocols9NSRuncingP5runceSo8NSObjectCyFTO]] :
 // CHECK:   [[METHOD:%.*]] = partial_apply [[FN]]<Self>([[SELF]])
 // CHECK:   return [[METHOD]]
 // CHECK: } // end sil function '[[THUNK1]]'
 
-// CHECK: sil shared [thunk] @[[THUNK1_THUNK]]
+// CHECK: sil shared [serializable] [thunk] @[[THUNK1_THUNK]]
 // CHECK: bb0([[SELF:%.*]] : $Self):
 // CHECK:   [[SELF_COPY:%.*]] = copy_value [[SELF]]
 // CHECK:   [[FN:%.*]] = witness_method $Self, #NSRuncing.runce!1.foreign
@@ -78,43 +85,50 @@ func objc_generic_partial_apply<T : NSRuncing>(_ x: T) {
 // CHECK:   return [[RESULT]]
 // CHECK: } // end sil function '[[THUNK1_THUNK]]'
 
-// CHECK: sil shared [thunk] @[[THUNK2]] :
+// CHECK: sil shared [serializable] [thunk] @[[THUNK2]] :
 // CHECK:   [[FN:%.*]] = function_ref @[[THUNK2_THUNK:_T014objc_protocols9NSRuncingP5minceSo8NSObjectCyFZTO]]
 // CHECK:   [[METHOD:%.*]] = partial_apply [[FN]]<Self>(%0)
 // CHECK:   return [[METHOD]]
 // CHECK: } // end sil function '[[THUNK2]]'
 
-// CHECK: sil shared [thunk] @[[THUNK2_THUNK]] :
+// CHECK: sil shared [serializable] [thunk] @[[THUNK2_THUNK]] :
 // CHECK:      [[FN:%.*]] = witness_method $Self, #NSRuncing.mince!1.foreign
 // CHECK-NEXT: [[RESULT:%.*]] = apply [[FN]]<Self>(%0)
 // CHECK-NEXT: return [[RESULT]]
 // CHECK: } // end sil function '[[THUNK2_THUNK]]'
 
-// CHECK-LABEL: sil hidden  @_T014objc_protocols0A9_protocol{{[_0-9a-zA-Z]*}}F
+// CHECK-LABEL: sil hidden @_T014objc_protocols0A9_protocol{{[_0-9a-zA-Z]*}}F
+// CHECK: bb0([[THIS:%.*]] : $NSRuncing):
+// -- Result of runce is autoreleased according to default objc conv
+// CHECK: [[BORROWED_THIS_1:%.*]] = begin_borrow [[THIS]]
+// CHECK: [[THIS1:%.*]] = open_existential_ref [[BORROWED_THIS_1]] : $NSRuncing to $[[OPENED:@opened(.*) NSRuncing]]
+// CHECK: [[METHOD:%.*]] = witness_method [volatile] $[[OPENED]], #NSRuncing.runce!1.foreign
+// CHECK: [[RESULT1:%.*]] = apply [[METHOD]]<[[OPENED]]>([[THIS1]])
+
+// -- Result of copyRuncing is received copy_valued according to -copy family
+// CHECK: [[BORROWED_THIS_2:%.*]] = begin_borrow [[THIS]]
+// CHECK: [[THIS2:%.*]] = open_existential_ref [[BORROWED_THIS_2]] : $NSRuncing to $[[OPENED2:@opened(.*) NSRuncing]]
+// CHECK: [[METHOD:%.*]] = witness_method [volatile] $[[OPENED2]], #NSRuncing.copyRuncing!1.foreign
+// CHECK: [[RESULT2:%.*]] = apply [[METHOD]]<[[OPENED2]]>([[THIS2:%.*]])
+
+// -- Arguments are not consumed by objc calls
+// CHECK: end_borrow [[BORROWED_THIS_2]] from [[THIS]]
+// CHECK: end_borrow [[BORROWED_THIS_1]] from [[THIS]]
+// CHECK: destroy_value [[THIS]]
 func objc_protocol(_ x: NSRuncing) -> (NSObject, NSObject) {
   return (x.runce(), x.copyRuncing())
-  // -- Result of runce is autoreleased according to default objc conv
-  // CHECK: [[THIS1:%.*]] = open_existential_ref [[THIS1_ORIG:%.*]] : $NSRuncing to $[[OPENED:@opened(.*) NSRuncing]]
-  // CHECK: [[METHOD:%.*]] = witness_method [volatile] $[[OPENED]], #NSRuncing.runce!1.foreign
-  // CHECK: [[RESULT1:%.*]] = apply [[METHOD]]<[[OPENED]]>([[THIS1]])
-
-  // -- Result of copyRuncing is received copy_valued according to -copy family
-  // CHECK: [[THIS2:%.*]] = open_existential_ref [[THIS2_ORIG:%.*]] : $NSRuncing to $[[OPENED2:@opened(.*) NSRuncing]]
-  // CHECK: [[METHOD:%.*]] = witness_method [volatile] $[[OPENED2]], #NSRuncing.copyRuncing!1.foreign
-  // CHECK: [[RESULT2:%.*]] = apply [[METHOD]]<[[OPENED2]]>([[THIS2:%.*]])
-
-  // -- Arguments are not consumed by objc calls
-  // CHECK: destroy_value [[THIS2_ORIG]]
 }
 
 // CHECK-LABEL: sil hidden @_T014objc_protocols0A23_protocol_partial_applyyAA9NSRuncing_pF : $@convention(thin) (@owned NSRuncing) -> () {
 func objc_protocol_partial_apply(_ x: NSRuncing) {
   // CHECK: bb0([[ARG:%.*]] : $NSRuncing):
-  // CHECK:   [[OPENED_ARG:%.*]] = open_existential_ref [[ARG]] : $NSRuncing to $[[OPENED:@opened(.*) NSRuncing]]
+  // CHECK:   [[BORROWED_ARG:%.*]] = begin_borrow [[ARG]]
+  // CHECK:   [[OPENED_ARG:%.*]] = open_existential_ref [[BORROWED_ARG]] : $NSRuncing to $[[OPENED:@opened(.*) NSRuncing]]
   // CHECK:   [[FN:%.*]] = function_ref @_T014objc_protocols9NSRuncingP5runceSo8NSObjectCyFTcTO
   // CHECK:   [[OPENED_ARG_COPY:%.*]] = copy_value [[OPENED_ARG]]
   // CHECK:   [[RESULT:%.*]] = apply [[FN]]<[[OPENED]]>([[OPENED_ARG_COPY]])
   // CHECK:   destroy_value [[RESULT]]
+  // CHECK:   end_borrow [[BORROWED_ARG]] from [[ARG]]
   // CHECK:   destroy_value [[ARG]]
   _ = x.runce
 
@@ -123,7 +137,7 @@ func objc_protocol_partial_apply(_ x: NSRuncing) {
 }
 // CHECK : } // end sil function '_T014objc_protocols0A23_protocol_partial_applyyAA9NSRuncing_pF'
 
-// CHECK-LABEL: sil hidden  @_T014objc_protocols0A21_protocol_composition{{[_0-9a-zA-Z]*}}F
+// CHECK-LABEL: sil hidden @_T014objc_protocols0A21_protocol_composition{{[_0-9a-zA-Z]*}}F
 func objc_protocol_composition(_ x: NSRuncing & NSFunging) {
   // CHECK: [[THIS:%.*]] = open_existential_ref [[THIS_ORIG:%.*]] : $NSFunging & NSRuncing to $[[OPENED:@opened(.*) NSFunging & NSRuncing]]
   // CHECK: [[METHOD:%.*]] = witness_method [volatile] $[[OPENED]], #NSRuncing.runce!1.foreign
@@ -216,7 +230,7 @@ class StoredPropertyCount {
 }
 
 extension StoredPropertyCount: NSCounting {}
-// CHECK-LABEL: sil hidden [thunk] @_T014objc_protocols19StoredPropertyCountC5countSifgTo
+// CHECK-LABEL: sil hidden [transparent] [thunk] @_T014objc_protocols19StoredPropertyCountC5countSifgTo
 
 class ComputedPropertyCount {
   @objc var count: Int { return 0 }
@@ -257,7 +271,8 @@ func testInitializableExistential(_ im: Initializable.Type, i: Int) -> Initializ
   // CHECK:   [[I2:%[0-9]+]] = apply [[INIT_WITNESS]]<@opened([[N]]) Initializable>([[I]], [[I2_COPY]]) : $@convention(objc_method) <τ_0_0 where τ_0_0 : Initializable> (Int, @owned τ_0_0) -> @owned τ_0_0
   // CHECK:   [[I2_EXIST_CONTAINER:%[0-9]+]] = init_existential_ref [[I2]] : $@opened([[N]]) Initializable : $@opened([[N]]) Initializable, $Initializable
   // CHECK:   store [[I2_EXIST_CONTAINER]] to [init] [[PB]] : $*Initializable
-  // CHECK:   [[I2:%[0-9]+]] = load [copy] [[PB]] : $*Initializable
+  // CHECK:   [[READ:%.*]] = begin_access [read] [unknown] [[PB]] : $*Initializable
+  // CHECK:   [[I2:%[0-9]+]] = load [copy] [[READ]] : $*Initializable
   // CHECK:   destroy_value [[I2_BOX]] : ${ var Initializable }
   // CHECK:   return [[I2]] : $Initializable
   var i2 = im.init(int: i)

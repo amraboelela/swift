@@ -65,6 +65,8 @@ private:
   }
 
   Action startSourceEntity(const IndexSymbol &symbol) override {
+    if (symbol.symInfo.Kind == SymbolKind::Parameter)
+      return Skip;
 
     // report any parent relations to this reference
     if (symbol.roles & (SymbolRoleSet)SymbolRole::RelationBaseOf) {
@@ -80,7 +82,7 @@ private:
 
 
     // start the entity (ref or def)
-    if(!withEntityInfo(symbol, [this](const EntityInfo &info) {
+    if (!withEntityInfo(symbol, [this](const EntityInfo &info) {
         return impl.startSourceEntity(info);
     })) return Abort;
 

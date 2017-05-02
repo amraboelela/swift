@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -primary-file %s -emit-ir -verify -g -o - | %FileCheck %s
+// RUN: %target-swift-frontend -primary-file %s -emit-ir -verify -g -o - | %FileCheck %s
 
 func markUsed<T>(_ t: T) {}
 
@@ -28,8 +28,8 @@ aFunction(AClass(),AnotherClass(),"aFunction")
 
 struct Wrapper<T: AProtocol> {
 
-  init<U: AProtocol>(from : Wrapper<U>) {
-  // CHECK-DAG: !DICompositeType(tag: DW_TAG_structure_type, name: "Wrapper",{{.*}} identifier: "_T012generic_args7WrapperVyAcCyxGACyqd__G4from_tcAA9AProtocolRd__lufcQq_GD")
+  init<U>(from : Wrapper<U>) {
+  // CHECK-DAG: !DICompositeType(tag: DW_TAG_structure_type, name: "Wrapper",{{.*}} identifier: "_T012generic_args7WrapperVyA2CyxGACyqd__G4from_tcAA9AProtocolRd__lufcQq_GD")
     var wrapped = from
     wrapped = from
     _ = wrapped

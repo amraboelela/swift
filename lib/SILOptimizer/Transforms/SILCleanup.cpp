@@ -13,6 +13,9 @@
 // Cleanup SIL to make it suitable for IRGen. Specifically, removes the calls to
 // Builtin.staticReport(), which are not needed post SIL.
 //
+// FIXME: This pass is mandatory so should probably be in
+// SILOptimizer/Mandatory.
+//
 //===----------------------------------------------------------------------===//
 
 #include "swift/SILOptimizer/PassManager/Passes.h"
@@ -52,11 +55,6 @@ static void cleanFunction(SILFunction &Fn) {
   }
 }
 
-void swift::performSILCleanup(SILModule *M) {
-  for (auto &Fn : *M)
-    cleanFunction(Fn);
-}
-
 namespace {
 class SILCleanup : public swift::SILFunctionTransform {
 
@@ -66,7 +64,6 @@ class SILCleanup : public swift::SILFunctionTransform {
     invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);
   }
 
-  StringRef getName() override { return "SIL Cleanup"; }
 };
 } // end anonymous namespace
 
