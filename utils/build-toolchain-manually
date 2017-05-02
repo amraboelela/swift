@@ -3,16 +3,16 @@
 SWIFT_PATH=/home/amr/swift
 PATH=/home/amr/resources/git-plus:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 PARAM=x$1
+PARAM2=x$2
 cd $SWIFT_PATH
 
 if [ ${PARAM} = "x-c" ] ; then
 echo ========== Cleaning ===========
-PARAM="x-u"
 rm -rf build
 rm -f swift/*.tar.gz
 fi
 
-if [ ${PARAM} = "x-u" ] ; then
+if [ ${PARAM2} = "x-u" ] ; then
 echo ========== Syncing ==========
 git multi pull
 git multi fetch upstream
