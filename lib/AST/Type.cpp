@@ -228,14 +228,7 @@ ExistentialLayout::ExistentialLayout(ProtocolType *type) {
 
   auto *protoDecl = type->getDecl();
 
-  if (protoDecl->requiresClass()) {
-    requiresClass = true;
-    requiresClassImplied = true;
-  } else {
-    requiresClass = false;
-    requiresClassImplied = false;
-  }
-
+  hasExplicitAnyObject = false;
   containsNonObjCProtocol =
     !(protoDecl->isSpecificProtocol(KnownProtocolKind::AnyObject) ||
       protoDecl->isObjC());
@@ -246,8 +239,7 @@ ExistentialLayout::ExistentialLayout(ProtocolType *type) {
 ExistentialLayout::ExistentialLayout(ProtocolCompositionType *type) {
   assert(type->isCanonical());
 
-  requiresClass = type->hasExplicitAnyObject();
-  requiresClassImplied = false;
+  hasExplicitAnyObject = type->hasExplicitAnyObject();
   containsNonObjCProtocol = false;
 
   auto members = type->getMembers();
@@ -255,17 +247,10 @@ ExistentialLayout::ExistentialLayout(ProtocolCompositionType *type) {
       isa<ClassDecl>(members[0]->getAnyNominal())) {
     superclass = members[0];
     members = members.slice(1);
-    requiresClass = true;
-    requiresClassImplied = true;
   }
 
   for (auto member : members) {
     auto *protoDecl = member->castTo<ProtocolType>()->getDecl();
-    if (protoDecl->requiresClass()) {
-      requiresClass = true;
-      requiresClassImplied = true;
-    }
-
     containsNonObjCProtocol |=
       !(protoDecl->isSpecificProtocol(KnownProtocolKind::AnyObject) ||
         protoDecl->isObjC());
@@ -291,10 +276,22 @@ ExistentialLayout CanType::getExistentialLayout() {
   return ExistentialLayout(comp);
 }
 
+bool ExistentialLayout::requiresClass() const {
+  if (hasExplicitAnyObject || superclass)
+    return true;
+
+  for (auto proto : getProtocols()) {
+    if (proto->requiresClass())
+      return true;
+  }
+
+  return false;
+}
+
 bool ExistentialLayout::isAnyObject() const {
   // New implementation
   auto protocols = getProtocols();
-  if (requiresClass && !requiresClassImplied && protocols.empty())
+  if (hasExplicitAnyObject && !superclass && protocols.empty())
     return true;
 
   // Old implementation -- FIXME: remove this
@@ -583,7 +580,8 @@ bool TypeBase::isAnyObject() {
 
 bool ExistentialLayout::isErrorExistential() const {
   auto protocols = getProtocols();
-  return (!requiresClass &&
+  return (!hasExplicitAnyObject &&
+          !superclass &&
           protocols.size() == 1 &&
           protocols[0]->getDecl()->isSpecificProtocol(KnownProtocolKind::Error));
 }
@@ -602,7 +600,7 @@ bool ExistentialLayout::isExistentialWithError(ASTContext &ctx) const {
 }
 
 LayoutConstraint ExistentialLayout::getLayoutConstraint() const {
-  if (requiresClass && !requiresClassImplied) {
+  if (hasExplicitAnyObject) {
     return LayoutConstraint::getLayoutConstraint(
       LayoutConstraintKind::Class);
   }
@@ -891,16 +889,20 @@ Type TypeBase::getRValueInstanceType() {
 
 /// \brief Collect the protocols in the existential type T into the given
 /// vector.
-static void addProtocols(Type T, SmallVectorImpl<ProtocolDecl *> &Protocols,
-                         Type &Superclass) {
+static void addProtocols(Type T,
+                         SmallVectorImpl<ProtocolDecl *> &Protocols,
+                         Type &Superclass,
+                         bool &HasExplicitAnyObject) {
   if (auto Proto = T->getAs<ProtocolType>()) {
     Protocols.push_back(Proto->getDecl());
     return;
   }
 
   if (auto PC = T->getAs<ProtocolCompositionType>()) {
+    if (PC->hasExplicitAnyObject())
+      HasExplicitAnyObject = true;
     for (auto P : PC->getMembers())
-      addProtocols(P, Protocols, Superclass);
+      addProtocols(P, Protocols, Superclass, HasExplicitAnyObject);
     return;
   }
 
@@ -2556,6 +2558,8 @@ CanArchetypeType ArchetypeType::getNew(
                                    SmallVectorImpl<ProtocolDecl *> &ConformsTo,
                                    Type Superclass,
                                    LayoutConstraint Layout) {
+  assert(!Superclass || Superclass->getClassOrBoundGenericClass());
+
   // Gather the set of protocol declarations to which this archetype conforms.
   ProtocolType::canonicalizeProtocols(ConformsTo);
 
@@ -2576,6 +2580,7 @@ ArchetypeType::getNew(const ASTContext &Ctx,
                       SmallVectorImpl<ProtocolDecl *> &ConformsTo,
                       Type Superclass,
                       LayoutConstraint Layout) {
+  assert(!Superclass || Superclass->getClassOrBoundGenericClass());
   assert(genericEnvironment && "missing generic environment for archetype");
 
   // Gather the set of protocol declarations to which this archetype conforms.
@@ -2768,7 +2773,7 @@ bool ProtocolType::requiresClass() {
 }
 
 bool ProtocolCompositionType::requiresClass() {
-  return getExistentialLayout().requiresClass;
+  return getExistentialLayout().requiresClass();
 }
 
 Type ProtocolCompositionType::get(const ASTContext &C,
@@ -2782,11 +2787,15 @@ Type ProtocolCompositionType::get(const ASTContext &C,
   Type Superclass;
   SmallVector<ProtocolDecl *, 4> Protocols;
   for (Type t : Members) {
-    addProtocols(t, Protocols, Superclass);
+    addProtocols(t, Protocols, Superclass, HasExplicitAnyObject);
   }
   
   // Minimize the set of protocols composed together.
   ProtocolType::canonicalizeProtocols(Protocols);
+
+  // The presence of a superclass constraint makes AnyObject redundant.
+  if (Superclass)
+    HasExplicitAnyObject = false;
 
   // If one protocol remains with no further constraints, its nominal
   // type is the canonical type.
@@ -2805,8 +2814,7 @@ Type ProtocolCompositionType::get(const ASTContext &C,
                  });
 
   // TODO: Canonicalize away HasExplicitAnyObject if it is implied
-  // by one of our member protocols or the presence of a superclass
-  // constraint.
+  // by one of our member protocols.
   return build(C, CanTypes, HasExplicitAnyObject);
 }
 
@@ -4015,7 +4023,7 @@ bool TypeBase::usesNativeReferenceCounting(ResilienceExpansion resilience) {
   case TypeKind::Protocol:
   case TypeKind::ProtocolComposition: {
     auto layout = getExistentialLayout();
-    assert(layout.requiresClass && "Opaque existentials don't use refcounting");
+    assert(layout.requiresClass() && "Opaque existentials don't use refcounting");
     if (layout.superclass)
       return layout.superclass->usesNativeReferenceCounting(resilience);
     return ::doesOpaqueClassUseNativeReferenceCounting(type->getASTContext());
