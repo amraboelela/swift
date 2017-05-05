@@ -1,4 +1,4 @@
-//===--- Migrator.cpp -----------------------------------------------------===////
+//===--- Migrator.cpp -----------------------------------------------------===//
 // This source file is part of the Swift.org open source project
 //
 // Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
@@ -25,25 +25,41 @@
 using namespace swift;
 using namespace swift::migrator;
 
-bool migrator::updateCodeAndEmitRemap(CompilerInstance &Instance,
+bool migrator::updateCodeAndEmitRemap(CompilerInstance *Instance,
                                       const CompilerInvocation &Invocation) {
   Migrator M { Instance, Invocation }; // Provide inputs and configuration
 
-  // Phase 1:
-  // Perform any syntactic transformations if requested.
+  // Phase 1: Pre Fix-it passes
+  // These uses the initial frontend invocation to apply any obvious fix-its
+  // to see if we can get an error-free AST to get to Phase 2.
+  std::unique_ptr<swift::CompilerInstance> PreFixItInstance;
+  if (Instance->getASTContext().hadError()) {
+    PreFixItInstance = M.repeatFixitMigrations(2,
+      Invocation.getLangOptions().EffectiveLanguageVersion);
 
+    // If we still couldn't fix all of the errors, give up.
+    if (PreFixItInstance->getASTContext().hadError()) {
+      return true;
+    }
+    M.StartInstance = PreFixItInstance.get();
+  }
+
+  // Phase 2: Syntactic Transformations
   auto FailedSyntacticPasses = M.performSyntacticPasses();
   if (FailedSyntacticPasses) {
     return true;
   }
 
-  // Phase 2:
+  // Phase 3: Post Fix-it Passes
   // Perform fix-it based migrations on the compiler, some number of times in
   // order to give the compiler an opportunity to
   // take its time reaching a fixed point.
+  // This is the end of the pipeline, so we throw away the compiler instance(s)
+  // we used in these fix-it runs.
 
   if (M.getMigratorOptions().EnableMigratorFixits) {
-    M.repeatFixitMigrations(Migrator::MaxCompilerFixitPassIterations);
+    M.repeatFixitMigrations(Migrator::MaxCompilerFixitPassIterations,
+                            {4, 0, 0});
   }
 
   // OK, we have a final resulting text. Now we compare against the input
@@ -58,7 +74,7 @@ bool migrator::updateCodeAndEmitRemap(CompilerInstance &Instance,
   return EmitRemapFailed || EmitMigratedFailed || DumpMigrationStatesFailed;
 }
 
-Migrator::Migrator(CompilerInstance &StartInstance,
+Migrator::Migrator(CompilerInstance *StartInstance,
                    const CompilerInvocation &StartInvocation)
   : StartInstance(StartInstance), StartInvocation(StartInvocation) {
 
@@ -68,25 +84,24 @@ Migrator::Migrator(CompilerInstance &StartInstance,
     States.push_back(MigrationState::start(SrcMgr, StartBufferID));
 }
 
-void Migrator::
-repeatFixitMigrations(const unsigned Iterations) {
+std::unique_ptr<swift::CompilerInstance>
+Migrator::repeatFixitMigrations(const unsigned Iterations,
+                                version::Version SwiftLanguageVersion) {
   for (unsigned i = 0; i < Iterations; ++i) {
-    auto ThisResult = performAFixItMigration();
-    if (!ThisResult.hasValue()) {
-      // Something went wrong? Track error in the state?
+    auto ThisInstance = performAFixItMigration(SwiftLanguageVersion);
+    if (ThisInstance == nullptr) {
       break;
     } else {
-      if (ThisResult.getValue()->outputDiffersFromInput()) {
-        States.push_back(ThisResult.getValue());
-      } else {
-        break;
+      if (States.back()->noChangesOccurred()) {
+        return ThisInstance;
       }
     }
   }
+  return nullptr;
 }
 
-llvm::Optional<RC<MigrationState>>
-Migrator::performAFixItMigration() {
+std::unique_ptr<swift::CompilerInstance>
+Migrator::performAFixItMigration(version::Version SwiftLanguageVersion) {
   auto InputState = States.back();
   auto InputBuffer =
     llvm::MemoryBuffer::getMemBufferCopy(InputState->getOutputText(),
@@ -94,21 +109,22 @@ Migrator::performAFixItMigration() {
 
   CompilerInvocation Invocation { StartInvocation };
   Invocation.clearInputs();
-  Invocation.getLangOptions().EffectiveLanguageVersion = { 4, 0, 0 };
+  Invocation.getLangOptions().EffectiveLanguageVersion = SwiftLanguageVersion;
 
-  // The default subset of @objc fix-its, referred to as "minimal" migration
-  // in SE-0160, adds @objc to things that clearly must be visible to the
-  // Objective-C runtime. These are compiler error fix-its.
-  Invocation.getLangOptions().WarnSwift3ObjCInference = true;
-  Invocation.getLangOptions().EnableSwift3ObjCInference = false;
+  // SE-0160: When migrating, always use the Swift 3 @objc inference rules,
+  // which drives warnings with the "@objc" Fix-Its.
+  Invocation.getLangOptions().EnableSwift3ObjCInference = true;
 
-  // However, if the user selects the workflow to keep the behavior of Swift 3's
-  // implicit Objective-C visibility, force Swift 3 @objc inference to be on.
-  // Coupled with the -warn-swift3-objc-inference flag above, we'll get warning
-  // fix-its from the compiler.
-  if (getMigratorOptions().KeepObjcVisibility) {
-    Invocation.getLangOptions().EnableSwift3ObjCInference = true;
-  }
+  // The default behavior of the migrator, referred to as "minimal" migration
+  // in SE-0160, only adds @objc Fix-Its to those cases where the Objective-C
+  // entry point is explicitly used somewhere in the source code. The user
+  // may also select a workflow that adds @objc for every declaration that
+  // would infer @objc under the Swift 3 rules but would no longer infer
+  // @objc in Swift 4.
+  Invocation.getLangOptions().WarnSwift3ObjCInference =
+    getMigratorOptions().KeepObjcVisibility
+      ? Swift3ObjCInferenceWarnings::Complete
+      : Swift3ObjCInferenceWarnings::Minimal;
 
   const auto &OrigFrontendOpts = StartInvocation.getFrontendOptions();
 
@@ -131,18 +147,18 @@ Migrator::performAFixItMigration() {
     PrimaryIndex, SelectedInput::InputKind::Buffer
   };
 
-  CompilerInstance Instance;
-  if (Instance.setup(Invocation)) {
-    return None;
+  auto Instance = llvm::make_unique<swift::CompilerInstance>();
+  if (Instance->setup(Invocation)) {
+    return nullptr;
   }
 
   FixitApplyDiagnosticConsumer FixitApplyConsumer {
     InputState->getOutputText(),
     getInputFilename(),
   };
-  Instance.addDiagnosticConsumer(&FixitApplyConsumer);
+  Instance->addDiagnosticConsumer(&FixitApplyConsumer);
 
-  Instance.performSema();
+  Instance->performSema();
 
   StringRef ResultText = InputState->getOutputText();
   unsigned ResultBufferID = InputState->getOutputBufferID();
@@ -156,9 +172,10 @@ Migrator::performAFixItMigration() {
     ResultBufferID = SrcMgr.addNewSourceBuffer(std::move(ResultBuffer));
   }
 
-  return MigrationState::make(MigrationKind::CompilerFixits,
-                              SrcMgr, InputState->getOutputBufferID(),
-                              ResultBufferID);
+  States.push_back(MigrationState::make(MigrationKind::CompilerFixits,
+                                        SrcMgr, InputState->getOutputBufferID(),
+                                        ResultBufferID));
+  return Instance;
 }
 
 bool Migrator::performSyntacticPasses() {
@@ -180,7 +197,7 @@ bool Migrator::performSyntacticPasses() {
 
   auto InputState = States.back();
 
-  EditorAdapter Editor { StartInstance.getSourceMgr(), ClangSourceManager };
+  EditorAdapter Editor { StartInstance->getSourceMgr(), ClangSourceManager };
 
   // const auto SF = Instance.getPrimarySourceFile();
 
@@ -194,7 +211,7 @@ bool Migrator::performSyntacticPasses() {
   // Once it has run, push the edits into Edits above:
   // Edits.commit(YourPass.getEdits());
 
-  SyntacticMigratorPass SPass(Editor, StartInstance.getPrimarySourceFile(),
+  SyntacticMigratorPass SPass(Editor, StartInstance->getPrimarySourceFile(),
     getMigratorOptions());
   SPass.run();
   Edits.commit(SPass.getEdits());
@@ -206,7 +223,7 @@ bool Migrator::performSyntacticPasses() {
   RewriteBufferEditsReceiver Rewriter {
     ClangSourceManager,
     Editor.getClangFileIDForSwiftBufferID(
-      StartInstance.getPrimarySourceFile()->getBufferID().getValue()),
+      StartInstance->getPrimarySourceFile()->getBufferID().getValue()),
     InputState->getOutputText()
   };
     

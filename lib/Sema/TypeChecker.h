@@ -367,7 +367,9 @@ public:
 };
 
 /// The result of `checkGenericRequirement`.
-enum class RequirementCheckResult { Success, Failure, UnsatisfiedDependency };
+enum class RequirementCheckResult {
+  Success, Failure, UnsatisfiedDependency, SubstitutionFailure
+};
 
 class ConformsToProtocolResult {
   Optional<ProtocolConformanceRef> Data;
@@ -491,6 +493,9 @@ enum TypeResolutionFlags : unsigned {
 
   /// Whether we are checking the underlying type of a typealias.
   TR_TypeAliasUnderlyingType = 0x4000000,
+
+  /// Whether we are checking the parameter list of a subscript.
+  TR_SubscriptParameters = 0x8000000,
 };
 
 /// Option set describing how type resolution should work.
@@ -790,6 +795,7 @@ private:
   Type ImageLiteralType;
   Type FileReferenceLiteralType;
   Type StringType;
+  Type SubstringType;
   Type IntType;
   Type Int8Type;
   Type UInt8Type;
@@ -881,6 +887,7 @@ public:
   Type getOptionalType(SourceLoc loc, Type elementType);
   Type getImplicitlyUnwrappedOptionalType(SourceLoc loc, Type elementType);
   Type getStringType(DeclContext *dc);
+  Type getSubstringType(DeclContext *dc);
   Type getIntType(DeclContext *dc);
   Type getInt8Type(DeclContext *dc);
   Type getUInt8Type(DeclContext *dc);
@@ -1349,7 +1356,8 @@ public:
       LookupConformanceFn conformances,
       UnsatisfiedDependency *unsatisfiedDependency,
       ConformanceCheckOptions conformanceOptions = ConformanceCheckFlags::Used,
-      GenericRequirementsCheckListener *listener = nullptr);
+      GenericRequirementsCheckListener *listener = nullptr,
+      SubstOptions options = None);
 
   /// Resolve the superclass of the given class.
   void resolveSuperclass(ClassDecl *classDecl) override;

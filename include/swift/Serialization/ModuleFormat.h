@@ -54,7 +54,7 @@ const uint16_t VERSION_MAJOR = 0;
 /// in source control, you should also update the comment to briefly
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
-const uint16_t VERSION_MINOR = 341; // Last change: retain/release addr
+const uint16_t VERSION_MINOR = 343; // Last change: new vtable entry flag
 
 using DeclID = PointerEmbeddedInt<unsigned, 31>;
 using DeclIDField = BCFixed<31>;
@@ -858,6 +858,7 @@ namespace decls_block {
     TypeIDField, // canonical interface type
     DeclIDField, // overridden decl
     AccessibilityKindField, // accessibility
+    BCFixed<1>,   // requires a new vtable slot
     BCArray<IdentifierIDField> // argument names
     // Trailed by its generic parameters, if any, followed by the parameter
     // patterns.
@@ -916,6 +917,7 @@ namespace decls_block {
     BCFixed<1>,   // name is compound?
     AddressorKindField, // addressor kind
     AccessibilityKindField, // accessibility
+    BCFixed<1>,   // requires a new vtable slot
     BCArray<IdentifierIDField> // name components
     // The record is trailed by:
     // - its _silgen_name, if any
@@ -1314,6 +1316,8 @@ namespace decls_block {
   using SynthesizedProtocolDeclAttrLayout
     = BCRecordLayout<SynthesizedProtocol_DECL_ATTR>;
   using ImplementsDeclAttrLayout = BCRecordLayout<Implements_DECL_ATTR>;
+  using NSKeyedArchiveLegacyDeclAttrLayout
+    = BCRecordLayout<NSKeyedArchiveLegacy_DECL_ATTR>;
 
   using InlineDeclAttrLayout = BCRecordLayout<
     Inline_DECL_ATTR,

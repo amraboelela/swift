@@ -199,6 +199,15 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
       if (doIt(Inherit))
         return true;
     }
+    
+    if (auto *ATD = dyn_cast<AssociatedTypeDecl>(TPD)) {
+      if (auto *WhereClause = ATD->getTrailingWhereClause()) {
+        for (auto &Req: WhereClause->getRequirements()) {
+          if (doIt(Req))
+            return true;
+        }
+      }
+    }
     return false;
   }
 
@@ -212,20 +221,8 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
       }
       // Visit param conformance
       for (auto &Req : NTD->getGenericParams()->getRequirements()) {
-        switch (Req.getKind()) {
-          case RequirementReprKind::SameType:
-            if (doIt(Req.getFirstTypeLoc()) || doIt(Req.getSecondTypeLoc()))
-              return true;
-            break;
-          case RequirementReprKind::TypeConstraint:
-            if (doIt(Req.getSubjectLoc()) || doIt(Req.getConstraintLoc()))
-              return true;
-            break;
-          case RequirementReprKind::LayoutConstraint:
-            if (doIt(Req.getFirstTypeLoc()))
-              return true;
-            break;
-        }
+        if (doIt(Req))
+          return true;
       }
     }
 
@@ -233,6 +230,16 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
       if (doIt(Inherit))
         return true;
     }
+    
+    if (auto *Protocol = dyn_cast<ProtocolDecl>(NTD)) {
+      if (auto *WhereClause = Protocol->getTrailingWhereClause()) {
+        for (auto &Req: WhereClause->getRequirements()) {
+          if (doIt(Req))
+            return true;
+        }
+      }
+    }
+    
     for (Decl *Member : NTD->getMembers())
       if (doIt(Member))
         return true;
@@ -268,20 +275,8 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
 
       // Visit param conformance
       for (auto &Req : AFD->getGenericParams()->getRequirements()) {
-        switch (Req.getKind()) {
-        case RequirementReprKind::SameType:
-          if (doIt(Req.getFirstTypeLoc()) || doIt(Req.getSecondTypeLoc()))
-            return true;
-          break;
-        case RequirementReprKind::TypeConstraint:
-          if (doIt(Req.getSubjectLoc()) || doIt(Req.getConstraintLoc()))
-            return true;
-          break;
-        case RequirementReprKind::LayoutConstraint:
-          if (doIt(Req.getSubjectLoc()))
-            return true;
-          break;
-        }
+        if (doIt(Req))
+          return true;
       }
     }
 
@@ -915,10 +910,35 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
       E->setObjCStringLiteralExpr(sub);
       return E;
     }
-  
+
+    auto components = E->getComponents();
+    if (components.empty()) {
+      // No components means a parsed-only/pre-resolution Swift key path.
+      assert(!E->isObjC());
+      if (auto parsedRoot = E->getParsedRoot()) {
+        Expr *newRoot = doIt(parsedRoot);
+        if (!newRoot)
+          return nullptr;
+        E->setParsedRoot(newRoot);
+      }
+      if (auto parsedPath = E->getParsedPath()) {
+        Expr *newPath = doIt(parsedPath);
+        if (!newPath)
+          return nullptr;
+        E->setParsedPath(newPath);
+      }
+      return E;
+    }
+
+    if (!E->isObjC()) {
+      auto rootType = E->getRootType();
+      if (rootType && doIt(rootType))
+        return nullptr;
+    }
+
     SmallVector<KeyPathExpr::Component, 4> updatedComponents;
     bool didChangeComponents = false;
-    for (auto &origComponent : E->getComponents()) {
+    for (auto &origComponent : components) {
       auto component = origComponent;
       switch (auto kind = component.getKind()) {
       case KeyPathExpr::Component::Kind::Subscript:
@@ -955,9 +975,11 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
       E->resolveComponents(E->getType()->getASTContext(),
                            updatedComponents);
     }
-    
+
     return E;
   }
+
+  Expr *visitKeyPathDotExpr(KeyPathDotExpr *E) { return E; }
 
   //===--------------------------------------------------------------------===//
   //                           Everything Else
@@ -1139,6 +1161,24 @@ public:
 
     // If we didn't bail out, do post-order visitation.
     return !Walker.walkToTypeReprPost(T);
+  }
+  
+  bool doIt(RequirementRepr &Req) {
+    switch (Req.getKind()) {
+    case RequirementReprKind::SameType:
+      if (doIt(Req.getFirstTypeLoc()) || doIt(Req.getSecondTypeLoc()))
+        return true;
+      break;
+    case RequirementReprKind::TypeConstraint:
+      if (doIt(Req.getSubjectLoc()) || doIt(Req.getConstraintLoc()))
+        return true;
+      break;
+    case RequirementReprKind::LayoutConstraint:
+      if (doIt(Req.getFirstTypeLoc()))
+        return true;
+      break;
+    }
+    return false;
   }
 };
 

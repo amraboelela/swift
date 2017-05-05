@@ -884,6 +884,12 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
                           const FrontendOptions &FrontendOpts) {
   using namespace options;
 
+  /// FIXME: Remove this flag when void subscripts are implemented.
+  /// This is used to guard preemptive testing for the fix-it.
+  if (Args.hasArg(OPT_fix_string_substring_conversion)) {
+    Opts.FixStringToSubstringConversions = true;
+  }
+
   if (auto A = Args.getLastArg(OPT_swift_version)) {
     auto vers = version::Version::parseVersionString(
       A->getValue(), SourceLoc(), &Diags);
@@ -902,7 +908,8 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   Opts.UseMalloc |= Args.hasArg(OPT_use_malloc);
 
-  Opts.DiagnosticsEditorMode |= Args.hasArg(OPT_diagnostics_editor_mode);
+  Opts.DiagnosticsEditorMode |= Args.hasArg(OPT_diagnostics_editor_mode,
+                                            OPT_serialize_diagnostics_path);
 
   Opts.EnableExperimentalPropertyBehaviors |=
     Args.hasArg(OPT_enable_experimental_property_behaviors);
@@ -1011,12 +1018,22 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   }
 
   Opts.EnableAppExtensionRestrictions |= Args.hasArg(OPT_enable_app_extension);
-  Opts.WarnSwift3ObjCInference |= Args.hasArg(OPT_warn_swift3_objc_inference);
 
   Opts.EnableSwift3ObjCInference =
     Args.hasFlag(OPT_enable_swift3_objc_inference,
                  OPT_disable_swift3_objc_inference,
                  Opts.isSwiftVersion3());
+
+  if (Opts.EnableSwift3ObjCInference) {
+    if (const Arg *A = Args.getLastArg(
+                                   OPT_warn_swift3_objc_inference_minimal,
+                                   OPT_warn_swift3_objc_inference_complete)) {
+      if (A->getOption().getID() == OPT_warn_swift3_objc_inference_minimal)
+        Opts.WarnSwift3ObjCInference = Swift3ObjCInferenceWarnings::Minimal;
+      else
+        Opts.WarnSwift3ObjCInference = Swift3ObjCInferenceWarnings::Complete;
+    }
+  }
 
   llvm::Triple Target = Opts.Target;
   StringRef TargetArg;

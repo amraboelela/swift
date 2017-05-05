@@ -1948,6 +1948,7 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
   case DAK_SynthesizedProtocol:
   case DAK_Count:
   case DAK_Implements:
+  case DAK_NSKeyedArchiveLegacy:
     llvm_unreachable("cannot serialize attribute");
     return;
 
@@ -2313,6 +2314,8 @@ void Serializer::writeForeignErrorConvention(const ForeignErrorConvention &fec){
 
 void Serializer::writeDecl(const Decl *D) {
   using namespace decls_block;
+
+  PrettyStackTraceDecl trace("serializing", D);
 
   auto id = DeclAndTypeIDs[D].first;
   assert(id != 0 && "decl or type not referenced properly");
@@ -2849,6 +2852,7 @@ void Serializer::writeDecl(const Decl *D) {
                            !fn->getFullName().isSimpleName(),
                            rawAddressorKind,
                            rawAccessLevel,
+                           fn->needsNewVTableEntry(),
                            nameComponents);
 
     writeGenericParams(fn->getGenericParams());
@@ -2971,6 +2975,7 @@ void Serializer::writeDecl(const Decl *D) {
                                   addTypeRef(ty->getCanonicalType()),
                                   addDeclRef(ctor->getOverriddenDecl()),
                                   rawAccessLevel,
+                                  ctor->needsNewVTableEntry(),
                                   nameComponents);
 
     writeGenericParams(ctor->getGenericParams());

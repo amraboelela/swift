@@ -7,4 +7,4 @@
 
 // REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol A:a{typealias e}class a:A{typealias e:S
+&{LazyFilterIndex{

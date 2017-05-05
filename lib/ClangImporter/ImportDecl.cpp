@@ -4735,7 +4735,7 @@ Decl *SwiftDeclConverter::importCompatibilityTypeAlias(
   Decl *importedDecl = nullptr;
   if (getVersion() >= getActiveSwiftVersion())
     importedDecl = Impl.importDecl(decl, ImportNameVersion::ForTypes);
-  if (!importedDecl)
+  if (!importedDecl && getVersion() != getActiveSwiftVersion())
     importedDecl = Impl.importDecl(decl, getActiveSwiftVersion());
   auto typeDecl = dyn_cast_or_null<TypeDecl>(importedDecl);
   if (!typeDecl)
@@ -4922,7 +4922,6 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
   // implementation in the standard library.
   transferKnown(KnownProtocolKind::Equatable);
   transferKnown(KnownProtocolKind::Hashable);
-  transferKnown(KnownProtocolKind::Comparable);
   bool transferredObjCBridgeable =
     transferKnown(KnownProtocolKind::ObjectiveCBridgeable);
 
@@ -7362,7 +7361,8 @@ ClangImporter::Implementation::importDeclContextOf(
     auto importedDecl = importDecl(context.getTypedefName(), CurrentVersion);
     if (!importedDecl) return nullptr;
 
-    importedDC = dyn_cast_or_null<DeclContext>(importedDecl);
+    // Dig out the imported DeclContext.
+    importedDC = dynCastIgnoringCompatibilityAlias<NominalTypeDecl>(importedDecl);
     break;
   }
 

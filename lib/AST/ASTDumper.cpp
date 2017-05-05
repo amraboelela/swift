@@ -855,6 +855,8 @@ namespace {
 
     void visitClassDecl(ClassDecl *CD) {
       printCommon(CD, "class_decl");
+      if (CD->getAttrs().hasAttribute<StaticInitializeObjCMetadataAttr>())
+        OS << " @_staticInitializeObjCMetadata";
       printInherited(CD->getInherited());
       for (Decl *D : CD->getMembers()) {
         OS << '\n';
@@ -2467,6 +2469,25 @@ public:
       OS << '\n';
       printRec(stringLiteral);
     }
+    if (!E->isObjC()) {
+      OS << "\n";
+      if (auto root = E->getParsedRoot()) {
+        printRec(root);
+      } else {
+        OS.indent(Indent + 2) << "<<null>>";
+      }
+      OS << "\n";
+      if (auto path = E->getParsedPath()) {
+        printRec(path);
+      } else {
+        OS.indent(Indent + 2) << "<<null>>";
+      }
+    }
+    OS << ")";
+  }
+
+  void visitKeyPathDotExpr(KeyPathDotExpr *E) {
+    printCommon(E, "key_path_dot_expr");
     OS << ")";
   }
 };

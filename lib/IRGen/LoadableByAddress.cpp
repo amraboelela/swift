@@ -134,10 +134,50 @@ static bool containsLargeLoadable(GenericEnvironment *GenericEnv,
   return false;
 }
 
-// Forward declaration - two functions depend on each other
+// Forward declarations - functions depend on each other
 static SmallVector<SILParameterInfo, 4>
 getNewArgTys(GenericEnvironment *GenericEnv, ArrayRef<SILParameterInfo> params,
              irgen::IRGenModule &Mod);
+static SILType getNewSILType(GenericEnvironment *GenericEnv,
+                             SILType storageType, irgen::IRGenModule &Mod);
+
+static bool newResultsDiffer(GenericEnvironment *GenericEnv,
+                             ArrayRef<SILResultInfo> origResults,
+                             irgen::IRGenModule &Mod) {
+  SmallVector<SILResultInfo, 2> newResults;
+  for (auto result : origResults) {
+    SILType currResultTy = result.getSILStorageType();
+    SILType newSILType = getNewSILType(GenericEnv, currResultTy, Mod);
+    // We (currently) only care about function signatures
+    if (!isLargeLoadableType(GenericEnv, currResultTy, Mod) &&
+        (newSILType != currResultTy)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static SmallVector<SILResultInfo, 2>
+getNewResults(GenericEnvironment *GenericEnv,
+              ArrayRef<SILResultInfo> origResults, irgen::IRGenModule &Mod) {
+  // Get new SIL Function results - same as old results UNLESS:
+  // Function type results might have a different signature
+  SmallVector<SILResultInfo, 2> newResults;
+  for (auto result : origResults) {
+    SILType currResultTy = result.getSILStorageType();
+    SILType newSILType = getNewSILType(GenericEnv, currResultTy, Mod);
+    // We (currently) only care about function signatures
+    if (!isLargeLoadableType(GenericEnv, currResultTy, Mod) &&
+        (newSILType != currResultTy)) {
+      SILResultInfo newResult(newSILType.getSwiftRValueType(),
+                              result.getConvention());
+      newResults.push_back(newResult);
+    } else {
+      newResults.push_back(result);
+    }
+  }
+  return newResults;
+}
 
 static SILFunctionType *
 getNewSILFunctionTypePtr(GenericEnvironment *GenericEnv,
@@ -146,13 +186,13 @@ getNewSILFunctionTypePtr(GenericEnvironment *GenericEnv,
   assert(modifiableFunction(CanSILFunctionType(currSILFunctionType)));
   SmallVector<SILParameterInfo, 4> newArgTys =
       getNewArgTys(GenericEnv, currSILFunctionType->getParameters(), Mod);
-  SILFunctionType *newSILFunctionType =
-      SILFunctionType::get(currSILFunctionType->getGenericSignature(),
-                           currSILFunctionType->getExtInfo(),
-                           currSILFunctionType->getCalleeConvention(),
-                           newArgTys, currSILFunctionType->getResults(),
-                           currSILFunctionType->getOptionalErrorResult(),
-                           currSILFunctionType->getASTContext());
+  SILFunctionType *newSILFunctionType = SILFunctionType::get(
+      currSILFunctionType->getGenericSignature(),
+      currSILFunctionType->getExtInfo(),
+      currSILFunctionType->getCalleeConvention(), newArgTys,
+      getNewResults(GenericEnv, currSILFunctionType->getResults(), Mod),
+      currSILFunctionType->getOptionalErrorResult(),
+      currSILFunctionType->getASTContext());
   return newSILFunctionType;
 }
 
@@ -267,6 +307,8 @@ struct StructLoweringState {
   SmallVector<SwitchEnumInst *, 16> switchEnumInstsToMod;
   // All struct_extract instrs that should be converted to struct_element_addr
   SmallVector<StructExtractInst *, 16> structExtractInstsToMod;
+  // All tuple instructions for which the return type is a function type
+  SmallVector<SILInstruction *, 8> tupleInstsToMod;
   // All Retain and release instrs should be replaced with _addr version
   SmallVector<RetainValueInst *, 16> retainInstsToMod;
   SmallVector<ReleaseValueInst *, 16> releaseInstsToMod;
@@ -310,6 +352,7 @@ protected:
   void visitReleaseInst(ReleaseValueInst *instr);
   void visitResultTyInst(SILInstruction *instr);
   void visitDebugValueInst(DebugValueInst *instr);
+  void visitTupleInst(SILInstruction *instr);
   void visitInstr(SILInstruction *instr);
 };
 } // end anonymous namespace
@@ -371,6 +414,11 @@ void LargeValueVisitor::mapValueStorage() {
         visitSwitchEnumInst(SEI);
         break;
       }
+      case ValueKind::TupleElementAddrInst:
+      case ValueKind::TupleExtractInst: {
+        visitTupleInst(currIns);
+        break;
+      }
       default: {
         assert(!ApplySite::isa(currIns) && "Did not expect an ApplySite");
         assert(!dyn_cast<MethodInst>(currIns) && "Unhandled Method Inst");
@@ -393,11 +441,11 @@ static bool modifiableApply(ApplySite applySite, irgen::IRGenModule &Mod) {
     return false;
   }
   auto callee = applySite.getCallee();
-  if (dyn_cast<ProjectBlockStorageInst>(callee)) {
+  if (isa<ProjectBlockStorageInst>(callee)) {
     return false;
   } else if (LoadInst *instr = dyn_cast<LoadInst>(callee)) {
     auto loadedSrcValue = instr->getOperand();
-    if (dyn_cast<ProjectBlockStorageInst>(loadedSrcValue)) {
+    if (isa<ProjectBlockStorageInst>(loadedSrcValue)) {
       return false;
     }
   }
@@ -425,6 +473,26 @@ void LargeValueVisitor::visitApply(ApplySite applySite) {
       pass.applies.push_back(applySite.getInstruction());
       return;
     }
+  }
+  SILType currType = applySite.getType();
+  SILType newType = getNewSILType(genEnv, currType, pass.Mod);
+  // We only care about function type results
+  if (!isLargeLoadableType(genEnv, currType, pass.Mod) &&
+      (currType != newType)) {
+    pass.applies.push_back(applySite.getInstruction());
+    return;
+  }
+  // Check callee - need new generic env:
+  SILFunctionType *origSILFunctionType = applySite.getSubstCalleeType();
+  GenericEnvironment *genEnvCallee = nullptr;
+  if (origSILFunctionType->isPolymorphic()) {
+    genEnvCallee = getGenericEnvironment(
+        applySite.getModule(), CanSILFunctionType(origSILFunctionType));
+  }
+  SILFunctionType *newSILFunctionType =
+      getNewSILFunctionTypePtr(genEnvCallee, origSILFunctionType, pass.Mod);
+  if (origSILFunctionType != newSILFunctionType) {
+    pass.applies.push_back(applySite.getInstruction());
   }
 }
 
@@ -469,6 +537,9 @@ void LargeValueVisitor::visitMethodInst(MethodInst *instr) {
                             pass.Mod)) {
     pass.methodInstsToMod.push_back(instr);
     return;
+  }
+  if (newResultsDiffer(genEnv, currSILFunctionType->getResults(), pass.Mod)) {
+    pass.methodInstsToMod.push_back(instr);
   }
 }
 
@@ -542,6 +613,24 @@ void LargeValueVisitor::visitResultTyInst(SILInstruction *instr) {
   } else {
     visitInstr(instr);
   }
+}
+
+void LargeValueVisitor::visitTupleInst(SILInstruction *instr) {
+  SILType currSILType = instr->getType().getObjectType();
+  CanType currCanType = currSILType.getSwiftRValueType();
+  if (auto funcType = dyn_cast<SILFunctionType>(currCanType)) {
+    CanSILFunctionType canFuncType = CanSILFunctionType(funcType);
+    GenericEnvironment *genEnv = instr->getFunction()->getGenericEnvironment();
+    if (!genEnv && canFuncType->isPolymorphic()) {
+      genEnv = getGenericEnvironment(instr->getModule(), canFuncType);
+    }
+    SILFunctionType *newSILFunctionType =
+        getNewSILFunctionTypePtr(genEnv, funcType, pass.Mod);
+    if (funcType != newSILFunctionType) {
+      pass.tupleInstsToMod.push_back(instr);
+    }
+  }
+  visitInstr(instr);
 }
 
 void LargeValueVisitor::visitInstr(SILInstruction *instr) {
@@ -1145,6 +1234,40 @@ static bool allUsesAreReplaceable(SILInstruction *instr,
   return allUsesAreReplaceable;
 }
 
+static void castTupleInstr(SILInstruction *instr, IRGenModule &Mod) {
+  SILType currSILType = instr->getType().getObjectType();
+  CanType currCanType = currSILType.getSwiftRValueType();
+  SILFunctionType *funcType = dyn_cast<SILFunctionType>(currCanType);
+  assert(funcType && "Expcted SILFunctionType as tuple's return");
+  CanSILFunctionType canFuncType = CanSILFunctionType(funcType);
+  GenericEnvironment *genEnv = instr->getFunction()->getGenericEnvironment();
+  if (!genEnv && canFuncType->isPolymorphic()) {
+    genEnv = getGenericEnvironment(instr->getModule(), canFuncType);
+  }
+  SILType newSILType = getNewSILFunctionType(genEnv, funcType, Mod);
+  auto II = instr->getIterator();
+  ++II;
+  SILBuilder castBuilder(II);
+  SILInstruction *castInstr = nullptr;
+  switch (instr->getKind()) {
+  // Add cast to the new sil function type:
+  case ValueKind::TupleExtractInst: {
+    castInstr = castBuilder.createUncheckedBitCast(instr->getLoc(), instr,
+                                                   newSILType.getObjectType());
+    break;
+  }
+  case ValueKind::TupleElementAddrInst: {
+    castInstr = castBuilder.createUncheckedAddrCast(
+        instr->getLoc(), instr, newSILType.getAddressType());
+    break;
+  }
+  default:
+    llvm_unreachable("Unexpected instruction inside tupleInstsToMod");
+  }
+  instr->replaceAllUsesWith(castInstr);
+  castInstr->setOperand(0, instr);
+}
+
 static void rewriteFunction(StructLoweringState &pass,
                             LoadableStorageAllocation &allocator) {
 
@@ -1285,6 +1408,10 @@ static void rewriteFunction(StructLoweringState &pass,
         operand.set(newOperand);
       }
     }
+  }
+
+  for (SILInstruction *instr : pass.tupleInstsToMod) {
+    castTupleInstr(instr, pass.Mod);
   }
 
   for (SILInstruction *instr : pass.debugInstsToMod) {
@@ -1827,7 +1954,7 @@ void LoadableByAddress::run() {
           }
         } else if (auto *SI = dyn_cast<StoreInst>(&I)) {
           auto dest = SI->getDest();
-          if (dyn_cast<ProjectBlockStorageInst>(dest)) {
+          if (isa<ProjectBlockStorageInst>(dest)) {
             storeToBlockStorageInstrs.insert(SI);
           }
         }

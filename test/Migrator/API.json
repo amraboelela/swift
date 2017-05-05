@@ -273,6 +273,28 @@
   {
     "DiffItemKind": "CommonDiffItem",
     "NodeKind": "Function",
+    "NodeAnnotation": "WrapOptional",
+    "ChildIndex": "1",
+    "LeftUsr": "s:6Cities05ExtraA0P6blibliySQySSGSSSg_SStc1x_tF",
+    "LeftComment": "",
+    "RightUsr": "",
+    "RightComment": "",
+    "ModuleName": "Cities"
+  },
+  {
+    "DiffItemKind": "CommonDiffItem",
+    "NodeKind": "Function",
+    "NodeAnnotation": "WrapOptional",
+    "ChildIndex": "1",
+    "LeftUsr": "s:6Cities05ExtraA0P6blibliySQySSGSSSg_SStc1x_tF",
+    "LeftComment": "",
+    "RightUsr": "",
+    "RightComment": "",
+    "ModuleName": "Cities"
+  },
+  {
+    "DiffItemKind": "CommonDiffItem",
+    "NodeKind": "Function",
     "NodeAnnotation": "ImplicitOptionalToOptional",
     "ChildIndex": "1:0",
     "LeftUsr": "s:6Cities05ExtraA0P6blibliySQySSGSSSg_SStc1x_tF",
@@ -345,6 +367,28 @@
     "LeftComment": "",
     "RightUsr": "",
     "RightComment": "",
+    "ModuleName": "Cities"
+  },
+  {
+    "DiffItemKind": "CommonDiffItem",
+    "NodeKind": "Function",
+    "NodeAnnotation": "Rename",
+    "ChildIndex": "0",
+    "LeftUsr": "s:6CitiesAAC10mooloolabayAB1x_ABSg1ytF",
+    "LeftComment": "",
+    "RightUsr": "",
+    "RightComment": "newMooloolaba(newX:newY:)",
+    "ModuleName": "Cities"
+  },
+    {
+    "DiffItemKind": "CommonDiffItem",
+    "NodeKind": "Function",
+    "NodeAnnotation": "Rename",
+    "ChildIndex": "0",
+    "LeftUsr": "s:6Cities04MoreA0P14setZooLocationySi1x_Si1ySi1ztF",
+    "LeftComment": "",
+    "RightUsr": "",
+    "RightComment": "setZooLocationNew(newX:newY:newZ:)",
     "ModuleName": "Cities"
   }
 ]
