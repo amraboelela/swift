@@ -715,6 +715,7 @@ static std::unique_ptr<llvm::Module> performIRGeneration(IRGenOptions &Opts,
       IGM.emitTypeMetadataRecords();
       IGM.emitBuiltinReflectionMetadata();
       IGM.emitReflectionMetadataVersion();
+      irgen.emitNSArchiveClassNameRegistration();
     }
 
     // Emit symbols for eliminated dead methods.
@@ -876,7 +877,7 @@ static void performParallelIRGeneration(IRGenOptions &Opts,
   irgen.emitGlobalTopLevel();
   
   for (auto *File : M->getFiles()) {
-    if (SourceFile *SF = dyn_cast<SourceFile>(File)) {
+    if (auto *SF = dyn_cast<SourceFile>(File)) {
       IRGenModule *IGM = irgen.getGenModule(SF);
       IGM->emitSourceFile(*SF, 0);
     } else {
@@ -892,6 +893,8 @@ static void performParallelIRGeneration(IRGenOptions &Opts,
   irgen.emitProtocolConformances();
 
   irgen.emitReflectionMetadataVersion();
+
+  irgen.emitNSArchiveClassNameRegistration();
 
   // Emit reflection metadata for builtin and imported types.
   irgen.emitBuiltinReflectionMetadata();

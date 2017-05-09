@@ -2522,7 +2522,8 @@ static Optional<ObjCReason> shouldMarkAsObjC(TypeChecker &TC,
 ///
 /// This occurs when
 /// - it is implied by an attribute like @NSManaged
-/// - we need to dynamically dispatch to a method in an extension.
+/// - when we have an override of an imported method
+/// - we need to dynamically dispatch to a method in an extension
 ///
 /// FIXME: The latter reason is a hack. We should figure out how to safely
 /// put extension methods into the class vtable.
@@ -2535,11 +2536,15 @@ static void inferDynamic(ASTContext &ctx, ValueDecl *D) {
   if (!D->isObjC() || D->hasClangNode())
     return;
 
+  bool overridesImportedMethod =
+    (D->getOverriddenDecl() &&
+     D->getOverriddenDecl()->hasClangNode());
+
   // Only introduce 'dynamic' on declarations...
   bool isNSManaged = D->getAttrs().hasAttribute<NSManagedAttr>();
   if (!isa<ExtensionDecl>(D->getDeclContext())) {
     // ...and in classes on decls marked @NSManaged.
-    if (!isNSManaged)
+    if (!isNSManaged && !overridesImportedMethod)
       return;
   }
 
@@ -4728,35 +4733,24 @@ public:
     // Check for static/final/class when we're in a type.
     auto dc = FD->getDeclContext();
     if (dc->isTypeContext()) {
-      // Within a class, operator functions must be 'static' or 'final'.
-      if (auto classDecl = dc->getAsClassOrClassExtensionContext()) {
-        // For a class, we also need the function or class to be 'final'.
-        if (!classDecl->isFinal() && !FD->isFinal() &&
-            FD->getStaticSpelling() != StaticSpellingKind::KeywordStatic) {
-          if (!FD->isStatic()) {
-            TC.diagnose(FD->getLoc(), diag::nonstatic_operator_in_type,
-                        operatorName,
-                        dc->getDeclaredInterfaceType())
-              .fixItInsert(FD->getAttributeInsertionLoc(/*forModifier=*/true),
-                           "static ");
-
-            FD->setStatic();
-          } else {
-            TC.diagnose(FD->getLoc(), diag::nonfinal_operator_in_class,
-                        operatorName, dc->getDeclaredInterfaceType())
-              .fixItInsert(FD->getAttributeInsertionLoc(/*forModifier=*/true),
-                           "final ");
-            FD->getAttrs().add(new (TC.Context) FinalAttr(/*IsImplicit=*/true));
-          }
-        }
-      } else if (!FD->isStatic()) {
-        // Operator functions must be static.
-        TC.diagnose(FD, diag::nonstatic_operator_in_type,
+      if (!FD->isStatic()) {
+        TC.diagnose(FD->getLoc(), diag::nonstatic_operator_in_type,
                     operatorName,
                     dc->getDeclaredInterfaceType())
           .fixItInsert(FD->getAttributeInsertionLoc(/*forModifier=*/true),
                        "static ");
+
         FD->setStatic();
+      } else if (auto classDecl = dc->getAsClassOrClassExtensionContext()) {
+        // For a class, we also need the function or class to be 'final'.
+        if (!classDecl->isFinal() && !FD->isFinal() &&
+            FD->getStaticSpelling() != StaticSpellingKind::KeywordStatic) {
+          TC.diagnose(FD->getLoc(), diag::nonfinal_operator_in_class,
+                      operatorName, dc->getDeclaredInterfaceType())
+            .fixItInsert(FD->getAttributeInsertionLoc(/*forModifier=*/true),
+                         "final ");
+          FD->getAttrs().add(new (TC.Context) FinalAttr(/*IsImplicit=*/true));
+        }
       }
     } else if (!dc->isModuleScopeContext()) {
       TC.diagnose(FD, diag::operator_in_local_scope);
@@ -5109,7 +5103,7 @@ public:
 
       Optional<ObjCReason> isObjC = shouldMarkAsObjC(TC, FD);
 
-      ProtocolDecl *protocolContext = dyn_cast<ProtocolDecl>(
+      auto *protocolContext = dyn_cast<ProtocolDecl>(
           FD->getDeclContext());
       if (protocolContext && FD->isAccessor()) {
         if (isObjC)

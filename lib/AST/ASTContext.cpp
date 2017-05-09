@@ -641,7 +641,7 @@ static VarDecl *getPointeeProperty(VarDecl *&cache,
   if (results.size() != 1) return nullptr;
 
   // The property must have type T.
-  VarDecl *property = dyn_cast<VarDecl>(results[0]);
+  auto *property = dyn_cast<VarDecl>(results[0]);
   if (!property) return nullptr;
   if (!property->getInterfaceType()->isEqual(sig->getGenericParams()[0]))
     return nullptr;
@@ -761,22 +761,25 @@ ProtocolDecl *ASTContext::getProtocol(KnownProtocolKind kind) const {
   // Find all of the declarations with this name in the appropriate module.
   SmallVector<ValueDecl *, 1> results;
 
-  // _BridgedNSError, _BridgedStoredNSError, and _ErrorCodeProtocol
-  // are in the Foundation module.
-  if (kind == KnownProtocolKind::BridgedNSError ||
-      kind == KnownProtocolKind::BridgedStoredNSError ||
-      kind == KnownProtocolKind::ErrorCodeProtocol) {
-    ModuleDecl *foundation =
-        const_cast<ASTContext *>(this)->getLoadedModule(Id_Foundation);
-    if (!foundation)
-      return nullptr;
-
-    auto identifier = getIdentifier(getProtocolName(kind));
-    foundation->lookupValue({ }, identifier, NLKind::UnqualifiedLookup,
-                            results);
-  } else {
-    lookupInSwiftModule(getProtocolName(kind), results);
+  const ModuleDecl *M;
+  switch (kind) {
+  case KnownProtocolKind::BridgedNSError:
+  case KnownProtocolKind::BridgedStoredNSError:
+  case KnownProtocolKind::ErrorCodeProtocol:
+    M = getLoadedModule(Id_Foundation);
+    break;
+  case KnownProtocolKind::CFObject:
+    M = getLoadedModule(Id_CoreFoundation);
+    break;
+  default:
+    M = getStdlibModule();
+    break;
   }
+
+  if (!M)
+    return nullptr;
+  M->lookupValue({ }, getIdentifier(getProtocolName(kind)),
+                 NLKind::UnqualifiedLookup, results);
 
   for (auto result : results) {
     if (auto protocol = dyn_cast<ProtocolDecl>(result)) {
@@ -873,7 +876,7 @@ FuncDecl *ASTContext::getEqualIntDecl() const {
   // Find the overload for Int.
   for (ValueDecl *vd : equalFuncs) {
     // All "==" decls should be functions, but who knows...
-    FuncDecl *funcDecl = dyn_cast<FuncDecl>(vd);
+    auto *funcDecl = dyn_cast<FuncDecl>(vd);
     if (!funcDecl)
       continue;
 

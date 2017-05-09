@@ -29,6 +29,7 @@
 #include "swift/AST/PrettyStackTrace.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/TypeCheckerDebugConsumer.h"
+#include "swift/Parse/Confusables.h"
 #include "swift/Parse/Lexer.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -454,9 +455,39 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
     diagnose(Loc, diag::use_unresolved_identifier, Name, Name.isOperator())
       .highlight(UDRE->getSourceRange());
 
-    // Note all the correction candidates.
-    for (auto &result : Lookup) {
-      noteTypoCorrection(Name, nameLoc, result);
+    const char *buffer = Name.getBaseName().get();
+    llvm::SmallString<64> expectedIdentifier;
+    bool isConfused = false;
+    uint32_t codepoint;
+    int offset = 0;
+    while ((codepoint = validateUTF8CharacterAndAdvance(buffer,
+                                                        buffer +
+                                                        strlen(buffer)))
+           != ~0U) {
+      int length = (buffer - Name.getBaseName().get()) - offset;
+      char expectedCodepoint;
+      if ((expectedCodepoint =
+           confusable::tryConvertConfusableCharacterToASCII(codepoint))) {
+        isConfused = true;
+        expectedIdentifier += expectedCodepoint;
+      } else {
+        expectedIdentifier += (char)codepoint;
+      }
+
+      offset += length;
+    }
+
+    if (isConfused) {
+      diagnose(Loc, diag::confusable_character,
+               UDRE->getName().isOperator(),
+               Name.getBaseName().str(), expectedIdentifier)
+        .fixItReplaceChars(Loc, Loc.getAdvancedLoc(Name.getBaseName().getLength()),
+                           expectedIdentifier);
+    } else {
+      // Note all the correction candidates.
+      for (auto &result : Lookup) {
+        noteTypoCorrection(Name, nameLoc, result);
+      }
     }
 
     // TODO: consider recovering from here.  We may want some way to suppress
@@ -1157,7 +1188,7 @@ TypeExpr *PreCheckExpression::simplifyTypeExpr(Expr *E) {
     if (AE->getElements().size() != 1)
       return nullptr;
 
-    TypeExpr *TyExpr = dyn_cast<TypeExpr>(AE->getElement(0));
+    auto *TyExpr = dyn_cast<TypeExpr>(AE->getElement(0));
     if (!TyExpr)
       return nullptr;
 
@@ -1177,11 +1208,11 @@ TypeExpr *PreCheckExpression::simplifyTypeExpr(Expr *E) {
     TypeRepr *keyTypeRepr, *valueTypeRepr;
     
     if (auto EltTuple = dyn_cast<TupleExpr>(DE->getElement(0))) {
-      TypeExpr *KeyTyExpr = dyn_cast<TypeExpr>(EltTuple->getElement(0));
+      auto *KeyTyExpr = dyn_cast<TypeExpr>(EltTuple->getElement(0));
       if (!KeyTyExpr)
         return nullptr;
 
-      TypeExpr *ValueTyExpr = dyn_cast<TypeExpr>(EltTuple->getElement(1));
+      auto *ValueTyExpr = dyn_cast<TypeExpr>(EltTuple->getElement(1));
       if (!ValueTyExpr)
         return nullptr;
      
@@ -2291,7 +2322,7 @@ bool TypeChecker::typeCheckForEachBinding(DeclContext *dc, ForEachStmt *stmt) {
 /// \brief Compute the rvalue type of the given expression, which is the
 /// destination of an assignment statement.
 Type ConstraintSystem::computeAssignDestType(Expr *dest, SourceLoc equalLoc) {
-  if (TupleExpr *TE = dyn_cast<TupleExpr>(dest)) {
+  if (auto *TE = dyn_cast<TupleExpr>(dest)) {
     auto &ctx = getASTContext();
     SmallVector<TupleTypeElt, 4> destTupleTypes;
     for (unsigned i = 0; i != TE->getNumElements(); ++i) {

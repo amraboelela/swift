@@ -37,7 +37,9 @@ extension _Unicode.UTF16 : UnicodeEncoding {
     return UnicodeScalar(_unchecked: value)
   }
 
-  public static func encode(_ source: UnicodeScalar) -> EncodedScalar {
+  public static func encodeIfRepresentable(
+    _ source: UnicodeScalar
+  ) -> EncodedScalar? {
     let x = source.value
     if _fastPath(x < (1 << 16)) {
       return EncodedScalar(_storage: x, _bitCount: 16)
@@ -47,6 +49,49 @@ extension _Unicode.UTF16 : UnicodeEncoding {
     r &<<= 16
     r |= (0xd800 + (x1 &>> 10 & 0x3ff))
     return EncodedScalar(_storage: r, _bitCount: 32)
+  }
+
+  @inline(__always)
+  public static func transcodeIfRepresentable<FromEncoding : UnicodeEncoding>(
+    _ content: FromEncoding.EncodedScalar, from _: FromEncoding.Type
+  ) -> EncodedScalar? {
+    if _fastPath(FromEncoding.self == UTF8.self) {
+      let c = unsafeBitCast(content, to: UTF8.EncodedScalar.self)
+      var b = c._bitCount
+      b = b &- 8
+      if _fastPath(b == 0) {
+        return EncodedScalar(
+          _storage: c._storage & 0b0__111_1111, _bitCount: 16)
+      }
+      var s = c._storage
+      var r = s
+      r &<<= 6
+      s &>>= 8
+      r |= s & 0b0__11_1111
+      b = b &- 8
+      
+      if _fastPath(b == 0) {
+        return EncodedScalar(_storage: r & 0b0__111_1111_1111, _bitCount: 16)
+      }
+      r &<<= 6
+      s &>>= 8
+      r |= s & 0b0__11_1111
+      b = b &- 8
+      
+      if _fastPath(b == 0) {
+        return EncodedScalar(_storage: r & 0xFFFF, _bitCount: 16)
+      }
+      
+      r &<<= 6
+      s &>>= 8
+      r |= s & 0b0__11_1111
+      r &= (1 &<< 21) - 1
+      return encodeIfRepresentable(UnicodeScalar(_unchecked: r))
+    }
+    else if _fastPath(FromEncoding.self == UTF16.self) {
+      return unsafeBitCast(content, to: UTF16.EncodedScalar.self)
+    }
+    return encodeIfRepresentable(FromEncoding.decode(content))
   }
   
   public struct ForwardParser {

@@ -12,6 +12,32 @@ public struct BigStruct {
   var i8 : Int32 = 8
 }
 
+func takeClosure(execute block: () -> Void) {
+}
+
+class OptionalInoutFuncType {
+  private var lp :  BigStruct?
+  private var _handler : ((BigStruct?, Error?) -> ())?
+
+  func execute(_ error: Error?) {
+    var p : BigStruct?
+    var handler: ((BigStruct?, Error?) -> ())?
+    
+    takeClosure {
+      p = self.lp
+      handler = self._handler
+      self._handler = nil
+    }
+
+    handler?(p, error)
+  }
+}
+
+// CHECK-LABEL: define{{( protected)?}} internal swiftcc void @_T022big_types_corner_cases21OptionalInoutFuncTypeC7executeys5Error_pSgFyycfU_(%T22big_types_corner_cases9BigStructVSg* nocapture dereferenceable({{.*}}), %T22big_types_corner_cases21OptionalInoutFuncTypeC*, %T22big_types_corner_cases9BigStructVSgs5Error_pSgIxcx_Sg* nocapture dereferenceable({{.*}})
+// CHECK: call void @_T0SqWy
+// CHECK: call void @_T0SqWe
+// CHECK: ret void
+
 public func f1_returns_BigType(_ x: BigStruct) -> BigStruct {
   return x
 }
@@ -44,6 +70,24 @@ public func f4_tuple_use_of_f2() {
 // CHECK: [[TUPLE_EXTRACT:%.*]] = extractvalue { i8*, %swift.refcounted* } [[TUPLE]], 0
 // CHECK: [[CAST_EXTRACT:%.*]] = bitcast i8* [[TUPLE_EXTRACT]] to void (%T22big_types_corner_cases9BigStructV*, %T22big_types_corner_cases9BigStructV*, %swift.refcounted*)*
 // CHECK:  call swiftcc void [[CAST_EXTRACT]](%T22big_types_corner_cases9BigStructV* noalias nocapture sret %call.aggresult1, %T22big_types_corner_cases9BigStructV* noalias nocapture dereferenceable
+// CHECK: ret void
+
+public class BigClass {
+  public init() {
+  }
+
+  public var optVar: ((BigStruct)-> Void)? = nil
+    
+  func useBigStruct(bigStruct: BigStruct) {
+    optVar!(bigStruct)
+  }
+}
+
+// CHECK-LABEL define{{( protected)?}} hidden swiftcc void @_T022big_types_corner_cases8BigClassC03useE6StructyAA0eH0V0aH0_tF(%T22big_types_corner_cases9BigStructV* noalias nocapture dereferenceable({{.*}}), %T22big_types_corner_cases8BigClassC* swiftself) #0 {
+// CHECK: getelementptr inbounds %T22big_types_corner_cases8BigClassC, %T22big_types_corner_cases8BigClassC*
+// CHECK: call void @_T0SqWy
+// CHECK: [[BITCAST:%.*]] = bitcast i8* {{.*}} to void (%T22big_types_corner_cases9BigStructV*, %swift.refcounted*)*
+// CHECK: call swiftcc void [[BITCAST]](%T22big_types_corner_cases9BigStructV* noalias nocapture dereferenceable({{.*}}) %0, %swift.refcounted* swiftself 
 // CHECK: ret void
 
 public struct MyStruct {

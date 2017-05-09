@@ -7,4 +7,4 @@
 
 // REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol P{class a}class C:P{protocol A:a
+protocol A:a{{}typealias e:a}{}class a:A{typealias e:b

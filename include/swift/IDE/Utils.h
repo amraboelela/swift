@@ -13,6 +13,7 @@
 #ifndef SWIFT_IDE_UTILS_H
 #define SWIFT_IDE_UTILS_H
 
+#include "llvm/ADT/PointerIntPair.h"
 #include "swift/Basic/LLVM.h"
 #include "swift/AST/ASTNode.h"
 #include "swift/AST/Module.h"
@@ -199,6 +200,8 @@ private:
                           ReferenceMetaData Data) override;
   bool visitCallArgName(Identifier Name, CharSourceRange Range,
                         ValueDecl *D) override;
+  bool visitDeclarationArgumentName(Identifier Name, SourceLoc StartLoc,
+                                    ValueDecl *D) override;
   bool visitModuleReference(ModuleEntity Mod, CharSourceRange Range) override;
   bool rangeContainsLoc(SourceRange Range) const {
     return getSourceMgr().rangeContainsTokenLoc(Range, LocToResolve);
@@ -241,9 +244,12 @@ enum class OrphanKind : int8_t {
   Break,
   Continue,
 };
+
+typedef llvm::PointerIntPair<TypeBase*, 1, bool> ReturnTyAndWhetherExit;
+
 struct ResolvedRangeInfo {
   RangeKind Kind;
-  Type Ty;
+  ReturnTyAndWhetherExit ExitInfo;
   StringRef Content;
   bool HasSingleEntry;
   bool ThrowingUnhandledError;
@@ -254,23 +260,26 @@ struct ResolvedRangeInfo {
   ArrayRef<DeclaredDecl> DeclaredDecls;
   ArrayRef<ReferencedDecl> ReferencedDecls;
   DeclContext* RangeContext;
-  ResolvedRangeInfo(RangeKind Kind, Type Ty, StringRef Content,
+  ResolvedRangeInfo(RangeKind Kind, ReturnTyAndWhetherExit ExitInfo, StringRef Content,
                     DeclContext* RangeContext,
                     bool HasSingleEntry, bool ThrowingUnhandledError,
                     OrphanKind Orphan, ArrayRef<ASTNode> ContainedNodes,
                     ArrayRef<DeclaredDecl> DeclaredDecls,
                     ArrayRef<ReferencedDecl> ReferencedDecls): Kind(Kind),
-                      Ty(Ty), Content(Content), HasSingleEntry(HasSingleEntry),
+                      ExitInfo(ExitInfo), Content(Content),
+                      HasSingleEntry(HasSingleEntry),
                       ThrowingUnhandledError(ThrowingUnhandledError),
                       Orphan(Orphan), ContainedNodes(ContainedNodes),
                       DeclaredDecls(DeclaredDecls),
                       ReferencedDecls(ReferencedDecls),
                       RangeContext(RangeContext) {}
   ResolvedRangeInfo(StringRef Content) :
-  ResolvedRangeInfo(RangeKind::Invalid, Type(), Content, nullptr,
+  ResolvedRangeInfo(RangeKind::Invalid, {nullptr, false}, Content, nullptr,
                     /*Single entry*/true, /*unhandled error*/false,
                     OrphanKind::None, {}, {}, {}) {}
   void print(llvm::raw_ostream &OS);
+  bool exit() const { return ExitInfo.getInt(); }
+  Type getType() const { return ExitInfo.getPointer(); }
 };
 
 class RangeResolver : public SourceEntityWalker {

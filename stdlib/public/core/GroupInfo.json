@@ -4,6 +4,7 @@
     "AssertCommon.swift"
   ],
   "String": [
+    "ASCII.swift",
     "CString.swift",
     "Character.swift",
     "StaticString.swift",
@@ -30,7 +31,8 @@
     "UnavailableStringAPIs.swift",
     "UTFEncoding.swift",
     "UTF8.swift",
-    "UTF16.swift"
+    "UTF16.swift",
+    "UTF32.swift"
   ],
   "Bool": [
     "Bool.swift"
