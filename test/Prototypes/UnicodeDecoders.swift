@@ -51,13 +51,13 @@ extension _Unicode {
 
 extension _Unicode.DefaultScalarView : Sequence {
   struct Iterator {
-    var parsing: _Unicode.ParsingIterator<
+    var parsing: _Unicode._ParsingIterator<
       CodeUnits.Iterator, Encoding.ForwardParser>
   }
   
   func makeIterator() -> Iterator {
     return Iterator(
-      parsing: _Unicode.ParsingIterator(
+      parsing: _Unicode._ParsingIterator(
         codeUnits: codeUnits.makeIterator(),
         parser: Encoding.ForwardParser()
       ))
@@ -137,7 +137,7 @@ extension _Unicode.DefaultScalarView : Collection {
         codeUnitIndex: nextPosition,
         scalar: Encoding.decode(scalarContent),
         stride: numericCast(scalarContent.count))
-    case .invalid(let stride):
+    case .error(let stride):
       return Index(
         codeUnitIndex: nextPosition,
         scalar: UnicodeScalar(_unchecked: 0xfffd),
@@ -147,37 +147,6 @@ extension _Unicode.DefaultScalarView : Collection {
     }
   }
 }
-
-/// An iterator that can be much faster than the iterator of a reversed slice.
-// TODO: See about using this in more places
-@_fixed_layout
-public struct _ReverseIndexingIterator<
-  Elements : BidirectionalCollection
-> : IteratorProtocol, Sequence {
-
-  @_inlineable
-  @inline(__always)
-  /// Creates an iterator over the given collection.
-  public /// @testable
-  init(_elements: Elements, _position: Elements.Index) {
-    self._elements = _elements
-    self._position = _position
-  }
-  
-  @_inlineable
-  @inline(__always)
-  public mutating func next() -> Elements._Element? {
-    guard _fastPath(_position != _elements.startIndex) else { return nil }
-    _position = _elements.index(before: _position)
-    return _elements[_position]
-  }
-  
-  @_versioned
-  internal let _elements: Elements
-  @_versioned
-  internal var _position: Elements.Index
-}
-
 
 extension _Unicode.DefaultScalarView : BidirectionalCollection {
   @inline(__always)
@@ -194,7 +163,7 @@ extension _Unicode.DefaultScalarView : BidirectionalCollection {
         codeUnitIndex: codeUnits.index(i.codeUnitIndex, offsetBy: d),
         scalar: Encoding.decode(scalarContent),
         stride: numericCast(scalarContent.count))
-    case .invalid(let stride):
+    case .error(let stride):
       let d: CodeUnits.IndexDistance = -numericCast(stride)
       return Index(
         codeUnitIndex: codeUnits.index(i.codeUnitIndex, offsetBy: d) ,
@@ -210,9 +179,48 @@ extension _Unicode.DefaultScalarView : BidirectionalCollection {
 import StdlibUnittest
 import SwiftPrivate
 
+func utf32<S : StringProtocol>(_ s: S) -> [UInt32] {
+  return s.unicodeScalars.map { $0.value }
+}
+
+func checkStringProtocol<S : StringProtocol, Encoding: UnicodeEncoding>(
+  _ s: S,
+  _ utfStr: [Encoding.CodeUnit],
+  encodedAs: Encoding.Type,
+  expectingUTF32 expected: [UInt32]
+) {
+  expectEqualSequence(
+    expected, utf32(S(decoding: utfStr, as: Encoding.self)),
+    "\(S.self) init(decoding:as:)")
+
+  if !utfStr.contains(0) {
+    if Encoding.self == UTF8.self {
+      var ntbs = utfStr.map { CChar(extendingOrTruncating: $0) }
+      ntbs.append(0)
+      expectEqualSequence(
+        expected, utf32(S(cString: ntbs)), "\(S.self) init(cString:)")
+    }
+    
+    var ntbs = Array(utfStr); ntbs.append(0)
+    expectEqualSequence(
+      expected, utf32(S(decodingCString: ntbs, as: Encoding.self)),
+      "\(S.self) init(cString:encoding:)"
+    )
+
+    s.withCString {
+      expectEqual(s, S(cString: $0), "\(S.self) withCString(_:)")
+    }
+    
+    s.withCString(encodedAs: Encoding.self) {
+      expectEqual(s, S(decodingCString: $0, as: Encoding.self),
+        "\(S.self) withCString(encoding:_:)")
+    }
+  }
+}
+
 func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
-    _ codec: Codec.Type, _ expectedHead: [UInt32],
-    _ expectedRepairedTail: [UInt32], _ utfStr: [Codec.CodeUnit]
+  _ codec: Codec.Type, _ expectedHead: [UInt32],
+  _ expectedRepairedTail: [UInt32], _ utfStr: [Codec.CodeUnit]
 ) -> AssertionResult {
   var decoded = [UInt32]()
   var expected = expectedHead
@@ -221,12 +229,12 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
     decoded.append(scalar)
     expectEqual(
       UnicodeScalar(scalar),
-      Codec.decode(Codec.encodeIfRepresentable(UnicodeScalar(scalar)!)!))
+      Codec.decode(Codec.encode(UnicodeScalar(scalar)!)!))
   }
   
   func output1(_ scalar: UnicodeScalar) {
     decoded.append(scalar.value)
-    expectEqual(scalar, Codec.decode(Codec.encodeIfRepresentable(scalar)!))
+    expectEqual(scalar, Codec.decode(Codec.encode(scalar)!))
   }
   
   var result = assertionSuccess()
@@ -254,7 +262,7 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
 
   do {
     var iterator = utfStr.makeIterator()
-    let errorCount = Codec.ForwardParser.decode(
+    let errorCount = Codec.ForwardParser._decode(
       &iterator, repairingIllFormedSequences: false, into: output1)
     expectEqual(expectedRepairedTail.isEmpty ? 0 : 1, errorCount)
   }
@@ -262,7 +270,7 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
 
   do {
     var iterator = utfStr.reversed().makeIterator()
-    let errorCount = Codec.ReverseParser.decode(
+    let errorCount = Codec.ReverseParser._decode(
       &iterator, repairingIllFormedSequences: false, into: output1)
     if expectedRepairedTail.isEmpty {
       expectEqual(0, errorCount)
@@ -288,7 +296,7 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
   check(expected, "legacy, repairing: true")
   do {
     var iterator = utfStr.makeIterator()
-    let errorCount = Codec.ForwardParser.decode(
+    let errorCount = Codec.ForwardParser._decode(
       &iterator, repairingIllFormedSequences: true, into: output1)
     
     if expectedRepairedTail.isEmpty { expectEqual(0, errorCount) }
@@ -297,29 +305,45 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
   check(expected, "forward, repairing: true")
   do {
     var iterator = utfStr.reversed().makeIterator()
-    let errorCount = Codec.ReverseParser.decode(
+    let errorCount = Codec.ReverseParser._decode(
       &iterator, repairingIllFormedSequences: true, into: output1)
     if expectedRepairedTail.isEmpty { expectEqual(0, errorCount) }
     else { expectNotEqual(0, errorCount) }
   }
   check(expected.reversed(), "reverse, repairing: true")
+  
+  //===--- String/Substring Construction and C-String interop -------------===//
+  do {
+    let s = String(decoding: utfStr, as: Codec.self)
+    checkStringProtocol(
+      s, utfStr, encodedAs: Codec.self, expectingUTF32: expected)
+  }
+  
+  do {
+    let s0 = "\n" + String(decoding: utfStr, as: Codec.self) + "\n"
+    let s = s0.dropFirst().dropLast()
+    expectEqualSequence(expected, utf32(s), "Sliced Substring")
+    checkStringProtocol(
+      s0.dropFirst().dropLast(),
+      utfStr, encodedAs: Codec.self, expectingUTF32: expected)
+  }
 
   //===--- Transcoded Scalars ---------------------------------------------===//
   for x in decoded.lazy.map({ UnicodeScalar($0)! }) {
     expectEqualSequence(
-      UTF8.encodeIfRepresentable(x)!,
-      UTF8.transcodeIfRepresentable(
-        Codec.encodeIfRepresentable(x)!, from: Codec.self)!
+      UTF8.encode(x)!,
+      UTF8.transcode(
+        Codec.encode(x)!, from: Codec.self)!
     )
     expectEqualSequence(
-      UTF16.encodeIfRepresentable(x)!,
-      UTF16.transcodeIfRepresentable(
-        Codec.encodeIfRepresentable(x)!, from: Codec.self)!
+      UTF16.encode(x)!,
+      UTF16.transcode(
+        Codec.encode(x)!, from: Codec.self)!
     )
     expectEqualSequence(
-      UTF32.encodeIfRepresentable(x)!,
-      UTF32.transcodeIfRepresentable(
-        Codec.encodeIfRepresentable(x)!, from: Codec.self)!
+      UTF32.encode(x)!,
+      UTF32.transcode(
+        Codec.encode(x)!, from: Codec.self)!
     )
   }
   

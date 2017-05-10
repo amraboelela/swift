@@ -1640,9 +1640,10 @@ getUncachedSILFunctionTypeForConstant(SILModule &M,
 CanSILFunctionType TypeConverter::
 getUncachedSILFunctionTypeForConstant(SILDeclRef constant,
                                       CanAnyFunctionType origInterfaceType) {
-  auto origLoweredInterfaceType = getLoweredASTFunctionType(origInterfaceType,
-                                                            constant.uncurryLevel,
-                                                            constant);
+  auto origLoweredInterfaceType =
+    getLoweredASTFunctionType(origInterfaceType,
+                              constant.getUncurryLevel(),
+                              constant);
   return ::getUncachedSILFunctionTypeForConstant(M, constant,
                                                  origLoweredInterfaceType);
 }
@@ -1685,8 +1686,13 @@ TypeConverter::getDeclRefRepresentation(SILDeclRef c) {
   // available. There's no great way to do this.
 
   // Protocol witnesses are called using the witness calling convention.
-  if (auto proto = dyn_cast<ProtocolDecl>(c.getDecl()->getDeclContext()))
+  if (auto proto = dyn_cast<ProtocolDecl>(c.getDecl()->getDeclContext())) {
+    // Use the regular method convention for foreign-to-native thunks.
+    if (c.isForeignToNativeThunk())
+      return SILFunctionTypeRepresentation::Method;
+    assert(!c.isNativeToForeignThunk() && "shouldn't be possible");
     return getProtocolWitnessRepresentation(proto);
+  }
 
   switch (c.kind) {
     case SILDeclRef::Kind::GlobalAccessor:
@@ -1729,7 +1735,8 @@ SILConstantInfo TypeConverter::getConstantInfo(SILDeclRef constant) {
   // The lowered type is the formal type, but uncurried and with
   // parameters automatically turned into their bridged equivalents.
   auto loweredInterfaceType =
-    getLoweredASTFunctionType(formalInterfaceType, constant.uncurryLevel,
+    getLoweredASTFunctionType(formalInterfaceType,
+                              constant.getUncurryLevel(),
                               constant);
 
   // The SIL type encodes conventions according to the original type.
@@ -1927,7 +1934,7 @@ SILConstantInfo TypeConverter::getConstantOverrideInfo(SILDeclRef derived,
   // Lower the formal AST type.
   auto overrideLoweredInterfaceTy = getLoweredASTFunctionType(
       cast<AnyFunctionType>(overrideInterfaceTy->getCanonicalType()),
-      derived.uncurryLevel, derived);
+      derived.getUncurryLevel(), derived);
 
   if (!checkASTTypeForABIDifferences(derivedInfo.LoweredInterfaceType,
                                      overrideLoweredInterfaceTy)) {

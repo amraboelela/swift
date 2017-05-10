@@ -552,9 +552,9 @@ ParserResult<Expr> Parser::parseExprKeyPath() {
     bool unusedHasBindOptional = false;
 
     // Inside a keypath's path, the period always behaves normally: the key path
-    // behaviour is only the separation between type and path.
+    // behavior is only the separation between type and path.
     pathResult = parseExprPostfixSuffix(inner, /*isExprBasic=*/true,
-                                        /*periodHasKeyPathBehaviour=*/false,
+                                        /*periodHasKeyPathBehavior=*/false,
                                         unusedHasBindOptional);
     if (pathResult.isParseError() || pathResult.hasCodeCompletion())
       return pathResult;
@@ -1062,7 +1062,7 @@ static bool canParseTypeOf(Parser &P) {
 
 ParserResult<Expr>
 Parser::parseExprPostfixSuffix(ParserResult<Expr> Result, bool isExprBasic,
-                               bool periodHasKeyPathBehaviour,
+                               bool periodHasKeyPathBehavior,
                                bool &hasBindOptional) {
   hasBindOptional = false;
 
@@ -1078,7 +1078,7 @@ Parser::parseExprPostfixSuffix(ParserResult<Expr> Result, bool isExprBasic,
       // A key path is special, because it allows .[, unlike anywhere else. The
       // period itself should be left in the token stream. (.? and .! end up
       // being operators, and so aren't handled here.)
-      if (periodHasKeyPathBehaviour && peekToken().is(tok::l_square)) {
+      if (periodHasKeyPathBehavior && peekToken().is(tok::l_square)) {
         break;
       }
 
@@ -1259,7 +1259,7 @@ Parser::parseExprPostfixSuffix(ParserResult<Expr> Result, bool isExprBasic,
     if (Tok.is(tok::oper_postfix)) {
       // KeyPaths are more restricted in what can go after a ., and so we treat
       // them specially.
-      if (periodHasKeyPathBehaviour && startsWithSymbol(Tok, '.'))
+      if (periodHasKeyPathBehavior && startsWithSymbol(Tok, '.'))
         break;
 
       Expr *oper = parseExprOperator();
@@ -1738,7 +1738,7 @@ ParserResult<Expr> Parser::parseExprPostfix(Diag<> ID, bool isExprBasic) {
 
   bool hasBindOptional = false;
   Result = parseExprPostfixSuffix(Result, isExprBasic,
-                                  /*periodHasKeyPathBehaviour=*/InSwiftKeyPath,
+                                  /*periodHasKeyPathBehavior=*/InSwiftKeyPath,
                                   hasBindOptional);
   if (Result.isParseError() || Result.hasCodeCompletion())
     return Result;
@@ -2397,6 +2397,88 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
       }
       inLoc = Tok.getLoc();
     }
+  }
+
+  if (!params)
+    return invalid;
+
+  // If this was a closure declaration (maybe even trailing)
+  // tuple parameter destructuring is one of the common
+  // problems, and is misleading to users, so it's imperative
+  // to detect any tuple splat or destructuring as early as
+  // possible and give a proper fix-it. See SE-0110 for more details.
+  auto isTupleDestructuring = [](ParamDecl *param) -> bool {
+    if (!param->isInvalid())
+      return false;
+    auto &typeLoc = param->getTypeLoc();
+    if (auto typeRepr = typeLoc.getTypeRepr())
+      return !param->hasName() && isa<TupleTypeRepr>(typeRepr);
+    return false;
+  };
+
+  // Extract names of the tuple elements and preserve the structure
+  // of the tuple (with any nested tuples inside) to be able to use
+  // it in the fix-it without any type information provided by user.
+  std::function<StringRef(const TypeRepr *)> getTupleNames =
+      [&](const TypeRepr *typeRepr) -> StringRef {
+    if (!typeRepr)
+      return "";
+
+    auto tupleRepr = dyn_cast<TupleTypeRepr>(typeRepr);
+    if (!tupleRepr)
+      return "";
+
+    SmallString<32> names;
+    llvm::raw_svector_ostream OS(names);
+
+    OS << "(";
+    unsigned elementIndex = 0;
+    interleave(tupleRepr->getElements(),
+               [&](const TypeRepr *element) {
+                 if (isa<TupleTypeRepr>(element)) {
+                   OS << getTupleNames(element);
+                 } else {
+                   auto name = tupleRepr->getElementName(elementIndex);
+                   // If there is no label from the element
+                   // it means that it's malformed and we can
+                   // use the type instead.
+                   if (name.empty())
+                     element->print(OS);
+                   else
+                     OS << name;
+                 }
+
+                 ++elementIndex;
+               },
+               [&] { OS << ", "; });
+    OS << ")";
+
+    return OS.str();
+  };
+
+  for (unsigned i = 0, e = params->size(); i != e; ++i) {
+    auto *param = params->get(i);
+    if (!isTupleDestructuring(param))
+      continue;
+
+    auto argName = "arg" + std::to_string(i);
+    auto typeLoc = param->getTypeLoc();
+
+    SmallString<64> fixIt;
+    llvm::raw_svector_ostream OS(fixIt);
+    auto isMultiLine = Tok.isAtStartOfLine();
+    StringRef indent = Lexer::getIndentationForLine(SourceMgr, Tok.getLoc());
+    if (isMultiLine)
+      OS << '\n' << indent;
+
+    OS << "let " << getTupleNames(typeLoc.getTypeRepr()) << " = " << argName
+       << (isMultiLine ? "\n" + indent : "; ");
+
+    diagnose(param->getStartLoc(), diag::anon_closure_tuple_param_destructuring)
+        .fixItReplace(param->getSourceRange(), argName)
+        .fixItInsert(Tok.getLoc(), OS.str());
+
+    invalid = true;
   }
 
   return invalid;
