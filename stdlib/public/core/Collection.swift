@@ -379,6 +379,7 @@ public struct IndexingIterator<
 > : IteratorProtocol, Sequence {
 
   @_inlineable
+  @inline(__always)
   /// Creates an iterator over the given collection.
   public /// @testable
   init(_elements: Elements) {
@@ -387,6 +388,7 @@ public struct IndexingIterator<
   }
 
   @_inlineable
+  @inline(__always)
   /// Creates an iterator over the given collection.
   public /// @testable
   init(_elements: Elements, _position: Elements.Index) {
@@ -419,12 +421,14 @@ public struct IndexingIterator<
   /// - Returns: The next element in the underlying sequence if a next element
   ///   exists; otherwise, `nil`.
   @_inlineable
+  @inline(__always)
   public mutating func next() -> Elements._Element? {
     if _position == _elements.endIndex { return nil }
     let element = _elements[_position]
     _elements.formIndex(after: &_position)
     return element
   }
+  
   @_versioned
   internal let _elements: Elements
   @_versioned
@@ -642,7 +646,10 @@ public struct IndexingIterator<
 /// forward or bidirectional collection must traverse the entire collection to
 /// count the number of contained elements, accessing its `count` property is
 /// an O(*n*) operation.
-public protocol Collection : _Indexable, Sequence {
+public protocol Collection : _Indexable, Sequence 
+where SubSequence: Collection, Indices: Collection,
+      SubSequence.Index == Index
+{
   /// A type that represents the number of steps between a pair of
   /// indices.
   associatedtype IndexDistance = Int
@@ -668,10 +675,10 @@ public protocol Collection : _Indexable, Sequence {
   /// This associated type appears as a requirement in the `Sequence`
   /// protocol, but it is restated here with stricter constraints. In a
   /// collection, the subsequence should also conform to `Collection`.
-  associatedtype SubSequence : _IndexableBase, Sequence = Slice<Self>
-      where Self.SubSequence.Index == Index,
-            Self.Iterator.Element == Self.SubSequence.Iterator.Element,
+  associatedtype SubSequence = Slice<Self>
+      where Iterator.Element == SubSequence.Iterator.Element,
             SubSequence.SubSequence == SubSequence
+
   // FIXME(ABI)#98 (Recursive Protocol Constraints):
   // FIXME(ABI)#99 (Associated Types with where clauses):
   // associatedtype SubSequence : Collection
@@ -732,10 +739,9 @@ public protocol Collection : _Indexable, Sequence {
 
   /// A type that represents the indices that are valid for subscripting the
   /// collection, in ascending order.
-  associatedtype Indices : _Indexable, Sequence = DefaultIndices<Self>
+  associatedtype Indices = DefaultIndices<Self>
     where Indices.Iterator.Element == Index,
-          Indices.Index == Index,
-          Indices.SubSequence == Indices
+          Indices.Index == Index
 
   // FIXME(ABI)#100 (Recursive Protocol Constraints):
   // associatedtype Indices : Collection
@@ -1326,12 +1332,15 @@ extension Collection {
   ///     // Prints "10"
   @_inlineable
   public var first: Iterator.Element? {
-    // NB: Accessing `startIndex` may not be O(1) for some lazy collections,
-    // so instead of testing `isEmpty` and then returning the first element,
-    // we'll just rely on the fact that the iterator always yields the
-    // first element first.
-    var i = makeIterator()
-    return i.next()
+    @inline(__always)
+    get {
+      // NB: Accessing `startIndex` may not be O(1) for some lazy collections,
+      // so instead of testing `isEmpty` and then returning the first element,
+      // we'll just rely on the fact that the iterator always yields the
+      // first element first.
+      var i = makeIterator()
+      return i.next()
+    }
   }
   
   // TODO: swift-3-indexing-model - uncomment and replace above ready (or should we still use the iterator one?)

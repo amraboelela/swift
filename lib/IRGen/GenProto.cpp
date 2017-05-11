@@ -662,6 +662,13 @@ namespace {
       Entries.push_back(WitnessTableEntry::forFunction(ctor));
     }
 
+    void addPlaceholder(MissingMemberDecl *placeholder) {
+      for (auto i : range(placeholder->getNumberOfVTableEntries())) {
+        (void)i;
+        Entries.push_back(WitnessTableEntry());
+      }
+    }
+
     void addAssociatedType(AssociatedTypeDecl *ty) {
       Entries.push_back(WitnessTableEntry::forAssociatedType(ty));
     }
@@ -1115,6 +1122,10 @@ public:
 
     void addConstructor(ConstructorDecl *requirement) {
       return addMethodFromSILWitnessTable(requirement);
+    }
+
+    void addPlaceholder(MissingMemberDecl *placeholder) {
+      llvm_unreachable("cannot emit a witness table with placeholders in it");
     }
 
     void addAssociatedType(AssociatedTypeDecl *requirement) {
@@ -1738,7 +1749,7 @@ void IRGenModule::emitSILWitnessTable(SILWitnessTable *wt) {
   if (!doesConformanceReferenceNominalTypeDescriptor(*this, conformingType)) {
     // Trigger the lazy emission of the foreign type metadata.
     NominalTypeDecl *Nominal = conformingType->getAnyNominal();
-    if (ClassDecl *clas = dyn_cast<ClassDecl>(Nominal)) {
+    if (auto *clas = dyn_cast<ClassDecl>(Nominal)) {
       if (clas->isForeign())
         getAddrOfForeignTypeMetadataCandidate(conformingType);
     } else if (isa<ClangModuleUnit>(Nominal->getModuleScopeContext())) {

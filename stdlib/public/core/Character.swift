@@ -60,6 +60,7 @@
 /// [glossary]: http://www.unicode.org/glossary/
 /// [clusters]: http://www.unicode.org/glossary/#extended_grapheme_cluster
 /// [scalars]: http://www.unicode.org/glossary/#unicode_scalar_value
+@_fixed_layout
 public struct Character :
   _ExpressibleByBuiltinExtendedGraphemeClusterLiteral,
   ExpressibleByExtendedGraphemeClusterLiteral, Hashable {
@@ -104,6 +105,9 @@ public struct Character :
         UTF32.self, input: CollectionOfOne(UInt32(value))))
   }
 
+  // Inlining ensures that the whole constructor can be folded away to a single
+  // integer constant in case of small character literals.
+  @inline(__always)
   @effects(readonly)
   public init(
     _builtinExtendedGraphemeClusterLiteral start: Builtin.RawPointer,
@@ -195,6 +199,7 @@ public struct Character :
 
   /// Creates a Character from a String that is already known to require the
   /// large representation.
+  @_versioned
   internal init(_largeRepresentationString s: String) {
     if let native = s._core.nativeBuffer,
        native.start == s._core._baseAddress! {

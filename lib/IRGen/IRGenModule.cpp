@@ -97,8 +97,8 @@ static clang::CodeGenerator *createClangCodeGenerator(ASTContext &Context,
     CGO.setDebugInfo(clang::codegenoptions::DebugInfoKind::DebugLineTablesOnly);
     break;
   case IRGenDebugInfoKind::ASTTypes:
-    // TODO: Enable -gmodules for the clang code generator.
   case IRGenDebugInfoKind::DwarfTypes:
+    CGO.DebugTypeExtRefs = true;
     CGO.setDebugInfo(clang::codegenoptions::DebugInfoKind::FullDebugInfo);
     break;
   }
@@ -380,7 +380,8 @@ IRGenModule::IRGenModule(IRGenerator &irgen,
   UseSwiftCC = (SwiftCC == llvm::CallingConv::Swift);
 
   if (IRGen.Opts.DebugInfoKind > IRGenDebugInfoKind::None)
-    DebugInfo = new IRGenDebugInfo(IRGen.Opts, *CI, *this, Module, SF);
+    DebugInfo = IRGenDebugInfo::createIRGenDebugInfo(IRGen.Opts, *CI, *this,
+                                                     Module, SF);
 
   initClangTypeConverter();
 
@@ -556,6 +557,9 @@ llvm::Constant *swift::getWrapperFn(llvm::Module &Module,
   FUNCTION_IMPL(ID, NAME, CC, QUOTE(RETURNS), QUOTE(ARGS), QUOTE(ATTRS))
 
 #define FUNCTION_FOR_CONV_C_CC(ID, NAME, CC, RETURNS, ARGS, ATTRS)             \
+  FUNCTION_IMPL(ID, NAME, CC, QUOTE(RETURNS), QUOTE(ARGS), QUOTE(ATTRS))
+
+#define FUNCTION_FOR_CONV_SwiftCC(ID, NAME, CC, RETURNS, ARGS, ATTRS)          \
   FUNCTION_IMPL(ID, NAME, CC, QUOTE(RETURNS), QUOTE(ARGS), QUOTE(ATTRS))
 
 #define FUNCTION_FOR_CONV_RegisterPreservingCC(ID, NAME, CC, RETURNS, ARGS,    \
@@ -746,6 +750,26 @@ void IRGenerator::addLazyWitnessTable(const ProtocolConformance *Conf) {
       LazyWitnessTables.push_back(wt);
     }
   }
+}
+
+void IRGenerator::addClassForArchiveNameRegistration(ClassDecl *ClassDecl) {
+
+  // Those two attributes are interesting to us
+  if (!ClassDecl->getAttrs().hasAttribute<NSKeyedArchiveLegacyAttr>() &&
+      !ClassDecl->getAttrs().hasAttribute<StaticInitializeObjCMetadataAttr>())
+    return;
+
+  // Exclude some classes where those attributes make no sense but could be set
+  // for some reason. Just to be on the safe side.
+  Type ClassTy = ClassDecl->getDeclaredType();
+  if (ClassTy->is<UnboundGenericType>())
+    return;
+  if (ClassTy->hasArchetype())
+    return;
+  if (ClassDecl->hasClangNode())
+    return;
+
+  ClassesForArchiveNameRegistration.push_back(ClassDecl);
 }
 
 llvm::AttributeSet IRGenModule::getAllocAttrs() {

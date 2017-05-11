@@ -4,8 +4,10 @@
     "AssertCommon.swift"
   ],
   "String": [
+    "ASCII.swift",
     "CString.swift",
     "Character.swift",
+    "ICU.swift",
     "StaticString.swift",
     "String.swift",
     "StringBridge.swift",
@@ -30,7 +32,8 @@
     "UnavailableStringAPIs.swift",
     "UTFEncoding.swift",
     "UTF8.swift",
-    "UTF16.swift"
+    "UTF16.swift",
+    "UTF32.swift"
   ],
   "Bool": [
     "Bool.swift"
@@ -46,6 +49,7 @@
     "Repeat.swift",
     "Sort.swift",
     "Range.swift",
+    "SentinelCollection.swift",
     "ClosedRange.swift",
     "CollectionOfOne.swift",
     "HeapBuffer.swift",
@@ -159,6 +163,7 @@
     "REPL.swift",
     "Runtime.swift",
     "Shims.swift",
+    "ThreadLocalStorage.swift",
     "Unmanaged.swift",
     "Availability.swift",
     "CommandLine.swift",

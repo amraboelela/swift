@@ -12,13 +12,14 @@ class MyCities : Cities {
   override func mooloolaba(x: Cities, y: Cities?) {}
   override func toowoomba(x: [Cities], y: [Cities]?) {}
   override func mareeba(x: [String : Cities?], y: [String : Cities]?) {}
+  override func maroochy(x: (Int)?, y: Int?) {}
 }
 
 class MySubCities : MyCities {}
 
 class MySubSubCities : MySubCities {
   override func yandina(x: [[String : Cities]]!) {}
-  override func buderim() -> Cities? { return Cities(x: 1) }
+  override func buderim() -> Cities? { return nil }
   override func noosa() -> [[String : Cities]?] { return [] }
 }
 
@@ -32,4 +33,22 @@ extension ExtraCities {
 class MyExtraCities : ExtraCities {
   func blibli(x: (String?, String) -> String!) {}
   func currimundi(x: (Int, (Int, Int))!) {}
+}
+
+typealias IntAnd<T> = (Int, T)
+class Outer {
+  typealias Inner = (String?, String) -> String!
+}
+
+class MyExtraCitiesWithAliases : ExtraCities {
+  func blibli(x: Outer.Inner) {}
+  func currimundi(x: (Int, IntAnd<Int>)!) {}
+}
+
+typealias OptString = String?
+typealias ImplicitlyUnwrapped<T> = T!
+
+class MyExtraCitiesWithMoreAliases : ExtraCities {
+  func blibli(x: (OptString, String) -> String!) {}
+  func currimundi(x: ImplicitlyUnwrapped<(Int, (Int, Int))>) {}
 }

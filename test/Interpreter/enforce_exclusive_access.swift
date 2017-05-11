@@ -1,6 +1,6 @@
 // RUN: rm -rf %t
 // RUN: mkdir -p %t
-// RUN: %target-build-swift %s -o %t/a.out -enforce-exclusivity=checked -Onone
+// RUN: %target-build-swift -swift-version 4 %s -o %t/a.out -enforce-exclusivity=checked -Onone
 //
 // RUN: %target-run %t/a.out
 // REQUIRES: executable_test
@@ -21,7 +21,7 @@ func readAndPerform<T>(_ _: UnsafePointer<T>, closure: () ->()) {
   closure()
 }
 
-/// Begin a modify access to the first paraemter and call the closure inside it.
+/// Begin a modify access to the first parameter and call the closure inside it.
 func modifyAndPerform<T>(_ _: UnsafeMutablePointer<T>, closure: () ->()) {
   closure()
 }
@@ -47,7 +47,7 @@ ExclusiveAccessTestSuite.test("ModifyInsideRead")
   .skip(.custom(
     { _isFastAssertConfiguration() },
     reason: "this trap is not guaranteed to happen in -Ounchecked"))
-  .crashOutputMatches("modify/read access conflict detected on address")
+  .crashOutputMatches("read/modify access conflict detected on address")
   .code
 {
   readAndPerform(&globalX) {
@@ -60,7 +60,7 @@ ExclusiveAccessTestSuite.test("ReadInsideModify")
   .skip(.custom(
     { _isFastAssertConfiguration() },
     reason: "this trap is not guaranteed to happen in -Ounchecked"))
-  .crashOutputMatches("read/modify access conflict detected on address")
+  .crashOutputMatches("modify/read access conflict detected on address")
   .code
 {
   modifyAndPerform(&globalX) {
@@ -101,11 +101,67 @@ ExclusiveAccessTestSuite.test("ModifyFollowedByModify") {
   globalX = X() // no-trap
 }
 
-ExclusiveAccessTestSuite.test("ClosureCaptureModifyModify") {
+// FIXME: This should be covered by static diagnostics.
+// Once this radar is fixed, confirm that a it is covered by a static diagnostic
+// (-verify) test in exclusivity_static_diagnostics.sil.
+// <rdar://problem/32061282> Enforce exclusive access in noescape closures.
+//
+//ExclusiveAccessTestSuite.test("ClosureCaptureModifyModify")
+//.skip(.custom(
+//    { _isFastAssertConfiguration() },
+//    reason: "this trap is not guaranteed to happen in -Ounchecked"))
+//  .crashOutputMatches("modify/modify access conflict detected on address")
+//  .code
+//{
+//  var x = X()
+//  modifyAndPerform(&x) {
+//    expectCrashLater()
+//    x.i = 12
+//  }
+//}
+
+// FIXME: This should be covered by static diagnostics.
+// Once this radar is fixed, confirm that a it is covered by a static diagnostic
+// (-verify) test in exclusivity_static_diagnostics.sil.
+// <rdar://problem/32061282> Enforce exclusive access in noescape closures.
+//
+//ExclusiveAccessTestSuite.test("ClosureCaptureReadModify")
+//.skip(.custom(
+//    { _isFastAssertConfiguration() },
+//    reason: "this trap is not guaranteed to happen in -Ounchecked"))
+//  .crashOutputMatches("modify/read access conflict detected on address")
+//  .code
+//{
+//  var x = X()
+//  modifyAndPerform(&x) {
+//    expectCrashLater()
+//    _blackHole(x.i)
+//  }
+//}
+
+// FIXME: This should be covered by static diagnostics.
+// Once this radar is fixed, confirm that a it is covered by a static diagnostic
+// (-verify) test in exclusivity_static_diagnostics.sil.
+// <rdar://problem/32061282> Enforce exclusive access in noescape closures.
+//
+//ExclusiveAccessTestSuite.test("ClosureCaptureModifyRead")
+//.skip(.custom(
+//    { _isFastAssertConfiguration() },
+//    reason: "this trap is not guaranteed to happen in -Ounchecked"))
+//  .crashOutputMatches("read/modify access conflict detected on address")
+//  .code
+//{
+//  var x = X()
+//  readAndPerform(&x) {
+//    expectCrashLater()
+//    x.i = 12
+//  }
+//}
+
+ExclusiveAccessTestSuite.test("ClosureCaptureReadRead") {
   var x = X()
-  modifyAndPerform(&x) {
-    // FIXME: This should be caught dynamically.
-    x.i = 12
+  readAndPerform(&x) {
+    _blackHole(x.i) // no-trap
   }
 }
 
@@ -113,7 +169,7 @@ ExclusiveAccessTestSuite.test("ClosureCaptureModifyModify") {
 // have overlapping accesses
 ExclusiveAccessTestSuite.test("PerThreadEnforcement") {
   modifyAndPerform(&globalX) {
-    var (_, otherThread) = _stdlib_pthread_create_block(nil, { (_ : Void) -> () in
+    let (_, otherThread) = _stdlib_pthread_create_block(nil, { (_ : Void) -> () in
       globalX.i = 12 // no-trap
       return ()
     }, ())

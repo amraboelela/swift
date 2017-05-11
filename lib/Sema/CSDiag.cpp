@@ -325,12 +325,16 @@ static DeclName getOverloadChoiceName(ArrayRef<OverloadChoice> choices) {
 
 /// Returns true if any diagnostics were emitted.
 static bool
-tryDiagnoseTrailingClosureAmbiguity(TypeChecker &tc, const Expr *expr,
+tryDiagnoseTrailingClosureAmbiguity(TypeChecker &tc,
+                                    const Expr *expr,
+                                    const Expr *anchor,
                                     ArrayRef<OverloadChoice> choices) {
   auto *callExpr = dyn_cast<CallExpr>(expr);
   if (!callExpr)
     return false;
   if (!callExpr->hasTrailingClosure())
+    return false;
+  if (callExpr->getFn() != anchor)
     return false;
 
   llvm::SmallMapVector<Identifier, const ValueDecl *, 8> choicesByLabel;
@@ -465,7 +469,7 @@ static bool diagnoseAmbiguity(ConstraintSystem &cs,
                                   : diag::ambiguous_decl_ref,
                 name);
 
-    if (tryDiagnoseTrailingClosureAmbiguity(tc, expr, overload.choices))
+    if (tryDiagnoseTrailingClosureAmbiguity(tc, expr, anchor, overload.choices))
       return true;
 
     // Emit candidates.  Use a SmallPtrSet to make sure only emit a particular
@@ -2806,7 +2810,8 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
         }
         assert(TypeDC->isTypeContext() && "Expected type decl context!");
 
-        if (TypeDC->getDeclaredTypeOfContext()->isEqual(instanceTy)) {
+        if (TypeDC->getAsNominalTypeOrNominalTypeExtensionContext() ==
+            instanceTy->getAnyNominal()) {
           if (propertyInitializer)
             CS->TC.diagnose(nameLoc, diag::instance_member_in_initializer,
                             memberName);
@@ -3830,6 +3835,45 @@ static bool tryRawRepresentableFixIts(InFlightDiagnostic &diag,
   return false;
 }
 
+/// Try to add a fix-it when converting between a collection and its slice type,
+/// such as String <-> Substring or (eventually) Array <-> ArraySlice
+static bool trySequenceSubsequenceConversionFixIts(InFlightDiagnostic &diag,
+                                                   ConstraintSystem *CS,
+                                                   Type fromType,
+                                                   Type toType,
+                                                   Expr *expr) {
+  if (CS->TC.Context.getStdlibModule() == nullptr) {
+    return false;
+  }
+  auto String = CS->TC.getStringType(CS->DC);
+  auto Substring = CS->TC.getSubstringType(CS->DC);
+
+  /// FIXME: Remove this flag when void subscripts are implemented.
+  /// Make this unconditional and remove the if statement.
+  if (CS->TC.getLangOpts().FixStringToSubstringConversions) {
+    // String -> Substring conversion
+    // Add '[]' void subscript call to turn the whole String into a Substring
+    if (fromType->getCanonicalType() == String->getCanonicalType()) {
+      if (toType->getCanonicalType() == Substring->getCanonicalType()) {
+        diag.fixItInsertAfter(expr->getEndLoc (), "[]");
+        return true;
+      }
+    }
+  }
+
+  // Substring -> String conversion
+  // Wrap in String.init
+  if (fromType->getCanonicalType() == Substring->getCanonicalType()) {
+    if (toType->getCanonicalType() == String->getCanonicalType()) {
+      diag.fixItInsert(expr->getLoc(), "String(");
+      diag.fixItInsertAfter(expr->getSourceRange().End, ")");
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /// Attempts to add fix-its for these two mistakes:
 ///
 /// - Passing an integer with the right type but which is getting wrapped with a
@@ -3850,12 +3894,12 @@ static bool tryIntegerCastFixIts(InFlightDiagnostic &diag,
     return false;
 
   auto getInnerCastedExpr = [&]() -> Expr* {
-    CallExpr *CE = dyn_cast<CallExpr>(expr);
+    auto *CE = dyn_cast<CallExpr>(expr);
     if (!CE)
       return nullptr;
     if (!isa<ConstructorRefCallExpr>(CE->getFn()))
       return nullptr;
-    ParenExpr *parenE = dyn_cast<ParenExpr>(CE->getArg());
+    auto *parenE = dyn_cast<ParenExpr>(CE->getArg());
     if (!parenE)
       return nullptr;
     return parenE->getSubExpr();
@@ -4268,6 +4312,13 @@ bool FailureDiagnosis::diagnoseContextualConversionError() {
                                      exprType, contextualType);
   diag.highlight(expr->getSourceRange());
 
+  // Try to convert between a sequence and its subsequence, notably
+  // String <-> Substring.
+  if (trySequenceSubsequenceConversionFixIts(diag, CS, exprType, contextualType,
+                                             expr)) {
+    return true;
+  }
+
   // Attempt to add a fixit for the error.
   switch (CS->getContextualTypePurpose()) {
   case CTP_CallArgument:
@@ -4282,9 +4333,6 @@ bool FailureDiagnosis::diagnoseContextualConversionError() {
                               expr) ||
     tryRawRepresentableFixIts(diag, CS, exprType, contextualType,
                               KnownProtocolKind::ExpressibleByStringLiteral,
-                              expr) ||
-    tryRawRepresentableFixIts(diag, CS, exprType, contextualType,
-                              KnownProtocolKind::AnyObject,
                               expr) ||
     tryIntegerCastFixIts(diag, CS, exprType, contextualType, expr) ||
     addTypeCoerceFixit(diag, CS, exprType, contextualType, expr);
@@ -4884,6 +4932,115 @@ static bool diagnoseImplicitSelfErrors(Expr *fnExpr, Expr *argExpr,
   return false;
 }
 
+// It is a somewhat common error to try to access an instance method as a
+// curried member on the type, instead of using an instance, e.g. the user
+// wrote:
+//
+//   Foo.doThing(42, b: 19)
+//
+// instead of:
+//
+//   myFoo.doThing(42, b: 19)
+//
+// Check for this situation and handle it gracefully.
+static bool
+diagnoseInstanceMethodAsCurriedMemberOnType(CalleeCandidateInfo &CCI,
+                                            Expr *fnExpr, Expr *argExpr) {
+  for (auto &candidate : CCI.candidates) {
+    auto argTy = candidate.getArgumentType();
+    if (!argTy)
+      return false;
+
+    auto *decl = candidate.getDecl();
+    if (!decl)
+      return false;
+
+    // If this is an exact match at the level 1 of the parameters, but
+    // there is still something wrong with the expression nevertheless
+    // it might be worth while to check if it's instance method as curried
+    // member of type problem.
+    if (CCI.closeness == CC_ExactMatch &&
+        (decl->isInstanceMember() && candidate.level == 1))
+      continue;
+
+    auto params = decomposeParamType(argTy, decl, candidate.level);
+    // If one of the candidates is an instance method with a single parameter
+    // at the level 0, this might be viable situation for calling instance
+    // method as curried member of type problem.
+    if (params.size() != 1 || !decl->isInstanceMember() || candidate.level > 0)
+      return false;
+  }
+
+  auto &TC = CCI.CS->TC;
+
+  if (auto UDE = dyn_cast<UnresolvedDotExpr>(fnExpr)) {
+    auto baseExpr = UDE->getBase();
+    auto baseType = baseExpr->getType();
+    if (auto *MT = baseType->getAs<MetatypeType>()) {
+      auto DC = CCI.CS->DC;
+      auto instanceType = MT->getInstanceType();
+
+      // If the base is an implicit self type reference, and we're in a
+      // an initializer, then the user wrote something like:
+      //
+      //   class Foo { let val = initFn() }
+      // or
+      //   class Bar { func something(x: Int = initFn()) }
+      //
+      // which runs in type context, not instance context.  Produce a tailored
+      // diagnostic since this comes up and is otherwise non-obvious what is
+      // going on.
+      if (baseExpr->isImplicit() && isa<Initializer>(DC)) {
+        auto *TypeDC = DC->getParent();
+        bool propertyInitializer = true;
+        // If the parent context is not a type context, we expect it
+        // to be a defaulted parameter in a function declaration.
+        if (!TypeDC->isTypeContext()) {
+          assert(TypeDC->getContextKind() ==
+                     DeclContextKind::AbstractFunctionDecl &&
+                 "Expected function decl context for initializer!");
+          TypeDC = TypeDC->getParent();
+          propertyInitializer = false;
+        }
+        assert(TypeDC->isTypeContext() && "Expected type decl context!");
+
+        if (TypeDC->getAsNominalTypeOrNominalTypeExtensionContext() ==
+            instanceType->getAnyNominal()) {
+          if (propertyInitializer)
+            TC.diagnose(UDE->getLoc(), diag::instance_member_in_initializer,
+                        UDE->getName());
+          else
+            TC.diagnose(UDE->getLoc(),
+                        diag::instance_member_in_default_parameter,
+                        UDE->getName());
+          return true;
+        }
+      }
+
+      // If this is a situation like this `self.foo(A())()` and self != A
+      // let's say that `self` is not convertible to A.
+      if (auto nominalType = argExpr->getType()->getAs<NominalType>()) {
+        if (!instanceType->isEqual(nominalType)) {
+          TC.diagnose(argExpr->getStartLoc(), diag::types_not_convertible,
+                      false, nominalType, instanceType);
+          return true;
+        }
+      }
+
+      // Otherwise, complain about use of instance value on type.
+      auto diagnostic = isa<TypeExpr>(baseExpr)
+                            ? diag::instance_member_use_on_type
+                            : diag::could_not_use_instance_member_on_type;
+
+      TC.diagnose(UDE->getLoc(), diagnostic, instanceType, UDE->getName())
+          .highlight(baseExpr->getSourceRange());
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /// Emit a class of diagnostics that we only know how to generate when there is
 /// exactly one candidate we know about.  Return true if an error is emitted.
 static bool diagnoseSingleCandidateFailures(CalleeCandidateInfo &CCI,
@@ -4901,69 +5058,6 @@ static bool diagnoseSingleCandidateFailures(CalleeCandidateInfo &CCI,
 
   auto params = decomposeParamType(argTy, candidate.getDecl(), candidate.level);
   auto args = decomposeArgType(argExpr->getType(), argLabels);
-
-  // It is a somewhat common error to try to access an instance method as a
-  // curried member on the type, instead of using an instance, e.g. the user
-  // wrote:
-  //
-  //   Foo.doThing(42, b: 19)
-  //
-  // instead of:
-  //
-  //   myFoo.doThing(42, b: 19)
-  //
-  // Check for this situation and handle it gracefully.
-  if (params.size() == 1 && candidate.getDecl() &&
-      candidate.getDecl()->isInstanceMember() &&
-      candidate.level == 0) {
-    if (auto UDE = dyn_cast<UnresolvedDotExpr>(fnExpr))
-      if (isa<TypeExpr>(UDE->getBase())) {
-        auto baseType = candidate.getArgumentType();
-        auto DC = CCI.CS->DC;
-
-        // If the base is an implicit self type reference, and we're in a
-        // an initializer, then the user wrote something like:
-        //
-        //   class Foo { let val = initFn() }
-        // or
-        //   class Bar { func something(x: Int = initFn()) }
-        //
-        // which runs in type context, not instance context.  Produce a tailored
-        // diagnostic since this comes up and is otherwise non-obvious what is
-        // going on.
-        if (UDE->getBase()->isImplicit() && isa<Initializer>(DC)) {
-          auto *TypeDC = DC->getParent();
-          bool propertyInitializer = true;
-          // If the parent context is not a type context, we expect it
-          // to be a defaulted parameter in a function declaration.
-          if (!TypeDC->isTypeContext()) {
-            assert(TypeDC->getContextKind() ==
-                       DeclContextKind::AbstractFunctionDecl &&
-                   "Expected function decl context for initializer!");
-            TypeDC = TypeDC->getParent();
-            propertyInitializer = false;
-          }
-          assert(TypeDC->isTypeContext() && "Expected type decl context!");
-
-          if (TypeDC->getDeclaredTypeOfContext()->isEqual(baseType)) {
-            if (propertyInitializer)
-              TC.diagnose(UDE->getLoc(), diag::instance_member_in_initializer,
-                          UDE->getName());
-            else
-              TC.diagnose(UDE->getLoc(),
-                          diag::instance_member_in_default_parameter,
-                          UDE->getName());
-            return true;
-          }
-        }
-
-        // Otherwise, complain about use of instance value on type.
-        TC.diagnose(UDE->getLoc(), diag::instance_member_use_on_type,
-                    baseType, UDE->getName())
-          .highlight(UDE->getBase()->getSourceRange());
-        return true;
-      }
-  }
 
   // Check the case where a raw-representable type is constructed from an
   // argument with the same type:
@@ -4983,7 +5077,7 @@ static bool diagnoseSingleCandidateFailures(CalleeCandidateInfo &CCI,
     auto rawTy = isRawRepresentable(resTy, CCI.CS);
     if (rawTy && arg.Ty && resTy->isEqual(arg.Ty)) {
       auto getInnerExpr = [](Expr *E) -> Expr* {
-        ParenExpr *parenE = dyn_cast<ParenExpr>(E);
+        auto *parenE = dyn_cast<ParenExpr>(E);
         if (!parenE)
           return nullptr;
         return parenE->getSubExpr();
@@ -5304,6 +5398,9 @@ bool FailureDiagnosis::diagnoseParameterErrors(CalleeCandidateInfo &CCI,
 
   // Try to diagnose errors related to the use of implicit self reference.
   if (diagnoseImplicitSelfErrors(fnExpr, argExpr, CCI, argLabels, CS))
+    return true;
+
+  if (diagnoseInstanceMethodAsCurriedMemberOnType(CCI, fnExpr, argExpr))
     return true;
 
   // Do all the stuff that we only have implemented when there is a single
@@ -6479,7 +6576,9 @@ bool FailureDiagnosis::visitClosureExpr(ClosureExpr *CE) {
     // in either case, we want to produce nice and clear diagnostics.
     unsigned actualArgCount = params->size();
     unsigned inferredArgCount = 1;
-    if (auto *argTupleTy = inferredArgType->getAs<TupleType>())
+    // Don't try to desugar ParenType which is going to result in incorrect
+    // inferred argument count.
+    if (auto *argTupleTy = dyn_cast<TupleType>(inferredArgType.getPointer()))
       inferredArgCount = argTupleTy->getNumElements();
     
     // If the actual argument count is 1, it can match a tuple as a whole.
@@ -6511,7 +6610,144 @@ bool FailureDiagnosis::visitClosureExpr(ClosureExpr *CE) {
         }
         return true;
       }
-      
+
+      if (inferredArgCount == 1 && actualArgCount > 1) {
+        // Let's see if inferred argument is actually a tuple inside of Paren.
+        if (auto *argTupleTy = inferredArgType->getAs<TupleType>()) {
+          // Looks like the number of closure parameters matches number
+          // of inferred arguments, which means we can we can emit an
+          // error about an attempt to make use of tuple splat or tuple
+          // destructuring and provide a proper fix-it.
+          if (argTupleTy->getNumElements() == actualArgCount) {
+            // In case of implicit parameters e.g. $0, $1 we
+            // can't really provide good fix-it because
+            // structure of parameter type itself is unclear.
+            for (auto *param : params->getArray()) {
+              if (param->isImplicit()) {
+                diagnose(params->getStartLoc(),
+                         diag::closure_tuple_parameter_destructuring_implicit,
+                         argTupleTy);
+                return true;
+              }
+            }
+
+            auto diag = diagnose(params->getStartLoc(),
+                                 diag::closure_tuple_parameter_destructuring,
+                                 argTupleTy);
+            Type actualArgType;
+            if (auto *actualFnType = CE->getType()->getAs<AnyFunctionType>())
+              actualArgType = actualFnType->getInput();
+
+            auto *closureBody = CE->getBody();
+            if (!closureBody)
+              return true;
+
+            auto &sourceMgr = CS->getASTContext().SourceMgr;
+            auto bodyStmts = closureBody->getElements();
+
+            SourceLoc bodyLoc;
+            // If the body is empty let's put the cursor
+            // right after "in", otherwise make it start
+            // location of the first statement in the body.
+            if (bodyStmts.empty())
+              bodyLoc = Lexer::getLocForEndOfToken(sourceMgr, CE->getInLoc());
+            else
+              bodyLoc = bodyStmts.front().getStartLoc();
+
+            SmallString<64> fixIt;
+            llvm::raw_svector_ostream OS(fixIt);
+
+            // If this is multi-line closure we'd have to insert new lines
+            // in the suggested 'let' to keep the structure of the code intact,
+            // otherwise just use ';' to keep everything on the same line.
+            auto inLine = sourceMgr.getLineNumber(CE->getInLoc());
+            auto bodyLine = sourceMgr.getLineNumber(bodyLoc);
+            auto isMultiLineClosure = bodyLine > inLine;
+            auto indent = bodyStmts.empty() ? "" : Lexer::getIndentationForLine(
+                                                       sourceMgr, bodyLoc);
+
+            SmallString<16> parameter;
+            llvm::raw_svector_ostream parameterOS(parameter);
+
+            parameterOS << "(";
+            interleave(params->getArray(),
+                       [&](const ParamDecl *param) {
+                         parameterOS << param->getNameStr();
+                       },
+                       [&] { parameterOS << ", "; });
+            parameterOS << ")";
+
+            // Check if there are any explicit types associated
+            // with parameters, if there are, we'll have to add
+            // type information to the replacement argument.
+            bool explicitTypes = false;
+            for (auto *param : params->getArray()) {
+              if (param->getTypeLoc().getTypeRepr()) {
+                explicitTypes = true;
+                break;
+              }
+            }
+
+            if (isMultiLineClosure)
+              OS << '\n' << indent;
+
+            // Let's form 'let <name> : [<type>]? = arg' expression.
+            OS << "let " << parameterOS.str() << " = arg"
+               << (isMultiLineClosure ? "\n" + indent : "; ");
+
+            SmallString<64> argName;
+            llvm::raw_svector_ostream nameOS(argName);
+            if (explicitTypes) {
+              nameOS << "(arg: " << argTupleTy->getString() << ")";
+            } else {
+              nameOS << "(arg)";
+            }
+
+            if (CE->hasSingleExpressionBody()) {
+              // Let's see if we need to add result type to the argument/fix-it:
+              //  - if the there is a result type associated with the closure;
+              //  - and it's not a void type;
+              //  - and it hasn't been explicitly written.
+              auto resultType = CE->getResultType();
+              auto hasResult = [](Type resultType) -> bool {
+                return resultType && !resultType->isVoid();
+              };
+
+              auto isValidType = [](Type resultType) -> bool {
+                return resultType && !resultType->hasUnresolvedType() &&
+                       !resultType->hasTypeVariable();
+              };
+
+              // If there an expected result type but it hasn't been explictly
+              // provided, let's add it to the argument.
+              if (hasResult(resultType) && !CE->hasExplicitResultType()) {
+                nameOS << " -> ";
+                if (isValidType(resultType))
+                  nameOS << resultType->getString();
+                else
+                  nameOS << "<#Result#>";
+              }
+
+              if (auto stmt = bodyStmts.front().get<Stmt *>()) {
+                // If the body is a single expression with implicit return.
+                if (isa<ReturnStmt>(stmt) && stmt->isImplicit()) {
+                  // And there is non-void expected result type,
+                  // because we add 'let' expression to the body
+                  // we need to make such 'return' explicit.
+                  if (hasResult(resultType))
+                    OS << "return ";
+                }
+              }
+            }
+
+            diag.fixItReplace(params->getSourceRange(), nameOS.str())
+                .fixItInsert(bodyLoc, OS.str());
+
+            return true;
+          }
+        }
+      }
+
       // Okay, the wrong number of arguments was used, complain about that.
       // Before doing so, strip attributes off the function type so that they
       // don't confuse the issue.

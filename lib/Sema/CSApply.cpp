@@ -949,7 +949,8 @@ namespace {
         // complain.
         if (auto attr = member->getAttrs().getAttribute<ObjCAttr>()) {
           if (attr->isSwift3Inferred() &&
-              !tc.Context.LangOpts.WarnSwift3ObjCInference) {
+              tc.Context.LangOpts.WarnSwift3ObjCInference
+                == Swift3ObjCInferenceWarnings::Minimal) {
             tc.diagnose(memberLoc,
                         diag::expr_dynamic_lookup_swift3_objc_inference,
                         member->getDescriptiveKind(),
@@ -3954,7 +3955,8 @@ namespace {
         // If this attribute was inferred based on deprecated Swift 3 rules,
         // complain.
         if (attr->isSwift3Inferred() &&
-            !tc.Context.LangOpts.WarnSwift3ObjCInference) {
+            tc.Context.LangOpts.WarnSwift3ObjCInference
+              == Swift3ObjCInferenceWarnings::Minimal) {
           tc.diagnose(E->getLoc(), diag::expr_selector_swift3_objc_inference,
                       foundDecl->getDescriptiveKind(), foundDecl->getFullName(),
                       foundDecl->getDeclContext()
@@ -4157,6 +4159,10 @@ namespace {
       // key path.
       assert(!baseTy || baseTy->getLValueOrInOutObjectType()->isEqual(leafTy));
       return E;
+    }
+
+    Expr *visitKeyPathDotExpr(KeyPathDotExpr *E) {
+      llvm_unreachable("found KeyPathDotExpr in CSApply");
     }
 
     /// Interface for ExprWalker
@@ -4622,7 +4628,7 @@ Expr *ExprRewriter::coerceTupleToTuple(Expr *expr, TupleType *fromTuple,
 
   // Capture the tuple expression, if there is one.
   Expr *innerExpr = lookThroughIdentityExprs(expr);
-  TupleExpr *fromTupleExpr = dyn_cast<TupleExpr>(innerExpr);
+  auto *fromTupleExpr = dyn_cast<TupleExpr>(innerExpr);
 
   /// Check each of the tuple elements in the destination.
   bool hasVariadic = false;
@@ -4694,7 +4700,7 @@ Expr *ExprRewriter::coerceTupleToTuple(Expr *expr, TupleType *fromTuple,
                                             fromTuple, toTuple);
       if (typeFromPattern) {
         std::vector<std::pair<SourceLoc, std::string>> locInsertPairs;
-        TuplePattern *tupleP = dyn_cast<TuplePattern>(typeFromPattern.getValue());
+        auto *tupleP = dyn_cast<TuplePattern>(typeFromPattern.getValue());
         if (tupleP && shouldApplyAddingLabelFixit(tupleP, toTuple, fromTuple,
                                                   locInsertPairs)) {
           for (auto &Pair : locInsertPairs) {
@@ -5315,8 +5321,8 @@ Expr *ExprRewriter::coerceCallArguments(
   (void)failed;
 
   // We should either have parentheses or a tuple.
-  TupleExpr *argTuple = dyn_cast<TupleExpr>(arg);
-  ParenExpr *argParen = dyn_cast<ParenExpr>(arg);
+  auto *argTuple = dyn_cast<TupleExpr>(arg);
+  auto *argParen = dyn_cast<ParenExpr>(arg);
   // FIXME: Eventually, we want to enforce that we have either argTuple or
   // argParen here.
 
@@ -7768,7 +7774,7 @@ Solution::convertBooleanTypeToBuiltinI1(Expr *expr, ConstraintLocator *locator) 
     tc.diagnose(expr->getLoc(), diag::broken_bool);
     return nullptr;
   }
-  FuncDecl *builtinMethod = dyn_cast<FuncDecl>(members[0].Decl);
+  auto *builtinMethod = dyn_cast<FuncDecl>(members[0].Decl);
   if (!builtinMethod) {
     tc.diagnose(expr->getLoc(), diag::broken_bool);
     return nullptr;

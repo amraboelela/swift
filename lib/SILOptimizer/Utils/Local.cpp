@@ -180,7 +180,7 @@ recursivelyDeleteTriviallyDeadInstructions(ArrayRef<SILInstruction *> IA,
 
         // If the operand is an instruction that is only used by the instruction
         // being deleted, delete it.
-        if (SILInstruction *OpValInst = dyn_cast<SILInstruction>(OpVal))
+        if (auto *OpValInst = dyn_cast<SILInstruction>(OpVal))
           if (!DeadInsts.count(OpValInst) &&
               isInstructionTriviallyDead(OpValInst))
             NextInsts.insert(OpValInst);
@@ -369,7 +369,7 @@ TermInst *swift::addArgumentToBranch(SILValue Val, SILBasicBlock *Dest,
                                      TermInst *Branch) {
   SILBuilderWithScope Builder(Branch);
 
-  if (CondBranchInst *CBI = dyn_cast<CondBranchInst>(Branch)) {
+  if (auto *CBI = dyn_cast<CondBranchInst>(Branch)) {
     SmallVector<SILValue, 8> TrueArgs;
     SmallVector<SILValue, 8> FalseArgs;
 
@@ -392,7 +392,7 @@ TermInst *swift::addArgumentToBranch(SILValue Val, SILBasicBlock *Dest,
                                     CBI->getFalseBB(), FalseArgs);
   }
 
-  if (BranchInst *BI = dyn_cast<BranchInst>(Branch)) {
+  if (auto *BI = dyn_cast<BranchInst>(Branch)) {
     SmallVector<SILValue, 8> Args;
 
     for (auto A : BI->getArgs())
@@ -862,11 +862,8 @@ SILInstruction *StringConcatenationOptimizer::optimize() {
   // Type.
   Arguments.push_back(FuncResultType);
 
-  auto FnTy = FRIConvertFromBuiltin->getType();
-  auto fnConv = FRIConvertFromBuiltin->getConventions();
-  auto STResultType = fnConv.getSILResultType();
-  return Builder.createApply(AI->getLoc(), FRIConvertFromBuiltin, FnTy,
-                             STResultType, SubstitutionList(), Arguments,
+  return Builder.createApply(AI->getLoc(), FRIConvertFromBuiltin,
+                             SubstitutionList(), Arguments,
                              false);
 }
 
@@ -1361,7 +1358,6 @@ optimizeBridgedObjCToSwiftCast(SILInstruction *Inst,
   auto SILFnTy = FuncRef->getType();
   SILType SubstFnTy = SILFnTy.substGenericArgs(M, SubMap);
   SILFunctionConventions substConv(SubstFnTy.castTo<SILFunctionType>(), M);
-  SILType ResultTy = substConv.getSILResultType();
 
   // Temporary to hold the intermediate result.
   AllocStackInst *Tmp = nullptr;
@@ -1395,8 +1391,7 @@ optimizeBridgedObjCToSwiftCast(SILInstruction *Inst,
   SmallVector<Substitution, 4> Subs;
   Conf.getRequirement()->getGenericSignature()->getSubstitutions(SubMap, Subs);
 
-  auto *AI = Builder.createApply(Loc, FuncRef, SubstFnTy, ResultTy, Subs, Args,
-                                 false);
+  auto *AI = Builder.createApply(Loc, FuncRef, Subs, Args, false);
 
   // If the source of a cast should be destroyed, emit a release.
   if (auto *UCCAI = dyn_cast<UnconditionalCheckedCastAddrInst>(Inst)) {
@@ -1552,7 +1547,6 @@ optimizeBridgedSwiftToObjCCast(SILInstruction *Inst,
 
   SILType SubstFnTy = SILFnTy.substGenericArgs(M, SubMap);
   SILFunctionConventions substConv(SubstFnTy.castTo<SILFunctionType>(), M);
-  SILType ResultTy = substConv.getSILResultType();
 
   auto FnRef = Builder.createFunctionRef(Loc, BridgedFunc);
   if (Src->getType().isAddress() && !substConv.isSILIndirect(ParamTypes[0])) {
@@ -1643,8 +1637,7 @@ optimizeBridgedSwiftToObjCCast(SILInstruction *Inst,
     Sig->getSubstitutions(SubMap, Subs);
 
   // Generate a code to invoke the bridging function.
-  auto *NewAI = Builder.createApply(Loc, FnRef, SubstFnTy, ResultTy, Subs, Src,
-                                    false);
+  auto *NewAI = Builder.createApply(Loc, FnRef, Subs, Src, false);
 
   if (needReleaseAfterCall) {
     Builder.createReleaseValue(Loc, Src, Builder.getDefaultAtomicity());

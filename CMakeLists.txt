@@ -105,8 +105,11 @@ set(SWIFT_ANALYZE_CODE_COVERAGE FALSE CACHE STRING
 set_property(CACHE SWIFT_ANALYZE_CODE_COVERAGE PROPERTY
     STRINGS FALSE "NOT-MERGED" "MERGED")
 
-set(SWIFT_VERSION "4.0" CACHE STRING
-    "The user-visible version of the Swift compiler")
+# SWIFT_VERSION is deliberately /not/ cached so that an existing build directory
+# can be reused when a new version of Swift comes out (assuming the user hasn't
+# manually set it as part of their own CMake configuration).
+set(SWIFT_VERSION "4.0")
+
 set(SWIFT_VENDOR "" CACHE STRING
     "The vendor name of the Swift compiler")
 set(SWIFT_COMPILER_VERSION "" CACHE STRING
@@ -416,6 +419,7 @@ include(AddSwift)
 include(SwiftConfigureSDK)
 include(SwiftComponents)
 include(SwiftList)
+include(AddSwiftRuntime)
 
 # Configure swift include, install, build components.
 swift_configure_components()
@@ -494,6 +498,7 @@ include_directories(BEFORE
 #     ...
 #  endif()
 set(SWIFT_DARWIN_VARIANTS "^(macosx|iphoneos|iphonesimulator|appletvos|appletvsimulator|watchos|watchsimulator)")
+set(SWIFT_DARWIN_EMBEDDED_VARIANTS "^(iphoneos|iphonesimulator|appletvos|appletvsimulator|watchos|watchsimulator)")
 
 # A convenient list to match Darwin SDKs. Example:
 #  if("${SWIFT_HOST_VARIANT_SDK}" IN_LIST SWIFT_APPLE_PLATFORMS)
@@ -785,6 +790,17 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
   set(CMAKE_OSX_DEPLOYMENT_TARGET "")
 endif()
 
+swift_runtime_enable_backtrace_reporting(SWIFT_RUNTIME_ENABLE_BACKTRACE_REPORTING_default)
+set(SWIFT_RUNTIME_ENABLE_BACKTRACE_REPORTING
+    ${SWIFT_RUNTIME_ENABLE_BACKTRACE_REPORTING_default}
+    CACHE BOOL "Enable simple backtrace printing using dladdr")
+set(SWIFT_RUNTIME_DLADDR_ALLOWED
+    ${SWIFT_RUNTIME_ENABLE_BACKTRACE_REPORTING_default}
+    CACHE BOOL "Is dladdr allowed to be used in the code base. Must be TRUE if SWIFT_RUNTIME_ENABLE_BACKTRACE_REPORTING is set to TRUE")
+if ("${SWIFT_RUNTIME_ENABLE_BACKTRACE_REPORTING}" AND NOT "${SWIFT_RUNTIME_DLADDR_ALLOWED}")
+  message(FATAL "Can not enable backtrace reporting without allowing dladdr to be used by the runtime")
+endif()
+
 message(STATUS "Building host Swift tools for ${SWIFT_HOST_VARIANT_SDK} ${SWIFT_HOST_VARIANT_ARCH}")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Assertions: ${LLVM_ENABLE_ASSERTIONS}")
@@ -798,6 +814,8 @@ message(STATUS "")
 
 message(STATUS "Building Swift runtime with:")
 message(STATUS "  Leak Detection Checker Entrypoints: ${SWIFT_RUNTIME_ENABLE_LEAK_CHECKER}")
+message(STATUS "  Backtraces:                         ${SWIFT_RUNTIME_ENABLE_BACKTRACE_REPORTING}")
+message(STATUS "  DLAddr Allowed:                     ${SWIFT_RUNTIME_DLADDR_ALLOWED}")
 message(STATUS "")
 
 #

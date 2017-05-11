@@ -130,7 +130,7 @@ bool SemaLocResolver::walkToDeclPre(Decl *D, CharSourceRange Range) {
   if (isa<ExtensionDecl>(D))
     return true;
 
-  if (ValueDecl *VD = dyn_cast<ValueDecl>(D))
+  if (auto *VD = dyn_cast<ValueDecl>(D))
     return !tryResolve(VD, /*CtorTyRef=*/nullptr, /*ExtTyRef=*/nullptr,
                        Range.getStart(), /*IsRef=*/false);
 
@@ -199,6 +199,13 @@ bool SemaLocResolver::visitCallArgName(Identifier Name, CharSourceRange Range,
   return !Found;
 }
 
+bool SemaLocResolver::
+visitDeclarationArgumentName(Identifier Name, SourceLoc StartLoc, ValueDecl *D) {
+  if (isDone())
+    return false;
+  return !tryResolve(D, nullptr, nullptr, StartLoc, /*IsRef=*/false);
+}
+
 bool SemaLocResolver::visitModuleReference(ModuleEntity Mod,
                                            CharSourceRange Range) {
   if (isDone())
@@ -220,10 +227,15 @@ void ResolvedRangeInfo::print(llvm::raw_ostream &OS) {
   OS << "</Kind>\n";
 
   OS << "<Content>" << Content << "</Content>\n";
-  if (Ty) {
+
+  if (auto Ty = ExitInfo.getPointer()) {
     OS << "<Type>";
     Ty->print(OS);
-    OS << "</Type>\n";
+    OS << "</Type>";
+    if (ExitInfo.getInt()) {
+      OS << "<Exit>true</Exit>";
+    }
+    OS << "\n";
   }
 
   if (RangeContext) {
@@ -375,7 +387,10 @@ private:
   std::vector<ASTNode> ContainedASTNodes;
 
   /// Collect the type that an ASTNode should be evaluated to.
-  Type resolveNodeType(ASTNode N, RangeKind Kind) {
+  ReturnTyAndWhetherExit resolveNodeType(ASTNode N, RangeKind Kind) {
+    auto *VoidTy = Ctx.getVoidDecl()->getDeclaredInterfaceType().getPointer();
+    if (N.isNull())
+      return {VoidTy, false};
     switch(Kind) {
     case RangeKind::Invalid:
     case RangeKind::SingleDecl:
@@ -383,14 +398,18 @@ private:
 
     // For a single expression, its type is apparent.
     case RangeKind::SingleExpression:
-      return N.get<Expr*>()->getType();
+      return {N.get<Expr*>()->getType().getPointer(), false};
 
     // For statements, we either resolve to the returning type or Void.
     case RangeKind::SingleStatement:
     case RangeKind::MultiStatement: {
       if (N.is<Stmt*>()) {
         if (auto RS = dyn_cast<ReturnStmt>(N.get<Stmt*>())) {
-          return resolveNodeType(RS->getResult(), RangeKind::SingleExpression);
+          return {
+            resolveNodeType(RS->hasResult() ? RS->getResult() : nullptr,
+              RangeKind::SingleExpression).getPointer(),
+            true
+          };
         }
 
         // Unbox the brace statement to find its type.
@@ -400,9 +419,25 @@ private:
                                    RangeKind::SingleStatement);
           }
         }
+
+        // Unbox the if statement to find its type.
+        if (auto *IS = dyn_cast<IfStmt>(N.get<Stmt*>())) {
+          auto ThenTy = resolveNodeType(IS->getThenStmt(),
+                                        RangeKind::SingleStatement);
+          auto ElseTy = resolveNodeType(IS->getElseStmt(),
+                                        RangeKind::SingleStatement);
+
+          // If two branches agree on the return type, return that type.
+          if (ThenTy.getPointer()->isEqual(ElseTy.getPointer()) &&
+              ThenTy.getInt() == ElseTy.getInt())
+            return ThenTy;
+
+          // Otherwise, return the error type.
+          return {Ctx.TheErrorType.getPointer(), false};
+        }
       }
       // For other statements, the type should be void.
-      return Ctx.getVoidDecl()->getDeclaredInterfaceType();
+      return {VoidTy, false};
     }
     }
   }
@@ -433,7 +468,7 @@ private:
                                llvm::makeArrayRef(ReferencedDecls));
     else {
       assert(Node.is<Decl*>());
-      return ResolvedRangeInfo(RangeKind::SingleDecl, Type(), Content,
+      return ResolvedRangeInfo(RangeKind::SingleDecl, {nullptr, false}, Content,
                                getImmediateContext(), SingleEntry,
                                UnhandledError, Kind,
                                llvm::makeArrayRef(ContainedASTNodes),
@@ -649,6 +684,8 @@ public:
   }
 
   void analyze(ASTNode Node) {
+    if (!shouldAnalyze(Node))
+      return;
     Decl *D = Node.is<Decl*>() ? Node.get<Decl*>() : nullptr;
     analyzeDecl(D);
     auto &DCInfo = getCurrentDC();
@@ -675,16 +712,12 @@ public:
       break;
     }
 
-    // If the node's parent is not contained in the range under question but the
-    // node itself is, we keep track of the node as top-level contained node.
-    if (!getCurrentDC().ContainedInRange &&
-        isContainedInSelection(CharSourceRange(SM, Node.getStartLoc(),
-                                               Node.getEndLoc()))) {
-      if (std::find_if(ContainedASTNodes.begin(), ContainedASTNodes.end(),
-          [&](ASTNode N) { return SM.rangeContains(N.getSourceRange(),
-            Node.getSourceRange()); }) == ContainedASTNodes.end()) {
-        ContainedASTNodes.push_back(Node);
-      }
+    // If no parent is considered as a contained node; this node should be
+    // a top-level contained node.
+    if (std::none_of(ContainedASTNodes.begin(), ContainedASTNodes.end(),
+      [&](ASTNode N) { return SM.rangeContains(N.getSourceRange(),
+                                               Node.getSourceRange()); })) {
+      ContainedASTNodes.push_back(Node);
     }
 
     if (DCInfo.isMultiStatement()) {
@@ -709,6 +742,18 @@ public:
     if (SM.isBeforeInBuffer(End, Node.getSourceRange().Start))
       return false;
     if (SM.isBeforeInBuffer(Node.getSourceRange().End, Start))
+      return false;
+    return true;
+  }
+
+  bool shouldAnalyze(ASTNode Node) {
+    // Avoid analyzing implicit nodes.
+    if (Node.isImplicit())
+      return false;
+    // Avoid analyzing nodes that are not enclosed.
+    if (SM.isBeforeInBuffer(End, Node.getEndLoc()))
+      return false;
+    if (SM.isBeforeInBuffer(Node.getStartLoc(), Start))
       return false;
     return true;
   }
@@ -920,7 +965,7 @@ void swift::ide::getLocationInfo(const ValueDecl *VD,
 std::vector<CharSourceRange> swift::ide::
 getCallArgLabelRanges(SourceManager &SM, Expr *Arg, LabelRangeEndAt EndKind) {
   std::vector<CharSourceRange> Ranges;
-  if (TupleExpr *TE = dyn_cast<TupleExpr>(Arg)) {
+  if (auto *TE = dyn_cast<TupleExpr>(Arg)) {
     size_t ElemIndex = 0;
     for (Expr *Elem : TE->getElements()) {
       SourceLoc LabelStart(Elem->getStartLoc());
@@ -936,7 +981,7 @@ getCallArgLabelRanges(SourceManager &SM, Expr *Arg, LabelRangeEndAt EndKind) {
       Ranges.push_back(CharSourceRange(SM, LabelStart, LabelEnd));
       ++ElemIndex;
     }
-  } else if (ParenExpr *PE = dyn_cast<ParenExpr>(Arg)) {
+  } else if (auto *PE = dyn_cast<ParenExpr>(Arg)) {
     if (PE->getSubExpr())
       Ranges.push_back(CharSourceRange(PE->getSubExpr()->getStartLoc(), 0));
   }

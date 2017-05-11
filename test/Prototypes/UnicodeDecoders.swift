@@ -51,13 +51,13 @@ extension _Unicode {
 
 extension _Unicode.DefaultScalarView : Sequence {
   struct Iterator {
-    var parsing: _Unicode.ParsingIterator<
+    var parsing: _Unicode._ParsingIterator<
       CodeUnits.Iterator, Encoding.ForwardParser>
   }
   
   func makeIterator() -> Iterator {
     return Iterator(
-      parsing: _Unicode.ParsingIterator(
+      parsing: _Unicode._ParsingIterator(
         codeUnits: codeUnits.makeIterator(),
         parser: Encoding.ForwardParser()
       ))
@@ -137,7 +137,7 @@ extension _Unicode.DefaultScalarView : Collection {
         codeUnitIndex: nextPosition,
         scalar: Encoding.decode(scalarContent),
         stride: numericCast(scalarContent.count))
-    case .invalid(let stride):
+    case .error(let stride):
       return Index(
         codeUnitIndex: nextPosition,
         scalar: UnicodeScalar(_unchecked: 0xfffd),
@@ -147,37 +147,6 @@ extension _Unicode.DefaultScalarView : Collection {
     }
   }
 }
-
-/// An iterator that can be much faster than the iterator of a reversed slice.
-// TODO: See about using this in more places
-@_fixed_layout
-public struct _ReverseIndexingIterator<
-  Elements : BidirectionalCollection
-> : IteratorProtocol, Sequence {
-
-  @_inlineable
-  @inline(__always)
-  /// Creates an iterator over the given collection.
-  public /// @testable
-  init(_elements: Elements, _position: Elements.Index) {
-    self._elements = _elements
-    self._position = _position
-  }
-  
-  @_inlineable
-  @inline(__always)
-  public mutating func next() -> Elements._Element? {
-    guard _fastPath(_position != _elements.startIndex) else { return nil }
-    _position = _elements.index(before: _position)
-    return _elements[_position]
-  }
-  
-  @_versioned
-  internal let _elements: Elements
-  @_versioned
-  internal var _position: Elements.Index
-}
-
 
 extension _Unicode.DefaultScalarView : BidirectionalCollection {
   @inline(__always)
@@ -194,7 +163,7 @@ extension _Unicode.DefaultScalarView : BidirectionalCollection {
         codeUnitIndex: codeUnits.index(i.codeUnitIndex, offsetBy: d),
         scalar: Encoding.decode(scalarContent),
         stride: numericCast(scalarContent.count))
-    case .invalid(let stride):
+    case .error(let stride):
       let d: CodeUnits.IndexDistance = -numericCast(stride)
       return Index(
         codeUnitIndex: codeUnits.index(i.codeUnitIndex, offsetBy: d) ,
@@ -210,9 +179,48 @@ extension _Unicode.DefaultScalarView : BidirectionalCollection {
 import StdlibUnittest
 import SwiftPrivate
 
+func utf32<S : StringProtocol>(_ s: S) -> [UInt32] {
+  return s.unicodeScalars.map { $0.value }
+}
+
+func checkStringProtocol<S : StringProtocol, Encoding: UnicodeEncoding>(
+  _ s: S,
+  _ utfStr: [Encoding.CodeUnit],
+  encodedAs: Encoding.Type,
+  expectingUTF32 expected: [UInt32]
+) {
+  expectEqualSequence(
+    expected, utf32(S(decoding: utfStr, as: Encoding.self)),
+    "\(S.self) init(decoding:as:)")
+
+  if !utfStr.contains(0) {
+    if Encoding.self == UTF8.self {
+      var ntbs = utfStr.map { CChar(extendingOrTruncating: $0) }
+      ntbs.append(0)
+      expectEqualSequence(
+        expected, utf32(S(cString: ntbs)), "\(S.self) init(cString:)")
+    }
+    
+    var ntbs = Array(utfStr); ntbs.append(0)
+    expectEqualSequence(
+      expected, utf32(S(decodingCString: ntbs, as: Encoding.self)),
+      "\(S.self) init(cString:encoding:)"
+    )
+
+    s.withCString {
+      expectEqual(s, S(cString: $0), "\(S.self) withCString(_:)")
+    }
+    
+    s.withCString(encodedAs: Encoding.self) {
+      expectEqual(s, S(decodingCString: $0, as: Encoding.self),
+        "\(S.self) withCString(encoding:_:)")
+    }
+  }
+}
+
 func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
-    _ codec: Codec.Type, _ expectedHead: [UInt32],
-    _ expectedRepairedTail: [UInt32], _ utfStr: [Codec.CodeUnit]
+  _ codec: Codec.Type, _ expectedHead: [UInt32],
+  _ expectedRepairedTail: [UInt32], _ utfStr: [Codec.CodeUnit]
 ) -> AssertionResult {
   var decoded = [UInt32]()
   var expected = expectedHead
@@ -221,12 +229,12 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
     decoded.append(scalar)
     expectEqual(
       UnicodeScalar(scalar),
-      Codec.decode(Codec.encode(UnicodeScalar(scalar)!)))
+      Codec.decode(Codec.encode(UnicodeScalar(scalar)!)!))
   }
   
   func output1(_ scalar: UnicodeScalar) {
     decoded.append(scalar.value)
-    expectEqual(scalar, Codec.decode(Codec.encode(scalar)))
+    expectEqual(scalar, Codec.decode(Codec.encode(scalar)!))
   }
   
   var result = assertionSuccess()
@@ -254,7 +262,7 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
 
   do {
     var iterator = utfStr.makeIterator()
-    let errorCount = Codec.ForwardParser.decode(
+    let errorCount = Codec.ForwardParser._decode(
       &iterator, repairingIllFormedSequences: false, into: output1)
     expectEqual(expectedRepairedTail.isEmpty ? 0 : 1, errorCount)
   }
@@ -262,7 +270,7 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
 
   do {
     var iterator = utfStr.reversed().makeIterator()
-    let errorCount = Codec.ReverseParser.decode(
+    let errorCount = Codec.ReverseParser._decode(
       &iterator, repairingIllFormedSequences: false, into: output1)
     if expectedRepairedTail.isEmpty {
       expectEqual(0, errorCount)
@@ -288,7 +296,7 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
   check(expected, "legacy, repairing: true")
   do {
     var iterator = utfStr.makeIterator()
-    let errorCount = Codec.ForwardParser.decode(
+    let errorCount = Codec.ForwardParser._decode(
       &iterator, repairingIllFormedSequences: true, into: output1)
     
     if expectedRepairedTail.isEmpty { expectEqual(0, errorCount) }
@@ -297,13 +305,49 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
   check(expected, "forward, repairing: true")
   do {
     var iterator = utfStr.reversed().makeIterator()
-    let errorCount = Codec.ReverseParser.decode(
+    let errorCount = Codec.ReverseParser._decode(
       &iterator, repairingIllFormedSequences: true, into: output1)
     if expectedRepairedTail.isEmpty { expectEqual(0, errorCount) }
     else { expectNotEqual(0, errorCount) }
   }
   check(expected.reversed(), "reverse, repairing: true")
+  
+  //===--- String/Substring Construction and C-String interop -------------===//
+  do {
+    let s = String(decoding: utfStr, as: Codec.self)
+    checkStringProtocol(
+      s, utfStr, encodedAs: Codec.self, expectingUTF32: expected)
+  }
+  
+  do {
+    let s0 = "\n" + String(decoding: utfStr, as: Codec.self) + "\n"
+    let s = s0.dropFirst().dropLast()
+    expectEqualSequence(expected, utf32(s), "Sliced Substring")
+    checkStringProtocol(
+      s0.dropFirst().dropLast(),
+      utfStr, encodedAs: Codec.self, expectingUTF32: expected)
+  }
 
+  //===--- Transcoded Scalars ---------------------------------------------===//
+  for x in decoded.lazy.map({ UnicodeScalar($0)! }) {
+    expectEqualSequence(
+      UTF8.encode(x)!,
+      UTF8.transcode(
+        Codec.encode(x)!, from: Codec.self)!
+    )
+    expectEqualSequence(
+      UTF16.encode(x)!,
+      UTF16.transcode(
+        Codec.encode(x)!, from: Codec.self)!
+    )
+    expectEqualSequence(
+      UTF32.encode(x)!,
+      UTF32.transcode(
+        Codec.encode(x)!, from: Codec.self)!
+    )
+  }
+  
+  //===--- Scalar View ----------------------------------------------------===//
   let scalars = _Unicode.DefaultScalarView(utfStr, fromEncoding: Codec.self)
   expectEqualSequence(expected, scalars.map { $0.value })
   expectEqualSequence(
@@ -319,6 +363,7 @@ func checkDecodeUTF<Codec : UnicodeCodec & UnicodeEncoding>(
     }
     expectNil(x.next())
   }
+
   return result
 }
 
@@ -337,7 +382,6 @@ func checkDecodeUTF16(
       utf16Str)
 }
 
-/*
 func checkDecodeUTF32(
     _ expectedHead: [UInt32],
     _ expectedRepairedTail: [UInt32], _ utf32Str: [UInt32]
@@ -345,7 +389,6 @@ func checkDecodeUTF32(
   return checkDecodeUTF(UTF32.self, expectedHead, expectedRepairedTail,
       utf32Str)
 }
-*/
 
 func checkEncodeUTF8(_ expected: [UInt8],
                      _ scalars: [UInt32]) -> AssertionResult {
@@ -367,6 +410,147 @@ func checkEncodeUTF8(_ expected: [UInt8],
   }
 
   return assertionSuccess()
+}
+
+//===----------------------------------------------------------------------===//
+
+var UTF32Decoder = TestSuite("UTF32Decoder")
+
+UTF32Decoder.test("Empty") {
+  expectTrue(checkDecodeUTF32([], [], []))
+}
+
+UTF32Decoder.test("SmokeTest") {
+  // U+0041 LATIN CAPITAL LETTER A
+  expectTrue(checkDecodeUTF32([ 0x0041 ], [], [ 0x0000_0041 ]))
+
+  // U+0041 LATIN CAPITAL LETTER A
+  // U+0042 LATIN CAPITAL LETTER B
+  expectTrue(checkDecodeUTF32(
+      [ 0x0041, 0x0042 ], [],
+      [ 0x0000_0041, 0x0000_0042 ]))
+
+  // U+0000 NULL
+  // U+0041 LATIN CAPITAL LETTER A
+  // U+0042 LATIN CAPITAL LETTER B
+  // U+0000 NULL
+  expectTrue(checkDecodeUTF32(
+      [ 0x0000, 0x0041, 0x0042, 0x0000 ], [],
+      [ 0x0000_0000, 0x0000_0041, 0x0000_0042, 0x0000_0000 ]))
+
+  // U+0283 LATIN SMALL LETTER ESH
+  expectTrue(checkDecodeUTF32([ 0x0283 ], [], [ 0x0000_0283 ]))
+
+  // U+03BA GREEK SMALL LETTER KAPPA
+  // U+1F79 GREEK SMALL LETTER OMICRON WITH OXIA
+  // U+03C3 GREEK SMALL LETTER SIGMA
+  // U+03BC GREEK SMALL LETTER MU
+  // U+03B5 GREEK SMALL LETTER EPSILON
+  expectTrue(checkDecodeUTF32(
+      [ 0x03ba, 0x1f79, 0x03c3, 0x03bc, 0x03b5 ], [],
+      [ 0x0000_03ba, 0x0000_1f79, 0x0000_03c3, 0x0000_03bc, 0x0000_03b5 ]))
+
+  // U+4F8B CJK UNIFIED IDEOGRAPH-4F8B
+  // U+6587 CJK UNIFIED IDEOGRAPH-6587
+  expectTrue(checkDecodeUTF32(
+      [ 0x4f8b, 0x6587 ], [],
+      [ 0x0000_4f8b, 0x0000_6587 ]))
+
+  // U+D55C HANGUL SYLLABLE HAN
+  // U+AE00 HANGUL SYLLABLE GEUL
+  expectTrue(checkDecodeUTF32(
+      [ 0xd55c, 0xae00 ], [],
+      [ 0x0000_d55c, 0x0000_ae00 ]))
+
+  // U+1112 HANGUL CHOSEONG HIEUH
+  // U+1161 HANGUL JUNGSEONG A
+  // U+11AB HANGUL JONGSEONG NIEUN
+  // U+1100 HANGUL CHOSEONG KIYEOK
+  // U+1173 HANGUL JUNGSEONG EU
+  // U+11AF HANGUL JONGSEONG RIEUL
+  expectTrue(checkDecodeUTF32(
+      [ 0x1112, 0x1161, 0x11ab, 0x1100, 0x1173, 0x11af ], [],
+      [ 0x0000_1112, 0x0000_1161, 0x0000_11ab, 0x0000_1100, 0x0000_1173,
+        0x0000_11af ]))
+
+  // U+D7FF (unassigned)
+  expectTrue(checkDecodeUTF16([ 0xd7ff ], [], [ 0x0000_d7ff ]))
+
+  // U+E000 (private use)
+  expectTrue(checkDecodeUTF16([ 0xe000 ], [], [ 0x0000_e000 ]))
+
+  // U+FFFD REPLACEMENT CHARACTER
+  expectTrue(checkDecodeUTF16([ 0xfffd ], [], [ 0x0000_fffd ]))
+
+  // U+FFFF (noncharacter)
+  expectTrue(checkDecodeUTF16([ 0xffff ], [], [ 0x0000_ffff ]))
+
+  // U+10000 LINEAR B SYLLABLE B008 A
+  expectTrue(checkDecodeUTF32([ 0x00010000 ], [], [ 0x0001_0000 ]))
+
+  // U+10100 AEGEAN WORD SEPARATOR LINE
+  expectTrue(checkDecodeUTF32([ 0x00010100 ], [], [ 0x0001_0100 ]))
+
+  // U+103FF (unassigned)
+  expectTrue(checkDecodeUTF32([ 0x000103ff ], [], [ 0x0001_03ff ]))
+
+  // U+1D800 (unassigned)
+  expectTrue(checkDecodeUTF32([ 0x0001d800 ], [], [ 0x0001_d800 ]))
+
+
+  // U+E0000 (unassigned)
+  expectTrue(checkDecodeUTF32([ 0x000e0000 ], [], [ 0x000e_0000 ]))
+
+  // U+E0100 VARIATION SELECTOR-17
+  expectTrue(checkDecodeUTF32([ 0x000e0100 ], [], [ 0x000e_0100 ]))
+
+  // U+E03FF (unassigned)
+  expectTrue(checkDecodeUTF32([ 0x000e03ff ], [], [ 0x000e_03ff ]))
+
+
+  // U+10FC00 (private use)
+  expectTrue(checkDecodeUTF32([ 0x0010fc00 ], [], [ 0x0010_fc00 ]))
+
+  // U+10FD00 (private use)
+  expectTrue(checkDecodeUTF32([ 0x0010fd00 ], [], [ 0x0010_fd00 ]))
+
+  // U+10FFFF (private use, noncharacter)
+  expectTrue(checkDecodeUTF32([ 0x0010ffff ], [], [ 0x0010_ffff ]))
+}
+
+UTF32Decoder.test("IllFormed") {
+  // U+D800 (high-surrogate)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0000_d800 ]))
+
+  // U+DB40 (high-surrogate)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0000_db40 ]))
+
+  // U+DBFF (high-surrogate)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0000_dbff ]))
+
+  // U+DC00 (low-surrogate)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0000_dc00 ]))
+
+  // U+DD00 (low-surrogate)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0000_dd00 ]))
+
+  // U+DFFF (low-surrogate)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0000_dfff ]))
+
+  // U+110000 (invalid)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0011_0000 ]))
+
+  // U+1000000 (invalid)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x0100_0000 ]))
+
+  // U+80000000 (invalid)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0x8000_0000 ]))
+
+  // U+FFFF0000 (invalid)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0xffff_0000 ]))
+
+  // U+FFFFFFFF (invalid)
+  expectTrue(checkDecodeUTF32([], [ 0xfffd ], [ 0xffff_ffff ]))
 }
 
 var UTF8Decoder = TestSuite("UTF8Decoder")

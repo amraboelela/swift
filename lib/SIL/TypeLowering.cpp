@@ -88,7 +88,7 @@ static bool hasSingletonMetatype(CanType instanceType) {
 
 CaptureKind TypeConverter::getDeclCaptureKind(CapturedValue capture) {
   auto decl = capture.getDecl();
-  if (VarDecl *var = dyn_cast<VarDecl>(decl)) {
+  if (auto *var = dyn_cast<VarDecl>(decl)) {
     switch (var->getStorageKind()) {
     case VarDecl::StoredWithTrivialAccessors:
       llvm_unreachable("stored local variable with trivial accessors?");
@@ -1876,42 +1876,19 @@ TypeConverter::getFunctionInterfaceTypeWithCaptures(CanAnyFunctionType funcType,
   auto innerExtInfo = AnyFunctionType::ExtInfo(FunctionType::Representation::Thin,
                                                funcType->throws());
 
-  // If we don't have any local captures (including function captures),
-  // there's no context to apply.
-  if (!hasLoweredLocalCaptures(theClosure)) {
-    if (!genericSig)
-      return CanFunctionType::get(funcType.getInput(),
-                                  funcType.getResult(),
-                                  innerExtInfo);
+  if (!genericSig)
+    return CanFunctionType::get(funcType.getInput(),
+                                funcType.getResult(),
+                                innerExtInfo);
     
-    return CanGenericFunctionType::get(genericSig,
-                                       funcType.getInput(),
-                                       funcType.getResult(),
-                                       innerExtInfo);
-  }
-
-  // Strip the generic signature off the inner type; we will add it to the
-  // outer type with captures.
-  funcType = CanFunctionType::get(funcType.getInput(),
-                                  funcType.getResult(),
-                                  innerExtInfo);
-
-  // Add an extra empty tuple level to represent the captures. We'll append the
-  // lowered capture types here.
-  auto extInfo = AnyFunctionType::ExtInfo(FunctionType::Representation::Thin,
-                                          /*throws*/ false);
-
-  if (genericSig) {
-    return CanGenericFunctionType::get(genericSig,
-                                       Context.TheEmptyTupleType, funcType,
-                                       extInfo);
-  }
-  
-  return CanFunctionType::get(Context.TheEmptyTupleType, funcType, extInfo);
+  return CanGenericFunctionType::get(genericSig,
+                                     funcType.getInput(),
+                                     funcType.getResult(),
+                                     innerExtInfo);
 }
 
 CanAnyFunctionType TypeConverter::makeConstantInterfaceType(SILDeclRef c) {
-  ValueDecl *vd = c.loc.dyn_cast<ValueDecl *>();
+  auto *vd = c.loc.dyn_cast<ValueDecl *>();
 
   switch (c.kind) {
   case SILDeclRef::Kind::Func: {
@@ -1988,7 +1965,7 @@ CanAnyFunctionType TypeConverter::makeConstantInterfaceType(SILDeclRef c) {
 /// Get the generic environment for an entity.
 GenericEnvironment *
 TypeConverter::getConstantGenericEnvironment(SILDeclRef c) {
-  ValueDecl *vd = c.loc.dyn_cast<ValueDecl *>();
+  auto *vd = c.loc.dyn_cast<ValueDecl *>();
   
   /// Get the function generic params, including outer params.
   switch (c.kind) {
@@ -2109,16 +2086,8 @@ void TypeConverter::popGenericContext(CanGenericSignature sig) {
 
 ProtocolDispatchStrategy
 TypeConverter::getProtocolDispatchStrategy(ProtocolDecl *P) {
-  // AnyObject has no requirements (other than the object being a class), so
-  // needs no method dispatch.
-  if (auto known = P->getKnownProtocolKind()) {
-    if (*known == KnownProtocolKind::AnyObject)
-      return ProtocolDispatchStrategy::Empty;
-  }
-  
-  // Otherwise, ObjC protocols use ObjC method dispatch, and Swift protocols
+  // ObjC protocols use ObjC method dispatch, and Swift protocols
   // use witness tables.
-  
   if (P->isObjC())
     return ProtocolDispatchStrategy::ObjC;
   

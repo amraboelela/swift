@@ -441,6 +441,10 @@ ERROR(expr_unsupported_objc_key_path_compound_name,none,
       "compound name", ())
 ERROR(expr_keypath_no_keypath_type,none,
       "broken standard library: no 'KeyPath' type found", ())
+ERROR(expr_swift_keypath_invalid_component,none,
+      "invalid component of Swift key path", ())
+ERROR(expr_swift_keypath_not_starting_with_type,none,
+      "a Swift key path must begin with a type", ())
 
 // Selector expressions.
 ERROR(expr_selector_no_objc_runtime,none,
@@ -614,6 +618,10 @@ ERROR(unspaced_unary_operator,none,
 
 ERROR(use_unresolved_identifier,none,
       "use of unresolved %select{identifier|operator}1 %0", (DeclName, bool))
+NOTE(confusable_character,none,
+      "%select{identifier|operator}0 '%1' contains possibly confused characters; "
+      "did you mean to use '%2'?",
+      (bool, StringRef, StringRef))
 ERROR(use_undeclared_type,none,
       "use of undeclared type %0", (Identifier))
 ERROR(use_undeclared_type_did_you_mean,none,
@@ -1208,6 +1216,28 @@ ERROR(pattern_binds_no_variables,none,
       "variables",
       (unsigned))
 
+ERROR(nscoding_unstable_mangled_name,none,
+      "%select{private|fileprivate|nested|local|generic}0 class %1 has an "
+      "unstable name when archiving via 'NSCoding'",
+      (unsigned, Type))
+WARNING(nscoding_unstable_mangled_name_warn,none,
+        "%select{private|fileprivate|nested|local|generic}0 class %1 has an "
+        "unstable name when archiving via 'NSCoding'",
+        (unsigned, Type))
+NOTE(unstable_mangled_name_add_objc,none,
+     "for new classes, add '@objc' to specify a unique, prefixed Objective-C "
+     "runtime name", ())
+NOTE(unstable_mangled_name_add_nskeyedarchivelegacy,none,
+     "for compatibility with existing archives, use '@NSKeyedArchiveLegacy' "
+     "to record the Swift 3 mangled name", ())
+NOTE(add_nskeyedarchivesubclassesonly_attr,none,
+     "generic class %0 should not be archived directly; "
+     "add @NSKeyedArchiveSubclassesOnly "
+     "and only archive specific subclasses of this class", (Type))
+
+ERROR(attr_nskeyedarchivelegacy_generic,none,
+      "'@NSKeyedArchiveLegacy' cannot be applied to generic class %0",
+      (Type))
 
 // Generic types
 ERROR(unsupported_type_nested_in_generic_function,none,
@@ -1301,8 +1331,6 @@ ERROR(extension_protocol_inheritance,none,
 ERROR(extension_protocol_via_typealias,none,
       "protocol %0 in the module being compiled cannot be extended via a "
       "type alias", (Type))
-ERROR(extension_anyobject,none,
-      "'AnyObject' protocol cannot be extended", ())
 ERROR(objc_generic_extension_using_type_parameter,none,
       "extension of a generic Objective-C class cannot access the class's "
       "generic parameters at runtime", ())
@@ -1885,7 +1913,8 @@ ERROR(inheritance_from_cf_class,none,
 ERROR(inheritance_from_objc_runtime_visible_class,none,
       "cannot inherit from class %0 because it is only visible via the "
       "Objective-C runtime", (Identifier))
-
+WARNING(class_inherits_anyobject,none,
+        "conformance of class %0 to 'AnyObject' is redundant", (Type))
 
 // Enums
 ERROR(enum_case_access,none,
@@ -2064,7 +2093,8 @@ ERROR(attr_only_on_parameters,none,
       "%0 may only be used on parameters", (StringRef))
 ERROR(attr_not_on_variadic_parameters,none,
       "%0 may not be used on variadic parameters", (StringRef))
-
+ERROR(attr_not_on_subscript_parameters,none,
+      "%0 may not be used on subscript parameters", (StringRef))
 
 ERROR(override_final,none,
       "%0 overrides a 'final' %1", (DescriptiveDeclKind, DescriptiveDeclKind))
@@ -2800,6 +2830,11 @@ ERROR(closure_argument_list_tuple,none,
 ERROR(closure_argument_list_missing,none,
       "contextual type for closure argument list expects %0 argument%s0, "
       "which cannot be implicitly ignored", (unsigned))
+ERROR(closure_tuple_parameter_destructuring,none,
+      "closure tuple parameter %0 does not support destructuring", (Type))
+ERROR(closure_tuple_parameter_destructuring_implicit,none,
+      "closure tuple parameter %0 does not support destructuring "
+      "with implicit parameters", (Type))
 
 ERROR(tuple_pattern_length_mismatch,none,
       "tuple pattern has the wrong length for tuple type %0", (Type))
@@ -3611,12 +3646,14 @@ WARNING(debug_long_closure_body, none,
 ERROR(empty_switch_stmt,none,
       "'switch' statement body must have at least one 'case' or 'default' "
       "block; do you want to add a default case?",())
-ERROR(non_exhaustive_switch,none,
-      "%select{switch must be exhaustive, consider adding |do you want to add }0"
-      "%select{missing cases|a default clause}1"
-      "%select{:|?}0", (bool, bool))
+ERROR(non_exhaustive_switch,none, "switch must be exhaustive", ())
+NOTE(missing_several_cases,none,
+     "do you want to add "
+     "%select{missing cases|a default clause}0"
+     "?", (bool))
+
 NOTE(missing_particular_case,none,
-     "missing case: '%0'", (StringRef))
+     "add missing case: '%0'", (StringRef))
 WARNING(redundant_particular_case,none,
         "case is already handled by previous patterns; consider removing it",())
 

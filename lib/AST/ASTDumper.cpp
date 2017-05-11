@@ -699,9 +699,9 @@ namespace {
 
       OS << ' ';
       printDeclName(VD);
-      if (AbstractFunctionDecl *AFD = dyn_cast<AbstractFunctionDecl>(VD))
+      if (auto *AFD = dyn_cast<AbstractFunctionDecl>(VD))
         printGenericParameters(OS, AFD->getGenericParams());
-      if (GenericTypeDecl *GTD = dyn_cast<GenericTypeDecl>(VD))
+      if (auto *GTD = dyn_cast<GenericTypeDecl>(VD))
         printGenericParameters(OS, GTD->getGenericParams());
 
       if (auto *var = dyn_cast<VarDecl>(VD)) {
@@ -855,6 +855,8 @@ namespace {
 
     void visitClassDecl(ClassDecl *CD) {
       printCommon(CD, "class_decl");
+      if (CD->getAttrs().hasAttribute<StaticInitializeObjCMetadataAttr>())
+        OS << " @_staticInitializeObjCMetadata";
       printInherited(CD->getInherited());
       for (Decl *D : CD->getMembers()) {
         OS << '\n';
@@ -996,15 +998,6 @@ namespace {
         OS << "_for=" << ASD->getFullName();
       }
 
-      for (auto VD: FD->getSatisfiedProtocolRequirements()) {
-        OS << '\n';
-        OS.indent(Indent+2);
-        PrintWithColorRAII(OS, ParenthesisColor) << '(';
-        OS << "conformance ";
-        VD->dumpRef(OS);
-        PrintWithColorRAII(OS, ParenthesisColor) << ')';
-      }
-
       printAbstractFunctionDecl(FD);
 
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
@@ -1115,6 +1108,13 @@ namespace {
 
     void visitModuleDecl(ModuleDecl *MD) {
       printCommon(MD, "module");
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    }
+
+    void visitMissingMemberDecl(MissingMemberDecl *MMD) {
+      printCommon(MMD, "missing_member_decl ");
+      PrintWithColorRAII(OS, IdentifierColor)
+          << '\"' << MMD->getFullName() << '\"';
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
   };
@@ -1363,9 +1363,9 @@ public:
     PrintWithColorRAII(OS, ASTNodeColor) << Name;
     for (auto Elt : Elements) {
       OS << '\n';
-      if (Expr *SubExpr = Elt.dyn_cast<Expr*>())
+      if (auto *SubExpr = Elt.dyn_cast<Expr*>())
         printRec(SubExpr);
-      else if (Stmt *SubStmt = Elt.dyn_cast<Stmt*>())
+      else if (auto *SubStmt = Elt.dyn_cast<Stmt*>())
         printRec(SubStmt);
       else
         printRec(Elt.get<Decl*>());
@@ -2467,6 +2467,25 @@ public:
       OS << '\n';
       printRec(stringLiteral);
     }
+    if (!E->isObjC()) {
+      OS << "\n";
+      if (auto root = E->getParsedRoot()) {
+        printRec(root);
+      } else {
+        OS.indent(Indent + 2) << "<<null>>";
+      }
+      OS << "\n";
+      if (auto path = E->getParsedPath()) {
+        printRec(path);
+      } else {
+        OS.indent(Indent + 2) << "<<null>>";
+      }
+    }
+    OS << ")";
+  }
+
+  void visitKeyPathDotExpr(KeyPathDotExpr *E) {
+    printCommon(E, "key_path_dot_expr");
     OS << ")";
   }
 };

@@ -1185,7 +1185,9 @@ bool SILParser::parseSILDeclRef(SILDeclRef &Result,
 
   if (!P.consumeIf(tok::sil_exclamation)) {
     // Construct SILDeclRef.
-    Result = SILDeclRef(VD, Kind, expansion, uncurryLevel, IsObjC);
+    Result = SILDeclRef(VD, Kind, expansion, /*isCurried=*/false, IsObjC);
+    if (uncurryLevel < Result.getUncurryLevel())
+      Result = Result.asCurried();
     return false;
   }
 
@@ -1274,7 +1276,9 @@ bool SILParser::parseSILDeclRef(SILDeclRef &Result,
   } while (P.consumeIf(tok::period));
 
   // Construct SILDeclRef.
-  Result = SILDeclRef(VD, Kind, expansion, uncurryLevel, IsObjC);
+  Result = SILDeclRef(VD, Kind, expansion, /*isCurried=*/false, IsObjC);
+  if (uncurryLevel < Result.getUncurryLevel())
+    Result = Result.asCurried();
   return false;
 }
 
@@ -4497,9 +4501,7 @@ bool SILParser::parseCallInstruction(SILLocation InstLoc,
       Args.push_back(getLocalValue(ArgName, expectedTy, InstLoc, B));
     }
 
-    ResultVal =
-        B.createApply(InstLoc, FnVal, FnTy, substConv.getSILResultType(), subs,
-                      Args, IsNonThrowingApply);
+    ResultVal = B.createApply(InstLoc, FnVal, subs, Args, IsNonThrowingApply);
     break;
   }
   case ValueKind::PartialApplyInst: {
@@ -4520,12 +4522,9 @@ bool SILParser::parseCallInstruction(SILLocation InstLoc,
       Args.push_back(getLocalValue(ArgName, expectedTy, InstLoc, B));
     }
 
-    SILType closureTy =
-      SILBuilder::getPartialApplyResultType(Ty, ArgNames.size(), SILMod, subs,
-                                            PartialApplyConvention);
     // FIXME: Why the arbitrary order difference in IRBuilder type argument?
-    ResultVal = B.createPartialApply(InstLoc, FnVal, FnTy,
-                                     subs, Args, closureTy);
+    ResultVal = B.createPartialApply(InstLoc, FnVal, subs, Args,
+                                     PartialApplyConvention);
     break;
   }
   case ValueKind::TryApplyInst: {
@@ -4557,8 +4556,7 @@ bool SILParser::parseCallInstruction(SILLocation InstLoc,
 
     SILBasicBlock *normalBB = getBBForReference(normalBBName, normalBBLoc);
     SILBasicBlock *errorBB = getBBForReference(errorBBName, errorBBLoc);
-    ResultVal = B.createTryApply(InstLoc, FnVal, FnTy,
-                                 subs, args, normalBB, errorBB);
+    ResultVal = B.createTryApply(InstLoc, FnVal, subs, args, normalBB, errorBB);
     break;
   }
   }
@@ -4955,7 +4953,7 @@ bool Parser::parseSILVTable() {
     return true;
   }
 
-  ClassDecl *theClass = dyn_cast<ClassDecl>(VD);
+  auto *theClass = dyn_cast<ClassDecl>(VD);
   if (!theClass) {
     diagnose(Loc, diag::sil_vtable_class_not_found, Name);
     return true;
@@ -5020,7 +5018,7 @@ static ProtocolDecl *parseProtocolDecl(Parser &P, SILParser &SP) {
     P.diagnose(DeclLoc, diag::sil_witness_protocol_not_found, DeclName);
     return nullptr;
   }
-  ProtocolDecl *proto = dyn_cast<ProtocolDecl>(VD);
+  auto *proto = dyn_cast<ProtocolDecl>(VD);
   if (!proto)
     P.diagnose(DeclLoc, diag::sil_witness_protocol_not_found, DeclName);
   return proto;

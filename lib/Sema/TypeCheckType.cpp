@@ -100,6 +100,9 @@ static Type getStdlibType(TypeChecker &TC, Type &cached, DeclContext *dc,
 Type TypeChecker::getStringType(DeclContext *dc) {
   return ::getStdlibType(*this, StringType, dc, "String");
 }
+Type TypeChecker::getSubstringType(DeclContext *dc) {
+  return ::getStdlibType(*this, SubstringType, dc, "Substring");
+}
 Type TypeChecker::getIntType(DeclContext *dc) {
   return ::getStdlibType(*this, IntType, dc, "Int");
 }
@@ -256,33 +259,22 @@ findDeclContextForType(TypeChecker &TC,
 
   auto ownerDC = typeDecl->getDeclContext();
 
-  // If the type is declared at the top level, there's nothing we can learn from
-  // walking our parent contexts.
-  if (ownerDC->isModuleScopeContext())
+  // If the type is not nested in another type, there's nothing we can
+  // learn from walking parent contexts.
+  if (!ownerDC->isTypeContext() ||
+      isa<GenericTypeParamDecl>(typeDecl))
     return std::make_tuple(Type(), true);
 
-  // Workaround for issue where generic typealias generic parameters are
-  // looked up with the wrong 'fromDC'.
-  if (isa<TypeAliasDecl>(ownerDC)) {
-    assert(isa<GenericTypeParamDecl>(typeDecl));
-    return std::make_tuple(Type(), true);
-  }
-
-  bool needsBaseType = (ownerDC->isTypeContext() &&
-                        !isa<GenericTypeParamDecl>(typeDecl));
   NominalTypeDecl *ownerNominal =
       ownerDC->getAsNominalTypeOrNominalTypeExtensionContext();
 
   // We might have an invalid extension that didn't resolve.
   //
   // FIXME: How did UnqualifiedLookup find the decl then?
-  if (needsBaseType && ownerNominal == nullptr)
+  if (ownerNominal == nullptr)
     return std::make_tuple(Type(), false);
 
   auto getSelfType = [&](DeclContext *DC) -> Type {
-    if (!needsBaseType)
-      return Type();
-
     // When looking up a nominal type declaration inside of a
     // protocol extension, always use the nominal type and
     // not the protocol 'Self' type.
@@ -327,18 +319,6 @@ findDeclContextForType(TypeChecker &TC,
     }
 
     // We're going to check the next parent context.
-
-    // FIXME: Horrible hack. Don't allow us to reference a generic parameter
-    // from a context outside a ProtocolDecl.
-    if (isa<ProtocolDecl>(parentDC) && isa<GenericTypeParamDecl>(typeDecl))
-      return std::make_tuple(Type(), false);
-  }
-
-  // If we didn't find the member in an immediate parent context and
-  // there is no base type, something went wrong.
-  if (!needsBaseType) {
-    assert(false && "Should have found non-type context by now");
-    return std::make_tuple(Type(), false);
   }
 
   // Now, search the supertypes or refined protocols of each parent
@@ -444,11 +424,6 @@ findDeclContextForType(TypeChecker &TC,
       // If not, walk into the refined protocols, if any.
       pushRefined(protoDecl);
     }
-
-    // FIXME: Horrible hack. Don't allow us to reference a generic parameter
-    // or associated type from a context outside a ProtocolDecl.
-    if (isa<ProtocolDecl>(parentDC) && isa<AbstractTypeParamDecl>(typeDecl))
-      return std::make_tuple(Type(), false);
   }
 
   assert(false && "Should have found context by now");
@@ -764,6 +739,7 @@ Type TypeChecker::applyUnboundGenericArguments(
     case RequirementCheckResult::UnsatisfiedDependency:
       return Type();
     case RequirementCheckResult::Failure:
+    case RequirementCheckResult::SubstitutionFailure:
       return ErrorType::get(Context);
     case RequirementCheckResult::Success:
       break;
@@ -939,7 +915,7 @@ static Type diagnoseUnknownType(TypeChecker &tc, DeclContext *dc,
     // Try ignoring access control.
     DeclContext *lookupDC = dc;
     if (options.contains(TR_GenericSignature))
-      lookupDC = dc->getParent();
+      lookupDC = dc->getParentForLookup();
 
     NameLookupOptions relookupOptions = lookupOptions;
     relookupOptions |= NameLookupFlags::KnownPrivate;
@@ -1228,8 +1204,7 @@ resolveTopLevelIdentTypeComponent(TypeChecker &TC, DeclContext *DC,
     if (!DC->isCascadingContextForLookup(/*excludeFunctions*/false))
       options |= TR_KnownNonCascadingDependency;
 
-    // The remaining lookups will be in the parent context.
-    lookupDC = DC->getParent();
+    lookupDC = DC->getParentForLookup();
   }
 
   // We need to be able to perform unqualified lookup into the given
@@ -2160,7 +2135,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
     }
 
   // Function attributes require a syntactic function type.
-  FunctionTypeRepr *fnRepr = dyn_cast<FunctionTypeRepr>(repr);
+  auto *fnRepr = dyn_cast<FunctionTypeRepr>(repr);
 
   if (hasFunctionAttr && fnRepr && (options & TR_SILType)) {
     SILFunctionType::Representation rep;
@@ -2782,14 +2757,19 @@ bool TypeResolver::resolveSILResults(TypeRepr *repr,
 
 Type TypeResolver::resolveInOutType(InOutTypeRepr *repr,
                                     TypeResolutionOptions options) {
-  // inout is only valid for function parameters.
-  if (!(options & TR_FunctionInput) &&
-      !(options & TR_ImmediateFunctionInput)) {
-    TC.diagnose(repr->getInOutLoc(),
-                (options & TR_VariadicFunctionInput)
-                    ? diag::attr_not_on_variadic_parameters
-                    : diag::attr_only_on_parameters,
-                "'inout'");
+  // inout is only valid for (non-subscript) function parameters.
+  if ((options & TR_SubscriptParameters) ||
+        (!(options & TR_FunctionInput) &&
+         !(options & TR_ImmediateFunctionInput))) {
+    decltype(diag::attr_only_on_parameters) diagID;
+    if (options & TR_SubscriptParameters) {
+      diagID = diag::attr_not_on_subscript_parameters;
+    } else if (options & TR_VariadicFunctionInput) {
+      diagID = diag::attr_not_on_variadic_parameters;
+    } else {
+      diagID = diag::attr_only_on_parameters;
+    }
+    TC.diagnose(repr->getInOutLoc(), diagID, "'inout'");
     repr->setInvalid();
     return ErrorType::get(Context);
   }
@@ -3262,6 +3242,12 @@ Type TypeChecker::substMemberTypeWithBase(ModuleDecl *module,
 }
 
 Type TypeChecker::getSuperClassOf(Type type) {
+  if (auto *parenTy = dyn_cast<ParenType>(type.getPointer())) {
+    auto superclassTy = getSuperClassOf(parenTy->getUnderlyingType());
+    if (!superclassTy)
+      return Type();
+    return ParenType::get(Context, superclassTy);
+  }
   return type->getSuperclass();
 }
 
@@ -4129,13 +4115,8 @@ void TypeChecker::checkUnsupportedProtocolType(Decl *decl) {
   if (!decl || decl->isInvalid())
     return;
 
-  // Global type aliases are okay.
-  if (isa<TypeAliasDecl>(decl) &&
-      decl->getDeclContext()->isModuleScopeContext())
-    return;
-
-  // Non-typealias type declarations are okay.
-  if (isa<TypeDecl>(decl) && !isa<TypeAliasDecl>(decl))
+  // Type declarations are okay.
+  if (isa<TypeDecl>(decl))
     return;
 
   // Extensions are okay.

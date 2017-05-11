@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "irgensil"
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
@@ -274,11 +275,6 @@ public:
     return kind == Kind::BoxWithAddress;
   }
   
-  Address getAddress() const {
-    assert(kind == Kind::Address && "not an allocated address");
-    return address.getAddress();
-  }
-
   StackAddress getStackAddress() const {
     assert(kind == Kind::Address && "not an allocated address");
     return address;
@@ -300,6 +296,17 @@ public:
   const DynamicallyEnforcedAddress &getDynamicallyEnforcedAddress() const {
     assert(kind == Kind::DynamicallyEnforcedAddress);
     return dynamicallyEnforcedAddress;
+  }
+
+  Address getAnyAddress() const {
+    if (kind == LoweredValue::Kind::Address) {
+      return address.getAddress();
+    } else if (kind == LoweredValue::Kind::ContainedAddress) {
+      return getAddressInContainer();
+    } else {
+      assert(kind == LoweredValue::Kind::DynamicallyEnforcedAddress);
+      return getDynamicallyEnforcedAddress().Addr;
+    }
   }
   
   void getExplosion(IRGenFunction &IGF, Explosion &ex) const;
@@ -559,15 +566,7 @@ public:
   /// Get the Address of a SIL value of address type, which must have been
   /// lowered.
   Address getLoweredAddress(SILValue v) {
-    auto &&lv = getLoweredValue(v);
-    if (lv.kind == LoweredValue::Kind::Address) {
-      return lv.getAddress();
-    } else if (lv.kind == LoweredValue::Kind::ContainedAddress) {
-      return lv.getAddressInContainer();
-    } else {
-      assert(lv.kind == LoweredValue::Kind::DynamicallyEnforcedAddress);
-      return lv.getDynamicallyEnforcedAddress().Addr;
-    }
+    return getLoweredValue(v).getAnyAddress();
   }
 
   StackAddress getLoweredStackAddress(SILValue v) {
@@ -2623,14 +2622,13 @@ static void addIncomingSILArgumentsToPHINodes(IRGenSILFunction &IGF,
                                               OperandValueArrayRef args) {
   unsigned phiIndex = 0;
   for (SILValue arg : args) {
-    const LoweredValue &lv = IGF.getLoweredValue(arg);
-  
-    if (lv.isAddress()) {
-      addIncomingAddressToPHINodes(IGF, lbb, phiIndex, lv.getAddress());
+    if (arg->getType().isAddress()) {
+      addIncomingAddressToPHINodes(IGF, lbb, phiIndex,
+                                   IGF.getLoweredAddress(arg));
       continue;
     }
     
-    Explosion argValue = lv.getExplosion(IGF);
+    Explosion argValue = IGF.getLoweredExplosion(arg);
     addIncomingExplosionToPHINodes(IGF, lbb, phiIndex, argValue);
   }
 }
@@ -2799,7 +2797,7 @@ mapTriviallyToInt(IRGenSILFunction &IGF, const EnumImplStrategy &EIS, SelectEnum
     return nullptr;
   
   llvm::Type *type = schema[0].getScalarType();
-  llvm::IntegerType *resultType = dyn_cast<llvm::IntegerType>(type);
+  auto *resultType = dyn_cast<llvm::IntegerType>(type);
   if (!resultType)
     return nullptr;
   
@@ -2815,7 +2813,7 @@ mapTriviallyToInt(IRGenSILFunction &IGF, const EnumImplStrategy &EIS, SelectEnum
     if (index < 0)
       return nullptr;
     
-    IntegerLiteralInst *intLit = dyn_cast<IntegerLiteralInst>(casePair.second);
+    auto *intLit = dyn_cast<IntegerLiteralInst>(casePair.second);
     if (!intLit)
       return nullptr;
     
@@ -3954,7 +3952,7 @@ void IRGenSILFunction::visitProjectBoxInst(swift::ProjectBoxInst *i) {
   }
 }
 
-static ExclusivityFlags getExclusivityFlags(SILAccessKind kind) {
+static ExclusivityFlags getExclusivityAction(SILAccessKind kind) {
   switch (kind) {
   case SILAccessKind::Read:
     return ExclusivityFlags::Read;
@@ -3967,9 +3965,20 @@ static ExclusivityFlags getExclusivityFlags(SILAccessKind kind) {
   llvm_unreachable("bad access kind");
 }
 
+static ExclusivityFlags getExclusivityFlags(SILModule &M,
+                                            SILAccessKind kind) {
+  auto flags = getExclusivityAction(kind);
+
+  // In old Swift compatibility modes, downgrade this to a warning.
+  if (M.getASTContext().LangOpts.isSwiftVersion3())
+    flags |= ExclusivityFlags::WarningOnly;
+
+  return flags;
+}
+
 template <class Inst>
 static ExclusivityFlags getExclusivityFlags(Inst *i) {
-  return getExclusivityFlags(i->getAccessKind());
+  return getExclusivityFlags(i->getModule(), i->getAccessKind());
 }
 
 void IRGenSILFunction::visitBeginAccessInst(BeginAccessInst *access) {
@@ -3994,8 +4003,9 @@ void IRGenSILFunction::visitBeginAccessInst(BeginAccessInst *access) {
       Builder.CreateBitCast(addr.getAddress(), IGM.Int8PtrTy);
     llvm::Value *flags =
       llvm::ConstantInt::get(IGM.SizeTy, uint64_t(getExclusivityFlags(access)));
+    llvm::Value *pc = llvm::ConstantPointerNull::get(IGM.Int8PtrTy);
     auto call = Builder.CreateCall(IGM.getBeginAccessFn(),
-                                   { pointer, scratch, flags });
+                                   { pointer, scratch, flags, pc });
     call->setDoesNotThrow();
 
     setLoweredDynamicallyEnforcedAddress(access, addr, scratch);
@@ -4003,6 +4013,11 @@ void IRGenSILFunction::visitBeginAccessInst(BeginAccessInst *access) {
   }
   }
   llvm_unreachable("bad access enforcement");
+}
+
+static bool hasBeenInlined(BeginUnpairedAccessInst *access) {
+  // Check to see if the buffer is defined locally.
+  return isa<AllocStackInst>(access->getBuffer());
 }
 
 void IRGenSILFunction::visitBeginUnpairedAccessInst(
@@ -4024,8 +4039,26 @@ void IRGenSILFunction::visitBeginUnpairedAccessInst(
       Builder.CreateBitCast(addr.getAddress(), IGM.Int8PtrTy);
     llvm::Value *flags =
       llvm::ConstantInt::get(IGM.SizeTy, uint64_t(getExclusivityFlags(access)));
+
+    // Compute the effective PC of the access.
+    // Since begin_unpaired_access is designed for materializeForSet, our
+    // heuristic here is as well: we've either been inlined, in which case
+    // we should use the current PC (i.e. pass null), or we haven't,
+    // in which case we should use the caller, which is generally ok because
+    // materializeForSet can't usually be thunked.
+    llvm::Value *pc;
+    if (hasBeenInlined(access)) {
+      pc = llvm::ConstantPointerNull::get(IGM.Int8PtrTy);
+    } else {
+      auto retAddrFn =
+        llvm::Intrinsic::getDeclaration(IGM.getModule(),
+                                        llvm::Intrinsic::returnaddress);
+      pc = Builder.CreateCall(retAddrFn,
+                              { llvm::ConstantInt::get(IGM.Int32Ty, 0) });
+    }
+
     auto call = Builder.CreateCall(IGM.getBeginAccessFn(),
-                                   { pointer, scratch, flags });
+                                   { pointer, scratch, flags, pc });
     call->setDoesNotThrow();
     return;
   }
@@ -4647,16 +4680,18 @@ void IRGenSILFunction::visitIsNonnullInst(swift::IsNonnullInst *i) {
   // Get the value we're testing, which may be a function, an address or an
   // instance pointer.
   llvm::Value *val;
-  const LoweredValue &lv = getLoweredValue(i->getOperand());
-  
-  if (i->getOperand()->getType().is<SILFunctionType>()) {
-    Explosion values = lv.getExplosion(*this);
-    val = values.claimNext();   // Function pointer.
-    values.claimNext();         // Ignore the data pointer.
-  } else if (lv.isAddress()) {
-    val = lv.getAddress().getAddress();
+
+  SILValue operand = i->getOperand();
+  auto type = operand->getType();
+  if (type.isAddress()) {
+    val = getLoweredAddress(operand).getAddress();
+  } else if (auto fnType = type.getAs<SILFunctionType>()) {
+    Explosion values = getLoweredExplosion(operand);
+    val = values.claimNext();    // Function pointer.
+    if (fnType->getRepresentation() == SILFunctionTypeRepresentation::Thick)
+      (void) values.claimNext(); // Ignore the data pointer.
   } else {
-    Explosion values = lv.getExplosion(*this);
+    Explosion values = getLoweredExplosion(operand);
     val = values.claimNext();
   }
   
@@ -5049,7 +5084,7 @@ void IRGenSILFunction::visitCopyAddrInst(swift::CopyAddrInst *i) {
       setAllocatedAddressForBuffer(i->getDest(), addr);
     }
   } else {
-    Address dest = loweredDest.getAddress();
+    Address dest = loweredDest.getAnyAddress();
     
     if (i->isInitializationOfDest()) {
       if (i->isTakeOfSrc()) {

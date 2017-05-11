@@ -175,10 +175,10 @@ SourceLoc Expr::getLoc() const {
 }
 
 Expr *Expr::getSemanticsProvidingExpr() {
-  if (IdentityExpr *IE = dyn_cast<IdentityExpr>(this))
+  if (auto *IE = dyn_cast<IdentityExpr>(this))
     return IE->getSubExpr()->getSemanticsProvidingExpr();
 
-  if (TryExpr *TE = dyn_cast<TryExpr>(this))
+  if (auto *TE = dyn_cast<TryExpr>(this))
     return TE->getSubExpr()->getSemanticsProvidingExpr();
 
   return this;
@@ -510,6 +510,7 @@ ConcreteDeclRef Expr::getReferencedDecl() const {
   NO_REFERENCE(EditorPlaceholder);
   NO_REFERENCE(ObjCSelector);
   NO_REFERENCE(KeyPath);
+  NO_REFERENCE(KeyPathDot);
 
 #undef SIMPLE_REFERENCE
 #undef NO_REFERENCE
@@ -796,6 +797,7 @@ bool Expr::canAppendCallParentheses() const {
   case ExprKind::Assign:
   case ExprKind::UnresolvedPattern:
   case ExprKind::EditorPlaceholder:
+  case ExprKind::KeyPathDot:
     return false;
   }
 
@@ -1489,7 +1491,7 @@ DictionaryExpr *DictionaryExpr::create(ASTContext &C, SourceLoc LBracketLoc,
 }
 
 static ValueDecl *getCalledValue(Expr *E) {
-  if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E))
+  if (auto *DRE = dyn_cast<DeclRefExpr>(E))
     return DRE->getDecl();
 
   Expr *E2 = E->getValueProvidingExpr();
@@ -2003,23 +2005,17 @@ ArchetypeType *OpenExistentialExpr::getOpenedArchetype() const {
   return type->castTo<ArchetypeType>();
 }
 
-KeyPathExpr::KeyPathExpr(ASTContext &C,
-                         SourceLoc keywordLoc, SourceLoc lParenLoc,
-                         TypeRepr *root,
-                         ArrayRef<Component> components,
-                         SourceLoc rParenLoc,
-                         bool isObjC,
-                         bool isImplicit)
-  : Expr(ExprKind::KeyPath, isImplicit),
-    KeywordLoc(keywordLoc), LParenLoc(lParenLoc), RParenLoc(rParenLoc),
-    RootType(root),
-    Components(C.AllocateUninitialized<Component>(components.size()))
-{
+KeyPathExpr::KeyPathExpr(ASTContext &C, SourceLoc keywordLoc,
+                         SourceLoc lParenLoc, ArrayRef<Component> components,
+                         SourceLoc rParenLoc, bool isImplicit)
+    : Expr(ExprKind::KeyPath, isImplicit), StartLoc(keywordLoc),
+      LParenLoc(lParenLoc), EndLoc(rParenLoc),
+      Components(C.AllocateUninitialized<Component>(components.size())) {
   // Copy components into the AST context.
   std::uninitialized_copy(components.begin(), components.end(),
                           Components.begin());
-  
-  KeyPathExprBits.IsObjC = isObjC;
+
+  KeyPathExprBits.IsObjC = true;
 }
 
 void

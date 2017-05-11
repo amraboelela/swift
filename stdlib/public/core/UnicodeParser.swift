@@ -10,25 +10,31 @@
 //
 //===----------------------------------------------------------------------===//
 extension _Unicode {
+  /// The result of attempting to parse a `T` from some input.
   public enum ParseResult<T> {
+  /// A `T` was parsed successfully
   case valid(T)
+  
+  /// The input was entirely consumed.
   case emptyInput
-  case invalid(length: Int)
-
-    var isEmpty : Bool {
-      switch self {
-      case .emptyInput: return true
-      default: return false
-      }
-    }
+  
+  /// An encoding error was detected.
+  ///
+  /// `length` is the number of underlying code units consumed by this
+  /// error (the length of the longest prefix of a valid encoding
+  /// sequence that could be recognized).
+  case error(length: Int)
   }
 }
 
-/// Types that separate streams of code units into encoded unicode scalar values
+/// Types that separate streams of code units into encoded Unicode
+/// scalar values.
 public protocol UnicodeParser {
   /// The encoding with which this parser is associated
   associatedtype Encoding : _UnicodeEncoding
 
+  /// Constructs an instance that can be used to begin parsing `CodeUnit`s at
+  /// any Unicode scalar boundary.
   init()
 
   /// Parses a single Unicode scalar value from `input`.
@@ -39,12 +45,13 @@ public protocol UnicodeParser {
 }
 
 extension UnicodeParser {
+  @_versioned
   @inline(__always)
   @discardableResult
-  public static func decode<I: IteratorProtocol>(
+  internal static func _parse<I: IteratorProtocol>(
     _ input: inout I,
-    repairingIllFormedSequences makeRepairs: Bool,
-    into output: (UnicodeScalar)->Void
+    repairingIllFormedSequences makeRepairs: Bool = true,
+    into output: (Encoding.EncodedScalar)->Void
   ) -> Int
   where I.Element == Encoding.CodeUnit
   {
@@ -53,23 +60,41 @@ extension UnicodeParser {
     while true {
       switch d.parseScalar(from: &input) {
       case let .valid(scalarContent):
-        output(Encoding.decode(scalarContent))
-      case .invalid:
-        if !makeRepairs { return 1 }
+        output(scalarContent)
+      case .error:
+        if _slowPath(!makeRepairs) { return 1 }
         errorCount += 1
-        output(UnicodeScalar(_unchecked: 0xFFFD))
+        output(Encoding.encodedReplacementCharacter)
       case .emptyInput:
         return errorCount
       }
     }
   }
+
+  @inline(__always)
+  @discardableResult
+  public static func _decode<I: IteratorProtocol>(
+    _ input: inout I,
+    repairingIllFormedSequences makeRepairs: Bool,
+    into output: (UnicodeScalar)->Void
+  ) -> Int
+  where I.Element == Encoding.CodeUnit
+  {
+    return _parse(&input, repairingIllFormedSequences: makeRepairs) {
+      output(Encoding.decode($0))
+    }
+  }
 }
 
 extension _Unicode {
-  public struct ParsingIterator<
+  @_fixed_layout
+  public // @testable
+  struct _ParsingIterator<
     CodeUnitIterator : IteratorProtocol, 
     Parser: UnicodeParser
   > where Parser.Encoding.CodeUnit == CodeUnitIterator.Element {
+    @inline(__always)
+    @_inlineable
     public init(codeUnits: CodeUnitIterator, parser: Parser) {
       self.codeUnits = codeUnits
       self.parser = parser
@@ -79,11 +104,13 @@ extension _Unicode {
   }
 }
 
-extension _Unicode.ParsingIterator : IteratorProtocol, Sequence {
+extension _Unicode._ParsingIterator : IteratorProtocol, Sequence {
+  @inline(__always)
+  @_inlineable
   public mutating func next() -> Parser.Encoding.EncodedScalar? {
     switch parser.parseScalar(from: &codeUnits) {
     case let .valid(scalarContent): return scalarContent
-    case .invalid: return Parser.Encoding.encodedReplacementCharacter
+    case .error: return Parser.Encoding.encodedReplacementCharacter
     case .emptyInput: return nil
     }
   }

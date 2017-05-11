@@ -884,6 +884,12 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
                           const FrontendOptions &FrontendOpts) {
   using namespace options;
 
+  /// FIXME: Remove this flag when void subscripts are implemented.
+  /// This is used to guard preemptive testing for the fix-it.
+  if (Args.hasArg(OPT_fix_string_substring_conversion)) {
+    Opts.FixStringToSubstringConversions = true;
+  }
+
   if (auto A = Args.getLastArg(OPT_swift_version)) {
     auto vers = version::Version::parseVersionString(
       A->getValue(), SourceLoc(), &Diags);
@@ -902,7 +908,8 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   Opts.UseMalloc |= Args.hasArg(OPT_use_malloc);
 
-  Opts.DiagnosticsEditorMode |= Args.hasArg(OPT_diagnostics_editor_mode);
+  Opts.DiagnosticsEditorMode |= Args.hasArg(OPT_diagnostics_editor_mode,
+                                            OPT_serialize_diagnostics_path);
 
   Opts.EnableExperimentalPropertyBehaviors |=
     Args.hasArg(OPT_enable_experimental_property_behaviors);
@@ -1011,12 +1018,22 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   }
 
   Opts.EnableAppExtensionRestrictions |= Args.hasArg(OPT_enable_app_extension);
-  Opts.WarnSwift3ObjCInference |= Args.hasArg(OPT_warn_swift3_objc_inference);
 
   Opts.EnableSwift3ObjCInference =
     Args.hasFlag(OPT_enable_swift3_objc_inference,
                  OPT_disable_swift3_objc_inference,
                  Opts.isSwiftVersion3());
+
+  if (Opts.EnableSwift3ObjCInference) {
+    if (const Arg *A = Args.getLastArg(
+                                   OPT_warn_swift3_objc_inference_minimal,
+                                   OPT_warn_swift3_objc_inference_complete)) {
+      if (A->getOption().getID() == OPT_warn_swift3_objc_inference_minimal)
+        Opts.WarnSwift3ObjCInference = Swift3ObjCInferenceWarnings::Minimal;
+      else
+        Opts.WarnSwift3ObjCInference = Swift3ObjCInferenceWarnings::Complete;
+    }
+  }
 
   llvm::Triple Target = Opts.Target;
   StringRef TargetArg;
@@ -1453,6 +1470,14 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
     }
   }
 
+  for (const Arg *A : make_range(Args.filtered_begin(OPT_Xcc),
+                                 Args.filtered_end())) {
+    StringRef Opt = A->getValue();
+    if (Opt.startswith("-D") || Opt.startswith("-U"))
+      Opts.ClangDefines.push_back(Opt);
+  }
+
+
   for (const Arg *A : make_range(Args.filtered_begin(OPT_l, OPT_framework),
                                  Args.filtered_end())) {
     LibraryKind Kind;
@@ -1604,7 +1629,7 @@ bool ParseMigratorArgs(MigratorOptions &Opts, llvm::Triple &Triple,
   }
 
   if (auto DataPath = Args.getLastArg(OPT_api_diff_data_file)) {
-    Opts.APIDigesterDataStorePath = DataPath->getValue();
+    Opts.APIDigesterDataStorePaths.push_back(DataPath->getValue());
   } else {
     bool Supported = true;
     llvm::SmallString<128> dataPath(ResourcePath);
@@ -1619,8 +1644,14 @@ bool ParseMigratorArgs(MigratorOptions &Opts, llvm::Triple &Triple,
       llvm::sys::path::append(dataPath, "watchos.json");
     else
       Supported = false;
-    if (Supported)
-      Opts.APIDigesterDataStorePath = dataPath.str();
+    if (Supported) {
+      llvm::SmallString<128> authoredDataPath(ResourcePath);
+      llvm::sys::path::append(authoredDataPath, "migrator");
+      llvm::sys::path::append(authoredDataPath, "overlay.json");
+      // Add authored list first to take higher priority.
+      Opts.APIDigesterDataStorePaths.push_back(authoredDataPath.str());
+      Opts.APIDigesterDataStorePaths.push_back(dataPath.str());
+    }
   }
 
   return false;

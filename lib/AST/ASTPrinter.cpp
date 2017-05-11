@@ -56,7 +56,7 @@ struct SynthesizedExtensionAnalyzer::Implementation {
   static bool isMemberFavored(const NominalTypeDecl* Target, const Decl* D) {
     DeclContext* DC = Target->getInnermostDeclContext();
     Type BaseTy = Target->getDeclaredTypeInContext();
-    const FuncDecl *FD = dyn_cast<FuncDecl>(D);
+    const auto *FD = dyn_cast<FuncDecl>(D);
     if (!FD)
       return true;
     ResolvedMemberResult Result = resolveValueMember(*DC, BaseTy,
@@ -1627,7 +1627,7 @@ static bool shouldPrintAsFavorable(const Decl *D, PrintOptions &Options) {
     return true;
   NominalTypeDecl *Target = Options.TransformContext->getNominal();
   Type BaseTy = Target->getDeclaredTypeInContext();
-  const FuncDecl *FD = dyn_cast<FuncDecl>(D);
+  const auto *FD = dyn_cast<FuncDecl>(D);
   if (!FD)
     return true;
   ResolvedMemberResult Result = resolveValueMember(*Target->getDeclContext(),
@@ -1643,6 +1643,9 @@ bool swift::shouldPrint(const Decl *D, PrintOptions &Options) {
     if (Options.printExtensionContentAsMembers(ED))
       return false;
   }
+
+  if (Options.SkipMissingMemberPlaceholders && isa<MissingMemberDecl>(D))
+    return false;
 
   if (Options.SkipDeinit && isa<DestructorDecl>(D)) {
     return false;
@@ -2048,11 +2051,6 @@ void PrintAST::printInherited(const Decl *decl,
   if (inherited.empty() && superclass.isNull() && !explicitClass) {
     if (protos.empty())
       return;
-    // If only conforms to AnyObject protocol, nothing to print.
-    if (protos.size() == 1) {
-      if (protos.front()->isSpecificProtocol(KnownProtocolKind::AnyObject))
-        return;
-    }
   }
 
   if (inherited.empty()) {
@@ -2076,8 +2074,6 @@ void PrintAST::printInherited(const Decl *decl,
 
     for (auto Proto : protos) {
       if (!shouldPrint(Proto))
-        continue;
-      if (Proto->isSpecificProtocol(KnownProtocolKind::AnyObject))
         continue;
       if (auto Enum = dyn_cast<EnumDecl>(decl)) {
         // Conformance to RawRepresentable is implied by having a raw type.
@@ -3221,6 +3217,12 @@ void PrintAST::visitPostfixOperatorDecl(PostfixOperatorDecl *decl) {
 }
 
 void PrintAST::visitModuleDecl(ModuleDecl *decl) { }
+
+void PrintAST::visitMissingMemberDecl(MissingMemberDecl *decl) {
+  Printer << "/* placeholder for ";
+  recordDeclLoc(decl, [&]{ Printer << decl->getFullName(); });
+  Printer << " */";
+}
 
 void PrintAST::visitBraceStmt(BraceStmt *stmt) {
   Printer << "{";

@@ -719,14 +719,14 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
           }
           if (!isCascadingUse.hasValue())
             isCascadingUse = ACE->isCascadingContextForLookup(false);
-        } else if (ExtensionDecl *ED = dyn_cast<ExtensionDecl>(DC)) {
+        } else if (auto *ED = dyn_cast<ExtensionDecl>(DC)) {
           ExtendedType = ED->getSelfTypeInContext();
 
           BaseDecl = ED->getAsNominalTypeOrNominalTypeExtensionContext();
           MetaBaseDecl = BaseDecl;
           if (!isCascadingUse.hasValue())
             isCascadingUse = ED->isCascadingContextForLookup(false);
-        } else if (NominalTypeDecl *ND = dyn_cast<NominalTypeDecl>(DC)) {
+        } else if (auto *ND = dyn_cast<NominalTypeDecl>(DC)) {
           ExtendedType = ND->getDeclaredType();
           BaseDecl = ND;
           MetaBaseDecl = BaseDecl;
@@ -857,7 +857,7 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
           }
         }
 
-        DC = DC->getParent();
+        DC = DC->getParentForLookup();
       }
 
       if (!isCascadingUse.hasValue())
@@ -1262,7 +1262,8 @@ static bool checkAccessibility(const DeclContext *useDC,
   assert(sourceDC && "ValueDecl being accessed must have a valid DeclContext");
   switch (access) {
   case Accessibility::Private:
-    return useDC == sourceDC || useDC->isChildContextOf(sourceDC);
+    return (useDC == sourceDC ||
+      AccessScope::allowsPrivateAccess(useDC, sourceDC));
   case Accessibility::FilePrivate:
     return useDC->getModuleScopeContext() == sourceDC->getModuleScopeContext();
   case Accessibility::Internal: {
@@ -1389,17 +1390,6 @@ bool DeclContext::lookupQualified(Type type,
   if (auto nominal = type->getAnyNominal()) {
     visited.insert(nominal);
     stack.push_back(nominal);
-    
-    // If we want dynamic lookup and we're searching in the
-    // AnyObject protocol, note this for later.
-    //
-    // FIXME: This will go away soon.
-    if (options & NL_DynamicLookup) {
-      if (auto proto = dyn_cast<ProtocolDecl>(nominal)) {
-        if (proto->isSpecificProtocol(KnownProtocolKind::AnyObject))
-          wantLookupInAllClasses = true;
-      }
-    }
   }
   // Handle archetypes
   else if (auto archetypeTy = type->getAs<ArchetypeType>()) {

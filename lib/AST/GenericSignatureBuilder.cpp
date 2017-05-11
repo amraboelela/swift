@@ -1750,8 +1750,8 @@ PotentialArchetype *PotentialArchetype::updateNestedTypeForConformance(
 PotentialArchetype *PotentialArchetype::updateNestedTypeForConformance(
                       PointerUnion<AssociatedTypeDecl *, TypeAliasDecl *> type,
                       NestedTypeUpdate kind) {
-  AssociatedTypeDecl *assocType = type.dyn_cast<AssociatedTypeDecl *>();
-  TypeAliasDecl *typealias = type.dyn_cast<TypeAliasDecl *>();
+  auto *assocType = type.dyn_cast<AssociatedTypeDecl *>();
+  auto *typealias = type.dyn_cast<TypeAliasDecl *>();
   if (!assocType && !typealias)
     return nullptr;
 
@@ -2395,8 +2395,7 @@ void GenericSignatureBuilder::addGenericParameter(GenericTypeParamType *GenericP
 /// types.
 static ConstraintResult visitInherited(
          ArrayRef<TypeLoc> inheritedTypes,
-         llvm::function_ref<ConstraintResult(Type, const TypeRepr *)> visitType,
-         llvm::function_ref<ConstraintResult(LayoutConstraint, const TypeRepr *)> visitLayout) {
+         llvm::function_ref<ConstraintResult(Type, const TypeRepr *)> visitType) {
   // Local function that (recursively) adds inherited types.
   ConstraintResult result = ConstraintResult::Resolved;
   std::function<void(Type, const TypeRepr *)> visitInherited;
@@ -2413,11 +2412,6 @@ static ConstraintResult visitInherited(
           visitInherited(memberType, composition->getTypes()[index]);
           index++;
         }
-
-        auto layout = compositionType->getExistentialLayout()
-          .getLayoutConstraint();
-        if (layout)
-          visitLayout(layout, composition);
 
         return;
       }
@@ -2573,7 +2567,7 @@ ConstraintResult GenericSignatureBuilder::addConformanceRequirement(
     return Type();
   };
 
-  // An an inferred same-type requirement between the two type declarations
+  // An inferred same-type requirement between the two type declarations
   // within this protocol or a protocol it inherits.
   auto addInferredSameTypeReq = [&](TypeDecl *first, TypeDecl *second) {
     Type firstType = formUnsubstitutedType(first);
@@ -2894,7 +2888,7 @@ ConstraintResult GenericSignatureBuilder::addTypeRequirement(
   if (!constraintType->isExistentialType() &&
       !constraintType->getClassOrBoundGenericClass()) {
     if (source.getLoc().isValid() && !constraintType->hasError()) {
-      Type subjectType = subject.dyn_cast<Type>();
+      auto subjectType = subject.dyn_cast<Type>();
       if (!subjectType)
         subjectType = subject.get<PotentialArchetype *>()
                         ->getDependentType(Impl->GenericParams,
@@ -3378,14 +3372,7 @@ ConstraintResult GenericSignatureBuilder::addInheritedRequirements(
                               UnresolvedHandlingKind::GenerateConstraints);
   };
 
-  auto visitLayout = [&](LayoutConstraint layout, const TypeRepr *typeRepr) {
-    return addLayoutRequirement(type, layout,
-                                getFloatingSource(typeRepr,
-                                                  /*forInferred=*/false),
-                                UnresolvedHandlingKind::GenerateConstraints);
-  };
-
-  return visitInherited(decl->getInherited(), visitType, visitLayout);
+  return visitInherited(decl->getInherited(), visitType);
 }
 
 ConstraintResult GenericSignatureBuilder::addRequirement(

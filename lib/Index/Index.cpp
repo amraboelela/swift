@@ -105,14 +105,14 @@ public:
   }
 
   StringRef getFilename() const {
-    if (SourceFile *SF = SFOrMod.dyn_cast<SourceFile *>())
+    if (auto *SF = SFOrMod.dyn_cast<SourceFile *>())
       return SF->getFilename();
     return SFOrMod.get<ModuleDecl *>()->getModuleFilename();
   }
 
   void
   getImportedModules(SmallVectorImpl<ModuleDecl::ImportedModule> &Modules) const {
-    if (SourceFile *SF = SFOrMod.dyn_cast<SourceFile *>()) {
+    if (auto *SF = SFOrMod.dyn_cast<SourceFile *>()) {
       SF->getImportedModules(Modules, ModuleDecl::ImportFilter::All);
     } else {
       SFOrMod.get<ModuleDecl *>()->getImportedModules(Modules,
@@ -256,14 +256,14 @@ private:
     // Do not handle unavailable decls.
     if (AvailableAttr::isUnavailable(D))
       return false;
-    if (FuncDecl *FD = dyn_cast<FuncDecl>(D)) {
+    if (auto *FD = dyn_cast<FuncDecl>(D)) {
       if (FD->isAccessor() && getParentDecl() != FD->getAccessorStorageDecl())
         return false; // already handled as part of the var decl.
     }
-    if (ValueDecl *VD = dyn_cast<ValueDecl>(D)) {
+    if (auto *VD = dyn_cast<ValueDecl>(D)) {
       if (!report(VD))
         return false;
-      if (SubscriptDecl *SD = dyn_cast<SubscriptDecl>(VD)) {
+      if (auto *SD = dyn_cast<SubscriptDecl>(VD)) {
         // Avoid indexing the indices, only walk the getter/setter.
         if (SD->getGetter())
           if (SourceEntityWalker::walk(cast<Decl>(SD->getGetter())))
@@ -283,7 +283,7 @@ private:
         return false; // already walked what we needed.
       }
     }
-    if (ExtensionDecl *ED = dyn_cast<ExtensionDecl>(D))
+    if (auto *ED = dyn_cast<ExtensionDecl>(D))
       return reportExtension(ED);
     return true;
   }
@@ -378,7 +378,7 @@ private:
     return true;
   }
 
-  Decl *getParentDecl() {
+  Decl *getParentDecl() const {
     if (!EntitiesStack.empty())
       return EntitiesStack.back().D;
     return nullptr;
@@ -390,7 +390,7 @@ private:
     EntitiesStack.back().RefsToSuppress.push_back(Loc);
   }
 
-  bool isRepressed(SourceLoc Loc) {
+  bool isRepressed(SourceLoc Loc) const {
     if (EntitiesStack.empty() || Loc.isInvalid())
       return false;
     auto &Suppressed = EntitiesStack.back().RefsToSuppress;
@@ -398,17 +398,17 @@ private:
 
   }
 
-  Expr *getContainingExpr(size_t index) {
+  Expr *getContainingExpr(size_t index) const {
     if (ExprStack.size() > index)
       return ExprStack.end()[-(index + 1)];
     return nullptr;
   }
 
-  Expr *getCurrentExpr() {
+  Expr *getCurrentExpr() const {
     return ExprStack.empty() ? nullptr : ExprStack.back();
   }
 
-  Expr *getParentExpr() {
+  Expr *getParentExpr() const {
     return getContainingExpr(1);
   }
 
@@ -466,8 +466,11 @@ private:
   bool shouldIndex(ValueDecl *D, bool IsRef) const {
     if (D->isImplicit() && !isa<ConstructorDecl>(D))
       return false;
-    if (!IdxConsumer.indexLocals() && isLocalSymbol(D) && (!isa<ParamDecl>(D) || IsRef))
-      return false;
+
+    if (!IdxConsumer.indexLocals() && isLocalSymbol(D))
+      return isa<ParamDecl>(D) && !IsRef &&
+        D->getDeclContext()->getContextKind() != DeclContextKind::AbstractClosureExpr;
+
     if (D->isPrivateStdlibDecl())
       return false;
 
@@ -723,7 +726,7 @@ bool IndexSwiftASTWalker::reportInheritedTypeRefs(ArrayRef<TypeLoc> Inherited, D
 
 bool IndexSwiftASTWalker::reportRelatedTypeRef(const TypeLoc &Ty, SymbolRoleSet Relations, Decl *Related) {
 
-  if (IdentTypeRepr *T = dyn_cast_or_null<IdentTypeRepr>(Ty.getTypeRepr())) {
+  if (auto *T = dyn_cast_or_null<IdentTypeRepr>(Ty.getTypeRepr())) {
     auto Comps = T->getComponentRange();
     SourceLoc IdLoc = Comps.back()->getIdLoc();
     NominalTypeDecl *NTD = nullptr;
@@ -842,7 +845,7 @@ NominalTypeDecl *
 IndexSwiftASTWalker::getTypeLocAsNominalTypeDecl(const TypeLoc &Ty) {
   if (Type T = Ty.getType())
     return T->getAnyNominal();
-  if (IdentTypeRepr *T = dyn_cast_or_null<IdentTypeRepr>(Ty.getTypeRepr())) {
+  if (auto *T = dyn_cast_or_null<IdentTypeRepr>(Ty.getTypeRepr())) {
     auto Comp = T->getComponentRange().back();
     if (auto NTD = dyn_cast_or_null<NominalTypeDecl>(Comp->getBoundDecl()))
       return NTD;
@@ -970,7 +973,7 @@ bool IndexSwiftASTWalker::reportRef(ValueDecl *D, SourceLoc Loc,
     return true;
 
   // Report the accessors that were utilized.
-  if (AbstractStorageDecl *ASD = dyn_cast<AbstractStorageDecl>(D)) {
+  if (auto *ASD = dyn_cast<AbstractStorageDecl>(D)) {
     bool UsesGetter = Info.roles & (SymbolRoleSet)SymbolRole::Read;
     bool UsesSetter = Info.roles & (SymbolRoleSet)SymbolRole::Write;
 

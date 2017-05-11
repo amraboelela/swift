@@ -779,7 +779,7 @@ namespace {
 
       auto resultMetadata = extractAndMarkResultType(type);
       
-      CanTupleType inputTuple = dyn_cast<TupleType>(type.getInput());
+      auto inputTuple = dyn_cast<TupleType>(type.getInput());
 
       size_t numArguments = 1;
 
@@ -3502,6 +3502,10 @@ namespace {
       }
     }
 
+    void addPlaceholder(MissingMemberDecl *) {
+      llvm_unreachable("cannot generate metadata with placeholders in it");
+    }
+
     void addMethodOverride(SILDeclRef baseRef, SILDeclRef declRef) {}
 
     void addGenericArgument(CanType argTy, ClassDecl *forClass) {
@@ -5497,8 +5501,6 @@ SpecialProtocol irgen::getSpecialProtocolID(ProtocolDecl *P) {
   if (!known)
     return SpecialProtocol::None;
   switch (*known) {
-  case KnownProtocolKind::AnyObject:
-    return SpecialProtocol::AnyObject;
   case KnownProtocolKind::Error:
     return SpecialProtocol::Error;
     
@@ -5535,6 +5537,7 @@ SpecialProtocol irgen::getSpecialProtocolID(ProtocolDecl *P) {
   case KnownProtocolKind::OptionSet:
   case KnownProtocolKind::BridgedNSError:
   case KnownProtocolKind::BridgedStoredNSError:
+  case KnownProtocolKind::CFObject:
   case KnownProtocolKind::ErrorCodeProtocol:
   case KnownProtocolKind::ExpressibleByBuiltinConstStringLiteral:
   case KnownProtocolKind::ExpressibleByBuiltinConstUTF16StringLiteral:

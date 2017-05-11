@@ -85,6 +85,10 @@ private:
   void analyzeUsesOfBox(SILInstruction *source);
   void analyzeProjection(ProjectBoxInst *projection);
 
+  /// Note that the given instruction is a use of the box (or a use of
+  /// a projection from it) in which the address escapes.
+  void noteEscapingUse(SILInstruction *inst);
+
   void propagateEscapes();
   void propagateEscapesFrom(SILBasicBlock *bb);
 
@@ -137,20 +141,7 @@ void SelectEnforcement::analyzeUsesOfBox(SILInstruction *source) {
       continue;
 
     // Treat everything else as an escape:
-
-    // Add it to the escapes set.
-    Escapes.insert(user);
-
-    // Record this point as escaping.
-    auto userBB = user->getParent();
-    auto &state = StateMap[userBB];
-    if (!state.IsInWorklist) {
-      state.HasEscape = true;
-      state.IsInWorklist = true;
-      Worklist.push_back(userBB);
-    }
-    assert(state.HasEscape);
-    assert(state.IsInWorklist);
+    noteEscapingUse(user);
   }
 
   assert(!Accesses.empty() && "didn't find original access!");
@@ -166,6 +157,22 @@ void SelectEnforcement::analyzeProjection(ProjectBoxInst *projection) {
         Accesses.push_back(access);
     }
   }
+}
+
+void SelectEnforcement::noteEscapingUse(SILInstruction *inst) {
+  // Add it to the escapes set.
+  Escapes.insert(inst);
+
+  // Record this point as escaping.
+  auto userBB = inst->getParent();
+  auto &state = StateMap[userBB];
+  if (!state.IsInWorklist) {
+    state.HasEscape = true;
+    state.IsInWorklist = true;
+    Worklist.push_back(userBB);
+  }
+  assert(state.HasEscape);
+  assert(state.IsInWorklist);
 }
 
 void SelectEnforcement::propagateEscapes() {
@@ -362,19 +369,15 @@ struct AccessEnforcementSelection : SILFunctionTransform {
     if (auto arg = dyn_cast<SILFunctionArgument>(address)) {
       switch (arg->getArgumentConvention()) {
       case SILArgumentConvention::Indirect_Inout:
+      case SILArgumentConvention::Indirect_InoutAliasable:
         // `inout` arguments are checked on the caller side, either statically
         // or dynamically if necessary. The @inout does not alias and cannot
         // escape within the callee, so static enforcement is always sufficient.
-        setStaticEnforcement(access);
-        break;
-      case SILArgumentConvention::Indirect_InoutAliasable:
-        // `inout_aliasable` are not enforced on the caller side. Dynamic
-        // enforcement is required unless we have special knowledge of how this
-        // closure is used at its call-site.
         //
-        // TODO: optimize closures passed to call sites in which the captured
-        // variable is not modified by any closure passed to the same call.
-        setDynamicEnforcement(access);
+        // FIXME: `inout_aliasable` are not currently enforced on the caller
+        // side. Consequently, using static enforcement for noescape closures
+        // may fails to diagnose certain violations.
+        setStaticEnforcement(access);
         break;
       default:
         // @in/@in_guaranteed cannot be mutably accessed, mutably captured, or

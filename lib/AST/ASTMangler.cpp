@@ -24,6 +24,7 @@
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/Demangling/ManglingUtils.h"
+#include "swift/Demangling/Demangler.h"
 #include "swift/Strings.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/AST/Attr.h"
@@ -301,12 +302,18 @@ std::string ASTMangler::mangleDeclType(const ValueDecl *decl) {
   return finalize();
 }
 
+#ifdef USE_NEW_MANGLING_FOR_OBJC_RUNTIME_NAMES
 static bool isPrivate(const NominalTypeDecl *Nominal) {
   return Nominal->hasAccessibility() &&
          Nominal->getFormalAccess() <= Accessibility::FilePrivate;
 }
+#endif
 
 std::string ASTMangler::mangleObjCRuntimeName(const NominalTypeDecl *Nominal) {
+#ifdef USE_NEW_MANGLING_FOR_OBJC_RUNTIME_NAMES
+  // Using the new mangling for ObjC runtime names (except for top-level
+  // classes). This is currently disabled to support old archives.
+  // TODO: re-enable this as we switch to the new mangling for ObjC names.
   DeclContext *Ctx = Nominal->getDeclContext();
 
   if (Ctx->isModuleScopeContext() && !isPrivate(Nominal)) {
@@ -338,6 +345,34 @@ std::string ASTMangler::mangleObjCRuntimeName(const NominalTypeDecl *Nominal) {
   beginMangling();
   appendAnyGenericType(Nominal);
   return finalize();
+#else
+  // Use the old mangling for ObjC runtime names.
+  beginMangling();
+  appendAnyGenericType(Nominal);
+  std::string NewName = finalize();
+  Demangle::Demangler Dem;
+  Demangle::Node *Root = Dem.demangleSymbol(NewName);
+  assert(Root->getKind() == Node::Kind::Global);
+  Node *NomTy = Root->getFirstChild();
+  if (NomTy->getKind() == Node::Kind::Protocol) {
+    // Protocols are actually mangled as protocol lists.
+    Node *PTy = Dem.createNode(Node::Kind::Type);
+    PTy->addChild(NomTy, Dem);
+    Node *TList = Dem.createNode(Node::Kind::TypeList);
+    TList->addChild(PTy, Dem);
+    NomTy = Dem.createNode(Node::Kind::ProtocolList);
+    NomTy->addChild(TList, Dem);
+  }
+  // Add a TypeMangling node at the top
+  Node *Ty = Dem.createNode(Node::Kind::Type);
+  Ty->addChild(NomTy, Dem);
+  Node *TyMangling = Dem.createNode(Node::Kind::TypeMangling);
+  TyMangling->addChild(Ty, Dem);
+  Node *NewGlobal = Dem.createNode(Node::Kind::Global);
+  NewGlobal->addChild(TyMangling, Dem);
+  std::string OldName = mangleNodeOld(NewGlobal);
+  return OldName;
+#endif
 }
 
 std::string ASTMangler::mangleTypeAsContextUSR(const NominalTypeDecl *type) {
@@ -1038,21 +1073,28 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn) {
 /// Mangle the context of the given declaration as a <context.
 /// This is the top-level entrypoint for mangling <context>.
 void ASTMangler::appendContextOf(const ValueDecl *decl) {
-  // Declarations provided by a C module have a special context
+  auto clangDecl = decl->getClangDecl();
+
+  // Classes and protocols implemented in Objective-C have a special context
   // mangling.
   //   known-context ::= 'So'
-  //
-  // Also handle top-level imported declarations that don't have corresponding
-  // Clang decls. Check getKind() directly to avoid a layering dependency.
+  if (isa<ClassDecl>(decl) && clangDecl) {
+    assert(isa<clang::ObjCInterfaceDecl>(clangDecl) ||
+           isa<clang::TypedefDecl>(clangDecl));
+    return appendOperator("So");
+  }
+
+  if (isa<ProtocolDecl>(decl) && clangDecl) {
+    assert(isa<clang::ObjCProtocolDecl>(clangDecl));
+    return appendOperator("So");
+  }
+
+  // Declarations provided by a C module have a special context mangling.
   //   known-context ::= 'SC'
+  // Do a dance to avoid a layering dependency.
   if (auto file = dyn_cast<FileUnit>(decl->getDeclContext())) {
-    if (file->getKind() == FileUnitKind::ClangModule) {
-      // FIXME: Import-as-member Clang decls should appear under 'So' as well,
-      // rather than under their current parent.
-      if (decl->getClangDecl())
-        return appendOperator("So");
+    if (file->getKind() == FileUnitKind::ClangModule)
       return appendOperator("SC");
-    }
   }
 
   // Just mangle the decl's DC.
@@ -1250,7 +1292,7 @@ void ASTMangler::appendModule(const ModuleDecl *module) {
   StringRef ModName = module->getName().str();
   if (ModName == MANGLING_MODULE_OBJC)
     return appendOperator("So");
-  if (ModName == MANGLING_MODULE_CLANG_IMPORTER)
+  if (ModName == MANGLING_MODULE_C)
     return appendOperator("SC");
 
   appendIdentifier(ModName);
@@ -1695,14 +1737,19 @@ void ASTMangler::appendDeclType(const ValueDecl *decl, bool isFunctionMangling) 
                                      requirements, requirementsBuf);
  
   if (AnyFunctionType *FuncTy = type->getAs<AnyFunctionType>()) {
-    bool forceSingleParam = false;
+
+    const ParameterList *Params = nullptr;
     if (const auto *FDecl = dyn_cast<AbstractFunctionDecl>(decl)) {
       unsigned PListIdx = isMethodDecl(decl) ? 1 : 0;
       if (PListIdx < FDecl->getNumParameterLists()) {
-        const ParameterList *Params = FDecl->getParameterList(PListIdx);
-        forceSingleParam = (Params->size() == 1);
+        Params = FDecl->getParameterList(PListIdx);
       }
+    } else if (const auto *SDecl = dyn_cast<SubscriptDecl>(decl)) {
+        Params = SDecl->getIndices();
     }
+    bool forceSingleParam = Params && (Params->size() == 1);
+          
+
     if (isFunctionMangling) {
       appendFunctionSignature(FuncTy, forceSingleParam);
     } else {
