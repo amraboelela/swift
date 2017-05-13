@@ -53,7 +53,6 @@ set(SWIFTLIB_ESSENTIAL
   ErrorType.swift
   Existential.swift
   Filter.swift.gyb
-  #FixedPoint.swift.gyb
   FlatMap.swift
   Flatten.swift.gyb
   FloatingPoint.swift.gyb
@@ -72,7 +71,6 @@ set(SWIFTLIB_ESSENTIAL
   Index.swift
   Indices.swift.gyb
   InputStream.swift
-  #IntegerArithmetic.swift.gyb
   IntegerParsing.swift.gyb
   Integers.swift.gyb
   Join.swift
@@ -83,6 +81,7 @@ set(SWIFTLIB_ESSENTIAL
   ManagedBuffer.swift
   Map.swift.gyb
   MemoryLayout.swift
+  UnicodeScalar.swift # ORDER DEPENDENCY: Must precede Mirrors.swift
   Mirrors.swift.gyb
   Misc.swift
   MutableCollection.swift
@@ -136,7 +135,6 @@ set(SWIFTLIB_ESSENTIAL
   UnavailableStringAPIs.swift.gyb
   UnicodeEncoding.swift
   UnicodeParser.swift
-  UnicodeScalar.swift
   UnicodeTrie.swift.gyb
   Unmanaged.swift
   UnsafeBitMap.swift
