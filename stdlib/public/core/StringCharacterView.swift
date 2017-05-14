@@ -51,7 +51,7 @@ extension String {
   ///
   ///     let name = "Marie Curie"
   ///     if let firstSpace = name.characters.index(of: " ") {
-  ///         let firstName = String(name.characters.prefix(upTo: firstSpace))
+  ///         let firstName = String(name.characters[..<firstSpace])
   ///         print(firstName)
   ///     }
   ///     // Prints "Marie"
@@ -100,8 +100,8 @@ extension String {
   ///     var str = "All this happened, more or less."
   ///     let afterSpace = str.withMutableCharacters { chars -> String.CharacterView in
   ///         if let i = chars.index(of: " ") {
-  ///             let result = chars.suffix(from: chars.index(after: i))
-  ///             chars.removeSubrange(i..<chars.endIndex)
+  ///             let result = chars[chars.index(after: i)...]
+  ///             chars.removeSubrange(i...)
   ///             return result
   ///         }
   ///         return String.CharacterView()
@@ -135,10 +135,12 @@ extension String {
   /// Use this initializer to recover a string after performing a collection
   /// slicing operation on a string's character view.
   ///
-  ///     let poem = "'Twas brillig, and the slithy toves / " +
-  ///                "Did gyre and gimbal in the wabe: / " +
-  ///                "All mimsy were the borogoves / " +
-  ///                "And the mome raths outgrabe."
+  ///     let poem = """
+  ///           'Twas brillig, and the slithy toves /
+  ///           Did gyre and gimbal in the wabe: /
+  ///           All mimsy were the borogoves /
+  ///           And the mome raths outgrabe.
+  ///           """
   ///     let excerpt = String(poem.characters.prefix(22)) + "..."
   ///     print(excerpt)
   ///     // Prints "'Twas brillig, and the..."
@@ -167,7 +169,7 @@ extension String.CharacterView : BidirectionalCollection {
   ///     let hearts = "Hearts <3 ♥︎ 💘"
   ///     if let i = hearts.characters.index(of: " ") {
   ///         let j = i.samePosition(in: hearts.utf8)
-  ///         print(Array(hearts.utf8.prefix(upTo: j)))
+  ///         print(Array(hearts.utf8[..<j]))
   ///     }
   ///     // Prints "[72, 101, 97, 114, 116, 115]"
   public struct Index : Comparable, CustomPlaygroundQuickLookable {
@@ -489,7 +491,7 @@ extension String.CharacterView : RangeReplaceableCollection {
   public mutating func replaceSubrange<C>(
     _ bounds: Range<Index>,
     with newElements: C
-  ) where C : Collection, C.Iterator.Element == Character {
+  ) where C : Collection, C.Element == Character {
     let rawSubRange: Range<Int> =
       bounds.lowerBound._base._position - _coreOffset
       ..< bounds.upperBound._base._position - _coreOffset
@@ -530,7 +532,7 @@ extension String.CharacterView : RangeReplaceableCollection {
   /// 
   /// - Parameter newElements: A sequence of characters.
   public mutating func append<S : Sequence>(contentsOf newElements: S)
-    where S.Iterator.Element == Character {
+    where S.Element == Character {
     reserveCapacity(_core.count + newElements.underestimatedCount)
     for c in newElements {
       self.append(c)
@@ -542,7 +544,7 @@ extension String.CharacterView : RangeReplaceableCollection {
   ///
   /// - Parameter characters: A sequence of characters.
   public init<S : Sequence>(_ characters: S)
-    where S.Iterator.Element == Character {
+    where S.Element == Character {
     self = String.CharacterView()
     self.append(contentsOf: characters)
   }
@@ -575,13 +577,13 @@ extension String.CharacterView {
   public mutating func replaceRange<C>(
     _ subRange: Range<Index>,
     with newElements: C
-  ) where C : Collection, C.Iterator.Element == Character {
+  ) where C : Collection, C.Element == Character {
     Builtin.unreachable()
   }
     
   @available(*, unavailable, renamed: "append(contentsOf:)")
   public mutating func appendContentsOf<S : Sequence>(_ newElements: S)
-    where S.Iterator.Element == Character {
+    where S.Element == Character {
     Builtin.unreachable()
   }
 }

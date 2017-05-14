@@ -223,7 +223,7 @@ public protocol MutableCollection : _MutableIndexable, Collection
   /// - Parameter position: The position of the element to access. `position`
   ///   must be a valid index of the collection that is not equal to the
   ///   `endIndex` property.
-  subscript(position: Index) -> Iterator.Element {get set}
+  subscript(position: Index) -> Element {get set}
 
   /// Accesses a contiguous subrange of the collection's elements.
   ///
@@ -250,8 +250,8 @@ public protocol MutableCollection : _MutableIndexable, Collection
   subscript(bounds: Range<Index>) -> SubSequence {get set}
 
   /// Reorders the elements of the collection such that all the elements
-  /// that match the given predicate are after all the elements that do
-  /// not match the predicate.
+  /// that match the given predicate are after all the elements that don't
+  /// match.
   ///
   /// After partitioning a collection, there is a pivot index `p` where
   /// no element before `p` satisfies the `belongsInSecondPartition`
@@ -267,13 +267,13 @@ public protocol MutableCollection : _MutableIndexable, Collection
   ///     // numbers == [30, 10, 20, 30, 30, 60, 40]
   ///
   /// The `numbers` array is now arranged in two partitions. The first
-  /// partition, `numbers.prefix(upTo: p)`, is made up of the elements that
-  /// are not greater than 30. The second partition, `numbers.suffix(from: p)`,
+  /// partition, `numbers[..<p]`, is made up of the elements that
+  /// are not greater than 30. The second partition, `numbers[p...]`,
   /// is made up of the elements that *are* greater than 30.
   ///
-  ///     let first = numbers.prefix(upTo: p)
+  ///     let first = numbers[..<p]
   ///     // first == [30, 10, 20, 30, 30]
-  ///     let second = numbers.suffix(from: p)
+  ///     let second = numbers[p...]
   ///     // second == [60, 40]
   ///
   /// - Parameter belongsInSecondPartition: A predicate used to partition
@@ -286,13 +286,19 @@ public protocol MutableCollection : _MutableIndexable, Collection
   ///
   /// - Complexity: O(*n*)
   mutating func partition(
-    by belongsInSecondPartition: (Iterator.Element) throws -> Bool
+    by belongsInSecondPartition: (Element) throws -> Bool
   ) rethrows -> Index
 
-  /// Exchange the values at indices `i` and `j`.
+  /// Exchanges the values at the specified indices of the collection.
   ///
-  /// Has no effect when `i` and `j` are equal.
-  mutating func swapAt(_ i: Index, _ j: Index)  
+  /// Both parameters must be valid indices of the collection that are not
+  /// equal to `endIndex`. Passing the same index as both `i` and `j` has no
+  /// effect.
+  ///
+  /// - Parameters:
+  ///   - i: The index of the first value to swap.
+  ///   - j: The index of the second value to swap.
+  mutating func swapAt(_ i: Index, _ j: Index)
   
   /// Call `body(p)`, where `p` is a pointer to the collection's
   /// mutable contiguous storage.  If no such storage exists, it is
@@ -305,7 +311,7 @@ public protocol MutableCollection : _MutableIndexable, Collection
   /// same algorithm on `body`\ 's argument lets you trade safety for
   /// speed.
   mutating func _withUnsafeMutableBufferPointerIfSupported<R>(
-    _ body: (UnsafeMutablePointer<Iterator.Element>, Int) throws -> R
+    _ body: (UnsafeMutablePointer<Element>, Int) throws -> R
   ) rethrows -> R?
   // FIXME(ABI)#53 (Type Checker): the signature should use
   // UnsafeMutableBufferPointer, but the compiler can't handle that.
@@ -319,7 +325,7 @@ public protocol MutableCollection : _MutableIndexable, Collection
 extension MutableCollection {
   @_inlineable
   public mutating func _withUnsafeMutableBufferPointerIfSupported<R>(
-    _ body: (UnsafeMutablePointer<Iterator.Element>, Int) throws -> R
+    _ body: (UnsafeMutablePointer<Element>, Int) throws -> R
   ) rethrows -> R? {
     return nil
   }
@@ -357,9 +363,15 @@ extension MutableCollection {
     }
   }
 
-  /// Exchange the values at indices `i` and `j`.
+  /// Exchanges the values at the specified indices of the collection.
   ///
-  /// Has no effect when `i` and `j` are equal.
+  /// Both parameters must be valid indices of the collection that are not
+  /// equal to `endIndex`. Calling `swapAt(_:_:)` with the same index as both
+  /// `i` and `j` has no effect.
+  ///
+  /// - Parameters:
+  ///   - i: The index of the first value to swap.
+  ///   - j: The index of the second value to swap.
   @_inlineable
   public mutating func swapAt(_ i: Index, _ j: Index) {
     guard i != j else { return }
