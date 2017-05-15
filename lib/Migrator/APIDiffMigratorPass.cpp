@@ -338,7 +338,7 @@ struct APIDiffMigratorPass : public ASTMigratorPass, public SourceEntityWalker {
           if (LR.getByteLength())
             Editor.replace(LR, Label);
           else
-            Editor.insert(LR.getStart(), (llvm::Twine(Label) + ":").str());
+            Editor.insert(LR.getStart(), (llvm::Twine(Label) + ": ").str());
         }
       }
     }
@@ -353,6 +353,70 @@ struct APIDiffMigratorPass : public ASTMigratorPass, public SourceEntityWalker {
         Editor.replace(Walker.Result, View.base());
       }
       emitRenameLabelChanges(Arg, View, {});
+    }
+  }
+
+  bool handleSpecialCases(ValueDecl *FD, CallExpr* Call, Expr *Arg) {
+    SpecialCaseDiffItem *Item = nullptr;
+    for (auto *I: getRelatedDiffItems(FD)) {
+      Item = dyn_cast<SpecialCaseDiffItem>(I);
+      if (Item)
+        break;
+    }
+    if (!Item)
+      return false;
+    std::vector<CallArgInfo> AllArgs =
+      getCallArgInfo(SM, Arg, LabelRangeEndAt::LabelNameOnly);
+    switch(Item->caseId) {
+    case SpecialCaseId::NSOpenGLSetOption: {
+      // swift 3.2:
+      // NSOpenGLSetOption(NSOpenGLGOFormatCacheSize, 5)
+      // swift 4:
+      // NSOpenGLGOFormatCacheSize.globalValue = 5
+      CallArgInfo &FirstArg = AllArgs[0];
+      CallArgInfo &SecondArg = AllArgs[1];
+      Editor.remove(CharSourceRange(SM, Call->getStartLoc(),
+                                    FirstArg.ArgExp->getStartLoc()));
+      Editor.replace(CharSourceRange(SM, Lexer::getLocForEndOfToken(SM,
+        FirstArg.ArgExp->getEndLoc()), SecondArg.LabelRange.getStart()),
+                     ".globalValue = ");
+      Editor.remove(Call->getEndLoc());
+      return true;
+    }
+    case SpecialCaseId::NSOpenGLGetOption: {
+      // swift 3.2:
+      // NSOpenGLGetOption(NSOpenGLGOFormatCacheSize, &cacheSize)
+      // swift 4:
+      // cacheSize = NSOpenGLGOFormatCacheSize.globalValue
+      CallArgInfo &FirstArg = AllArgs[0];
+      CallArgInfo &SecondArg = AllArgs[1];
+
+      StringRef SecondArgContent = SecondArg.getEntireCharRange(SM).str();
+      if (SecondArgContent[0] == '&')
+        SecondArgContent = SecondArgContent.substr(1);
+
+      Editor.replace(CharSourceRange(SM, Call->getStartLoc(),
+                                     FirstArg.ArgExp->getStartLoc()),
+                     (llvm::Twine(SecondArgContent) + " = ").str());
+      Editor.replace(CharSourceRange(SM, FirstArg.getEntireCharRange(SM).getEnd(),
+                                     Lexer::getLocForEndOfToken(SM, Call->getEndLoc())),
+                     ".globalValue");
+      return true;
+    }
+    case SpecialCaseId::StaticAbsToSwiftAbs:
+      // swift 3:
+      // CGFloat.abs(1.0)
+      // Float.abs(1.0)
+      // Double.abs(1.0)
+      // Float80.abs(1.0)
+      //
+      // swift 4:
+      // Swift.abs(1.0)
+      // Swift.abs(1.0)
+      // Swift.abs(1.0)
+      // Swift.abs(1.0)
+      Editor.replace(Call->getFn()->getSourceRange(), "Swift.abs");
+      return true;
     }
   }
 
@@ -387,16 +451,22 @@ struct APIDiffMigratorPass : public ASTMigratorPass, public SourceEntityWalker {
       IgnoredArgIndices.push_back(*RI);
     emitRenameLabelChanges(Arg, NewName, IgnoredArgIndices);
     auto *SelfExpr = AllArgs[0].ArgExp;
+    if (auto *IOE = dyn_cast<InOutExpr>(SelfExpr))
+      SelfExpr = IOE->getSubExpr();
+    const bool NeedParen = !SelfExpr->canAppendCallParentheses();
 
     // Remove the global function name: "Foo(a, b..." to "a, b..."
     Editor.remove(CharSourceRange(SM, Call->getStartLoc(),
                                   SelfExpr->getStartLoc()));
-
+    if (NeedParen)
+      Editor.insert(SelfExpr->getStartLoc(), "(");
     std::string MemberFuncBase;
     if (Item->Subkind == TypeMemberDiffItemSubKind::HoistSelfAndUseProperty)
-      MemberFuncBase = (llvm::Twine(".") + Item->getNewName().base()).str();
+      MemberFuncBase = (llvm::Twine(NeedParen ? ")." : ".") + Item->getNewName().
+        base()).str();
     else
-      MemberFuncBase = (llvm::Twine(".") + Item->getNewName().base() + "(").str();
+      MemberFuncBase = (llvm::Twine(NeedParen ? ")." : ".") + Item->getNewName().
+        base() + "(").str();
 
     if (AllArgs.size() > 1) {
       Editor.replace(CharSourceRange(SM, Lexer::getLocForEndOfToken(SM,
@@ -475,6 +545,7 @@ struct APIDiffMigratorPass : public ASTMigratorPass, public SourceEntityWalker {
         if (auto FD = Fn->getReferencedDecl().getDecl()) {
           handleFuncRename(FD, Fn, Args);
           handleTypeHoist(FD, CE, Args);
+          handleSpecialCases(FD, CE, Args);
         }
         break;
       }
@@ -483,6 +554,7 @@ struct APIDiffMigratorPass : public ASTMigratorPass, public SourceEntityWalker {
         if (auto FD = DSC->getFn()->getReferencedDecl().getDecl()) {
           handleFuncRename(FD, DSC->getFn(), Args);
           handleFunctionCallToPropertyChange(FD, DSC->getFn(), Args);
+          handleSpecialCases(FD, CE, Args);
         }
         break;
       }

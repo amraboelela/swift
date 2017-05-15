@@ -900,17 +900,10 @@ getClangDeclarationName(const clang::NamedDecl *ND, NameTranslatingInfo &Info) {
   if (!Info.BaseName.empty()) {
     return clang::DeclarationName(&Ctx.Idents.get(Info.BaseName));
   } else {
-    StringRef last = Info.ArgNames.back();
-
     switch (OrigName.getNameKind()) {
     case clang::DeclarationName::ObjCZeroArgSelector:
-      if (last.endswith(":"))
-        return clang::DeclarationName();
-      break;
     case clang::DeclarationName::ObjCOneArgSelector:
     case clang::DeclarationName::ObjCMultiArgSelector:
-      if (!last.empty() && !last.endswith(":"))
-        return clang::DeclarationName();
       break;
     default:
       return clang::DeclarationName();
@@ -982,8 +975,8 @@ static bool passNameInfoForDecl(const ValueDecl *VD, NameTranslatingInfo &Info,
       if (Selector.getNumArgs()) {
         assert(Pieces.back().empty());
         Pieces.pop_back();
-        std::transform(Pieces.begin(), Pieces.end(), Pieces.begin(),
-          [](StringRef P) { return StringRef(P.data(), P.size() + 1); });
+      } else {
+        Result.IsZeroArgSelector = true;
       }
       Result.ArgNames.insert(Result.ArgNames.begin(), Pieces.begin(), Pieces.end());
       Receiver(Result);
@@ -997,23 +990,29 @@ static bool passNameInfoForDecl(const ValueDecl *VD, NameTranslatingInfo &Info,
     ClangImporter *Importer = static_cast<ClangImporter *>(VD->getDeclContext()->
       getASTContext().getClangModuleLoader());
 
-    if (auto *Named = dyn_cast_or_null<clang::NamedDecl>(VD->getClangDecl())) {
-      auto ObjCName = getClangDeclarationName(Named, Info);
-      if (!ObjCName)
-        return true;
-
-      DeclName Name = Importer->importName(Named, ObjCName);
-      NameTranslatingInfo Result;
-      Result.NameKind = SwiftLangSupport::getUIDForNameKind(NameKind::Swift);
-      Result.BaseName = Name.getBaseName().str();
-      std::transform(Name.getArgumentNames().begin(),
-                     Name.getArgumentNames().end(),
-                     std::back_inserter(Result.ArgNames),
-                     [](Identifier Id) { return Id.str(); });
-      Receiver(Result);
-      return false;
+    const clang::NamedDecl *Named = nullptr;
+    auto *BaseDecl = VD;
+    while (!Named && BaseDecl) {
+      Named = dyn_cast_or_null<clang::NamedDecl>(BaseDecl->getClangDecl());
+      BaseDecl = BaseDecl->getOverriddenDecl();
     }
-    return true;
+    if (!Named)
+      return true;
+
+    auto ObjCName = getClangDeclarationName(Named, Info);
+    if (!ObjCName)
+      return true;
+
+    DeclName Name = Importer->importName(Named, ObjCName);
+    NameTranslatingInfo Result;
+    Result.NameKind = SwiftLangSupport::getUIDForNameKind(NameKind::Swift);
+    Result.BaseName = Name.getBaseName().str();
+    std::transform(Name.getArgumentNames().begin(),
+                   Name.getArgumentNames().end(),
+                   std::back_inserter(Result.ArgNames),
+                   [](Identifier Id) { return Id.str(); });
+    Receiver(Result);
+    return false;
   }
   }
 }
