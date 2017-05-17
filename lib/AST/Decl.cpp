@@ -654,6 +654,10 @@ GenericEnvironment *GenericContext::getGenericEnvironment() const {
   return nullptr;
 }
 
+bool GenericContext::hasLazyGenericEnvironment() const {
+  return GenericSigOrEnv.dyn_cast<GenericSignature *>() != nullptr;
+}
+
 void GenericContext::setGenericEnvironment(GenericEnvironment *genericEnv) {
   assert((GenericSigOrEnv.isNull() ||
           getGenericSignature()->getCanonicalSignature() ==
@@ -1138,7 +1142,7 @@ static bool isPolymorphic(const AbstractStorageDecl *storage) {
     return false;
 
   case DeclKind::Protocol:
-    return true;
+    return !storage->getDeclContext()->isExtensionContext();
 
   case DeclKind::Class:
     // Final properties can always be direct, even in classes.
@@ -3222,9 +3226,8 @@ void ProtocolDecl::computeRequirementSignature() {
          GenericSignatureBuilder::RequirementSource
           ::forRequirementSignature(selfPA, this),
          nullptr);
-  builder.finalize(SourceLoc(), { selfType });
   
-  RequirementSignature = builder.getGenericSignature();
+  RequirementSignature = builder.computeGenericSignature(SourceLoc());
 }
 
 /// Returns the default witness for a requirement, or nullptr if there is

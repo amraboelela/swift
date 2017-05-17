@@ -708,7 +708,8 @@ namespace {
       // better SILGen.
       if (isLValue &&
           (isNonMutatingMember(member) ||
-           isMetatype || baseTy->isClassExistentialType())) {
+           member->getDeclContext()->getDeclaredTypeOfContext()
+             ->hasReferenceSemantics())) {
         base = cs.coerceToRValue(base);
         isLValue = false;
       }
@@ -3982,6 +3983,9 @@ namespace {
       }
 
       simplifyExprType(E);
+      
+      if (E->getType()->hasError())
+        return E;
 
       SmallVector<KeyPathExpr::Component, 4> resolvedComponents;
 

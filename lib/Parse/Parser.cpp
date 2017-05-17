@@ -386,7 +386,7 @@ Parser::ParserPosition Parser::getParserPositionAfterFirstCharacter(Token T) {
 
 SourceLoc Parser::consumeStartingCharacterOfCurrentToken() {
   // Consumes one-character token (like '?', '<', '>' or '!') and returns
-  // it's location.
+  // its location.
 
   // Current token can be either one-character token we want to consume...
   if (Tok.getLength() == 1) {
@@ -836,25 +836,6 @@ const LangOptions &ParserUnit::getLangOptions() const {
 
 SourceFile &ParserUnit::getSourceFile() {
   return *Impl.SF;
-}
-
-ConditionalCompilationExprState
-swift::operator&&(ConditionalCompilationExprState lhs,
-                  ConditionalCompilationExprState rhs) {
-  return {lhs.isConditionActive() && rhs.isConditionActive(),
-    ConditionalCompilationExprKind::Binary};
-}
-
-ConditionalCompilationExprState
-swift::operator||(ConditionalCompilationExprState lhs,
-                  ConditionalCompilationExprState rhs) {
-  return {lhs.isConditionActive() || rhs.isConditionActive(),
-    ConditionalCompilationExprKind::Binary};
-}
-
-ConditionalCompilationExprState
-swift::operator!(ConditionalCompilationExprState state) {
-  return {!state.isConditionActive(), state.getKind()};
 }
 
 ParsedDeclName swift::parseDeclName(StringRef name) {

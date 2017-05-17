@@ -445,6 +445,11 @@ ERROR(expr_swift_keypath_invalid_component,none,
       "invalid component of Swift key path", ())
 ERROR(expr_swift_keypath_not_starting_with_type,none,
       "a Swift key path must begin with a type", ())
+ERROR(expr_swift_keypath_unimplemented_component,none,
+      "key path support for %0 components is not implemented", (StringRef))
+ERROR(expr_smart_keypath_value_covert_to_contextual_type,none,
+      "KeyPath value type %0 cannot be converted to contextual type %1",
+      (Type, Type))
 
 // Selector expressions.
 ERROR(expr_selector_no_objc_runtime,none,
@@ -1227,16 +1232,16 @@ WARNING(nscoding_unstable_mangled_name_warn,none,
 NOTE(unstable_mangled_name_add_objc,none,
      "for new classes, add '@objc' to specify a unique, prefixed Objective-C "
      "runtime name", ())
-NOTE(unstable_mangled_name_add_nskeyedarchivelegacy,none,
-     "for compatibility with existing archives, use '@NSKeyedArchiveLegacy' "
+NOTE(unstable_mangled_name_add_NSKeyedArchiverClassName,none,
+     "for compatibility with existing archives, use '@NSKeyedArchiverClassName' "
      "to record the Swift 3 mangled name", ())
-NOTE(add_nskeyedarchivesubclassesonly_attr,none,
+NOTE(add_NSKeyedArchiverEncodeNonGenericSubclassesOnly_attr,none,
      "generic class %0 should not be archived directly; "
-     "add @NSKeyedArchiveSubclassesOnly "
+     "add @NSKeyedArchiverEncodeNonGenericSubclassesOnly "
      "and only archive specific subclasses of this class", (Type))
 
-ERROR(attr_nskeyedarchivelegacy_generic,none,
-      "'@NSKeyedArchiveLegacy' cannot be applied to generic class %0",
+ERROR(attr_NSKeyedArchiverClassName_generic,none,
+      "'@NSKeyedArchiverClassName' cannot be applied to generic class %0",
       (Type))
 
 // Generic types
@@ -2847,6 +2852,15 @@ ERROR(closure_tuple_parameter_destructuring,none,
 ERROR(closure_tuple_parameter_destructuring_implicit,none,
       "closure tuple parameter %0 does not support destructuring "
       "with implicit parameters", (Type))
+ERROR(nested_tuple_parameter_destructuring,none,
+      "nested tuple parameter %0 of function %1 "
+      "does not support destructuring", (Type, Type))
+ERROR(single_tuple_parameter_mismatch,none,
+      "%0 %select{|%1 }3expects a single parameter of type %2",
+      (DescriptiveDeclKind, Identifier, Type, bool))
+ERROR(unknown_single_tuple_parameter_mismatch,none,
+      "single parameter of type %0 is expected in call", (Type))
+
 
 ERROR(tuple_pattern_length_mismatch,none,
       "tuple pattern has the wrong length for tuple type %0", (Type))
@@ -3496,6 +3510,12 @@ NOTE(availability_protocol_requirement_here, none,
 
 NOTE(availability_conformance_introduced_here, none,
      "conformance introduced here", ())
+
+// This doesn't display as an availability diagnostic, but it's
+// implemented there and fires when these subscripts are marked
+// unavailable, so it seems appropriate to put it here.
+ERROR(availabilty_string_subscript_migration, none,
+      "subscripts returning String were obsoleted in Swift 4; explicitly construct a String from subscripted result", ())
 
 //------------------------------------------------------------------------------
 // @discardableResult

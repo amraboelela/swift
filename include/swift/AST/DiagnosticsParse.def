@@ -1409,9 +1409,11 @@ ERROR(where_without_generic_params,none,
       "'where' clause cannot be attached to "
       "%select{a non-generic|a protocol|an associated type}0 "
       "declaration", (unsigned))
-WARNING(where_inside_brackets,none,
+WARNING(swift3_where_inside_brackets,none,
         "'where' clause next to generic parameters is deprecated "
         "and will be removed in the future version of Swift", ())
+ERROR(where_inside_brackets,none,
+        "'where' clause next to generic parameters is obsoleted", ())
 
 //------------------------------------------------------------------------------
 // Conditional compilation parsing diagnostics
@@ -1433,14 +1435,17 @@ ERROR(unsupported_platform_runtime_condition_argument,none,
 ERROR(unsupported_platform_condition_argument,none,
       "unexpected platform condition argument: expected %0",
       (StringRef))
-ERROR(unexpected_version_comparison_operator,none,
-      "expected '>=' prefix operator on a version requirement",
-      ())
 ERROR(unsupported_conditional_compilation_expression_type,none,
       "invalid conditional compilation expression", ())
 WARNING(swift3_unsupported_conditional_compilation_expression_type,none,
         "ignoring invalid conditional compilation expression, "
         "which will be rejected in future version of Swift", ())
+WARNING(swift3_conditional_compilation_expression_compound,none,
+        "ignoring parentheses in compound name, "
+        "which will be rejected in future version of Swift", ())
+WARNING(swift3_conditional_compilation_expression_precedence,none,
+        "future version of Swift have different rule for evaluating condition; "
+        "add parentheses to make the condition compatible with Swift4", ())
 ERROR(unsupported_conditional_compilation_integer,none,
       "'%0' is not a valid conditional compilation expression, use '%1'",
       (StringRef, StringRef))

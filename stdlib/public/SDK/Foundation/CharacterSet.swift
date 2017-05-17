@@ -13,6 +13,7 @@
 @_exported import Foundation // Clang module
 import CoreFoundation
 import _SwiftCoreFoundationOverlayShims
+import _SwiftFoundationOverlayShims
 
 private func _utfRangeToCFRange(_ inRange : Range<Unicode.Scalar>) -> CFRange {
     return CFRange(
@@ -513,35 +514,59 @@ public struct CharacterSet : ReferenceConvertible, Equatable, Hashable, SetAlgeb
     }
     
     // MARK: Static functions, from NSURL
-    
+
     /// Returns the character set for characters allowed in a user URL subcomponent.
     public static var urlUserAllowed : CharacterSet {
-        return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLUserAllowedCharacterSet() as NSCharacterSet)
+        if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
+            return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLUserAllowedCharacterSet() as NSCharacterSet)
+        } else {
+            return CharacterSet(_uncopiedImmutableReference: _NSURLComponentsGetURLUserAllowedCharacterSet() as! NSCharacterSet)
+        }
     }
     
     /// Returns the character set for characters allowed in a password URL subcomponent.
     public static var urlPasswordAllowed : CharacterSet {
-        return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLPasswordAllowedCharacterSet() as NSCharacterSet)
+        if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
+            return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLPasswordAllowedCharacterSet() as NSCharacterSet)
+        } else {
+            return CharacterSet(_uncopiedImmutableReference: _NSURLComponentsGetURLPasswordAllowedCharacterSet() as! NSCharacterSet)
+        }
     }
     
     /// Returns the character set for characters allowed in a host URL subcomponent.
     public static var urlHostAllowed : CharacterSet {
-        return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLHostAllowedCharacterSet() as NSCharacterSet)
+        if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
+            return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLHostAllowedCharacterSet() as NSCharacterSet)
+        } else {
+            return CharacterSet(_uncopiedImmutableReference: _NSURLComponentsGetURLHostAllowedCharacterSet() as! NSCharacterSet)
+        }
     }
     
     /// Returns the character set for characters allowed in a path URL component.
     public static var urlPathAllowed : CharacterSet {
-        return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLPathAllowedCharacterSet() as NSCharacterSet)
+        if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
+            return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLPathAllowedCharacterSet() as NSCharacterSet)
+        } else {
+            return CharacterSet(_uncopiedImmutableReference: _NSURLComponentsGetURLPathAllowedCharacterSet() as! NSCharacterSet)
+        }
     }
     
     /// Returns the character set for characters allowed in a query URL component.
     public static var urlQueryAllowed : CharacterSet {
-        return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLQueryAllowedCharacterSet() as NSCharacterSet)
+        if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
+            return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLQueryAllowedCharacterSet() as NSCharacterSet)
+        } else {
+            return CharacterSet(_uncopiedImmutableReference: _NSURLComponentsGetURLQueryAllowedCharacterSet() as! NSCharacterSet)
+        }
     }
     
     /// Returns the character set for characters allowed in a fragment URL component.
     public static var urlFragmentAllowed : CharacterSet {
-        return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLFragmentAllowedCharacterSet() as NSCharacterSet)
+        if #available(OSX 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
+            return CharacterSet(_uncopiedImmutableReference: _CFURLComponentsGetURLFragmentAllowedCharacterSet() as NSCharacterSet)
+        } else {
+            return CharacterSet(_uncopiedImmutableReference: _NSURLComponentsGetURLFragmentAllowedCharacterSet() as! NSCharacterSet)
+        }
     }
     
     // MARK: Immutable functions
@@ -782,3 +807,19 @@ extension NSCharacterSet : _HasCustomAnyHashableRepresentation {
     }
 }
 
+extension CharacterSet : Codable {
+    private enum CodingKeys : Int, CodingKey {
+        case bitmap
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let bitmap = try container.decode(Data.self, forKey: .bitmap)
+        self.init(bitmapRepresentation: bitmap)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.bitmapRepresentation, forKey: .bitmap)
+    }
+}
