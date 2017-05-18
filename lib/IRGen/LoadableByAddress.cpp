@@ -54,12 +54,8 @@ static SILLocation getLocForValue(SILValue value) {
 
 static GenericEnvironment *getGenericEnvironment(SILModule &Mod,
                                                  CanSILFunctionType loweredTy) {
-  auto *SM = Mod.getSwiftModule();
-  auto &Ctx = loweredTy->getASTContext();
-  auto *GSB = Ctx.getOrCreateGenericSignatureBuilder(
-      loweredTy->getGenericSignature(), SM);
-  auto *GenericEnv = Ctx.getOrCreateCanonicalGenericEnvironment(GSB, *SM);
-  return GenericEnv;
+  return loweredTy->getGenericSignature()->createGenericEnvironment(
+                                                         *Mod.getSwiftModule());
 }
 
 /// Utility to determine if this is a large loadable type
@@ -1781,13 +1777,9 @@ void LoadableByAddress::recreateSingleApply(SILInstruction *applyInst) {
   }
   SILFunctionType *newSILFunctionType =
       getNewSILFunctionTypePtr(genEnv, origSILFunctionType, *currIRMod);
-  SILType newSubType =
-      getNewSILFunctionType(genEnv, origSILFunctionType, *currIRMod);
   CanSILFunctionType newCanSILFuncType(newSILFunctionType);
   SILFunctionConventions newSILFunctionConventions(newCanSILFuncType,
                                                    *getModule());
-  SILType resultType = newSILFunctionConventions.getSILResultType();
-
   SmallVector<Substitution, 4> newSubs;
   for (Substitution sub : applySite.getSubstitutions()) {
     Type origType = sub.getReplacement();
@@ -1814,8 +1806,7 @@ void LoadableByAddress::recreateSingleApply(SILInstruction *applyInst) {
   case ValueKind::ApplyInst: {
     auto *castedApply = dyn_cast<ApplyInst>(applyInst);
     assert(castedApply && "ValueKind is ApplyInst but cast to it failed");
-    newApply = applyBuilder.createApply(castedApply->getLoc(), callee,
-                                        newSubType, resultType, newSubs,
+    newApply = applyBuilder.createApply(castedApply->getLoc(), callee, newSubs,
                                         callArgs, castedApply->isNonThrowing());
     applyInst->replaceAllUsesWith(newApply);
     break;
@@ -1824,7 +1815,7 @@ void LoadableByAddress::recreateSingleApply(SILInstruction *applyInst) {
     auto *castedApply = dyn_cast<TryApplyInst>(applyInst);
     assert(castedApply && "ValueKind is TryApplyInst but cast to it failed");
     newApply = applyBuilder.createTryApply(
-        castedApply->getLoc(), callee, newSubType, newSubs, callArgs,
+        castedApply->getLoc(), callee, newSubs, callArgs,
         castedApply->getNormalBB(), castedApply->getErrorBB());
     applyInst->replaceAllUsesWith(newApply);
     break;
@@ -1834,14 +1825,14 @@ void LoadableByAddress::recreateSingleApply(SILInstruction *applyInst) {
     assert(castedApply &&
            "ValueKind is PartialApplyInst but cast to it failed");
     // Change the type of the Closure
-    SILFunctionType *origClosureType =
-        castedApply->getType().castTo<SILFunctionType>();
-    SILType newSILType =
-        getNewSILFunctionType(genEnv, origClosureType, *currIRMod);
+    auto partialApplyConvention = castedApply->getType()
+                                      .getSwiftRValueType()
+                                      ->getAs<SILFunctionType>()
+                                      ->getCalleeConvention();
 
     newApply = applyBuilder.createPartialApply(castedApply->getLoc(), callee,
-                                               newSubType, newSubs, callArgs,
-                                               newSILType);
+                                               newSubs, callArgs,
+                                               partialApplyConvention);
     applyInst->replaceAllUsesWith(newApply);
     break;
   }

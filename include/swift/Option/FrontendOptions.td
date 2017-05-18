@@ -247,6 +247,9 @@ def emit_verbose_sil : Flag<["-"], "emit-verbose-sil">,
 def emit_pch : Flag<["-"], "emit-pch">,
   HelpText<"Emit PCH for imported Objective-C header file">, ModeOpt;
 
+def pch_disable_validation : Flag<["-"], "pch-disable-validation">,
+  HelpText<"Disable validating the persistent PCH">;
+
 def enable_sil_ownership : Flag<["-"], "enable-sil-ownership">,
   HelpText<"Enable the SIL Ownership Model">;
 
@@ -270,9 +273,12 @@ def enable_experimental_keypaths :
   Flag<["-"], "enable-experimental-keypaths">,
   HelpText<"Enable experimental keypaths">;
 
-def enable_experimental_deserialization_recovery :
-  Flag<["-"], "enable-experimental-deserialization-recovery">,
+def enable_deserialization_recovery :
+  Flag<["-"], "enable-deserialization-recovery">,
   HelpText<"Attempt to recover from missing xrefs (etc) in swiftmodules">;
+def disable_deserialization_recovery :
+  Flag<["-"], "disable-deserialization-recovery">,
+  HelpText<"Don't attempt to recover from missing xrefs (etc) in swiftmodules">;
 
 def enable_cow_existentials : Flag<["-"], "enable-cow-existentials">,
   HelpText<"Enable the copy-on-write existential implementation">;
