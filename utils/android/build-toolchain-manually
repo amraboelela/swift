@@ -1,0 +1,31 @@
+#!/bin/bash
+
+SWIFT_PATH=/home/amr/swift
+PATH=/home/amr/resources/git-plus:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PARAM=x$1
+PARAM2=x$2
+cd $SWIFT_PATH
+
+if [ ${PARAM} = "x-c" ] ; then
+echo ========== Cleaning ===========
+rm -rf build
+rm -f swift/*.tar.gz
+fi
+
+if [ ${PARAM2} = "x-u" ] ; then
+echo ========== Syncing ==========
+git multi pull
+git multi fetch upstream
+git multi merge upstream/master
+fi
+
+echo ========== Running script ==========
+./swift/utils/android/build-toolchain || exit
+
+echo ========== Finishing ==========
+cd $SWIFT_PATH
+test -e swift/swift-android-install || exit 
+rm -rf toolchains/android/swift-toolchain-$(date "+%u")
+mv toolchains/android/swift-toolchain toolchains/android/swift-toolchain-$(date "+%u")
+cp -r swift/swift-android-install toolchains/android/swift-toolchain
+
