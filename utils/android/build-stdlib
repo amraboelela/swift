@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# utils/build-stdlib
+#
+# This source file is part of the Swift.org open source project
+#
+# Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+# Licensed under Apache License v2.0 with Runtime Library Exception
+#
+# See https://swift.org/LICENSE.txt for license information
+# See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+
+../build-script \
+    -R \                                       # Build in ReleaseAssert mode.
+    --android \                                # Build for Android.
+    --android-ndk /home/amr/Android/Sdk/ndk-bundle \   # Path to an Android NDK.
+    --android-api-level 21 \                   # The Android API level to target. Swift only supports 21 or greater.
+    --android-icu-uc /home/amr/swift/libiconv-libicu-android/armeabi-v7a \
+    --android-icu-uc-include /home/amr/swift/libiconv-libicu-android/armeabi-v7a/icu/source/common \
+    --android-icu-i18n /home/amr/swift/libiconv-libicu-android/armeabi-v7a \
+    --android-icu-i18n-include /home/amr/swift/libiconv-libicu-android/armeabi-v7a/icu/source/i18n/
+
