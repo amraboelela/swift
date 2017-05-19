@@ -31,13 +31,9 @@ SWIFT_INSTALL_DIR="${SRC_DIR}/../swift-android-toolchain"
 cd ${SRC_DIR}/..
 test -e build/Ninja-ReleaseAssert/swift-linux-x86_64 || exit
 rm -rf ${SWIFT_INSTALL_DIR}
-test -e build/Ninja-ReleaseAssert/swift-linux-x86_64/bin || exit
 mkdir -p ${SWIFT_INSTALL_DIR}/usr
 
 cp -r build/Ninja-ReleaseAssert/swift-linux-x86_64/bin ${SWIFT_INSTALL_DIR}/usr
-
-test -e build/Ninja-ReleaseAssert/swift-linux-x86_64/lib || exit
 cp -r build/Ninja-ReleaseAssert/swift-linux-x86_64/lib ${SWIFT_INSTALL_DIR}/usr
-
-test -e build/Ninja-ReleaseAssert/swift-linux-x86_64/include || exit
 cp -r build/Ninja-ReleaseAssert/swift-linux-x86_64/include ${SWIFT_INSTALL_DIR}/usr
+
