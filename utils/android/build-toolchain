@@ -42,3 +42,4 @@ cp -r build/Ninja-ReleaseAssert/swift-linux-x86_64/lib ${SWIFT_INSTALL_DIR}/usr/
 test -e build/Ninja-ReleaseAssert/swift-linux-x86_64/include || exit
 mkdir -p ${SWIFT_INSTALL_DIR}/usr/include
 cp -r build/Ninja-ReleaseAssert/swift-linux-x86_64/include ${SWIFT_INSTALL_DIR}/usr/include
+
