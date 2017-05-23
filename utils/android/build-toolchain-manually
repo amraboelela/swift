@@ -25,6 +25,7 @@ echo ========== Running script ==========
 echo ========== Finishing ==========
 cd $SWIFT_PATH
 test -e swift-android-toolchain || exit 
+mkdir -p toolchains/android
 rm -rf toolchains/swift-android-toolchain-$(date "+%u")
 cp swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
 
