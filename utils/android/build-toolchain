@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 #
-<<<<<<< HEAD
-# utils/build-toolchain - documents process for building a toolchain
-=======
 # android/build-toolchain
->>>>>>> 8cd40ae80befcda83cc6dd2ff371a29633eb7ebc
 #
 # This source file is part of the Swift.org open source project
 #
@@ -17,49 +13,6 @@
 cd "$(dirname $0)/../.." || exit
 SRC_DIR=$PWD
 
-<<<<<<< HEAD
-#DRY_RUN=
-#if [[ "$1" == "-n" || "$1" == "--dry-run" ]] ; then
-#    DRY_RUN="-n"
-#    shift
-#fi
-
-YEAR=$(date +"%Y")
-MONTH=$(date +"%m")
-DAY=$(date +"%d")
-TOOLCHAIN_VERSION="swift-android-${YEAR}-${MONTH}-${DAY}-a"
-ARCHIVE="${TOOLCHAIN_VERSION}-osx.tar.gz"
-SYM_ARCHIVE="${TOOLCHAIN_VERSION}-osx-symbols.tar.gz"
-BUNDLE_PREFIX=android.swift 
-BUNDLE_IDENTIFIER="${BUNDLE_PREFIX}.${YEAR}${MONTH}${DAY}"
-DISPLAY_NAME_SHORT="Local Swift Development Snapshot"
-DISPLAY_NAME="${DISPLAY_NAME_SHORT} ${YEAR}-${MONTH}-${DAY}"
-TOOLCHAIN_NAME="${TOOLCHAIN_VERSION}"
-
-SWIFT_INSTALLABLE_PACKAGE="${SRC_DIR}/${ARCHIVE}"
-SWIFT_INSTALL_DIR="${SRC_DIR}/swift-android-install"
-SWIFT_INSTALL_SYMROOT="${SRC_DIR}/swift-android-symroot"
-SWIFT_TOOLCHAIN_DIR="/Library/Developer/Toolchains/${TOOLCHAIN_NAME}.xctoolchain"
-SYMBOLS_PACKAGE="${SRC_DIR}/${SYM_ARCHIVE}"
-
-SWIFT_PACKAGE=buildbot_linux_armv7
-
-#        --android \
-#        --android-ndk /home/amr/Android/Sdk/ndk-bundle \
-#        --android-api-level 21 \
-#        --android-icu-uc "${SRC_DIR}/../libiconv-libicu-android/armeabi-v7a" \
-#        --android-icu-uc-include "${SRC_DIR}/../libiconv-libicu-android/armeabi-v7a/icu/source/common" \
-#        --android-icu-i18n "${SRC_DIR}/../libiconv-libicu-android/armeabi-v7a" \
-#        --android-icu-i18n-include "${SRC_DIR}/../libiconv-libicu-android/armeabi-v7a/icu/source/i18n/" \
- 
-./utils/build-script ${DRY_RUN} --preset="${SWIFT_PACKAGE}" \
-        install_destdir="${SWIFT_INSTALL_DIR}" \
-        installable_package="${SWIFT_INSTALLABLE_PACKAGE}" \
-        install_toolchain_dir="${SWIFT_TOOLCHAIN_DIR}" \
-        install_symroot="${SWIFT_INSTALL_SYMROOT}" \
-        symbols_package="${SYMBOLS_PACKAGE}" \
-
-=======
 ANDROID_NDK_DIR="${ANDROID_NDK_DIR:?Please set the Android NDK directory in the ANDROID_NDK_DIR environment variable}"
 ANDROID_ICU_DIR="${ANDROID_ICU_DIR:?Please set the libiconv-libicu-android directory in the ANDROID_ICU_DIR environment variable}"
 
@@ -81,4 +34,4 @@ rm -rf ${SWIFT_TOOLCHAIN_DIR}
 mkdir -p ${SWIFT_TOOLCHAIN_DIR}/usr
 
 cp -r ${SWIFT_LINUX_DIR}/{bin,lib,include} ${SWIFT_TOOLCHAIN_DIR}/usr
->>>>>>> 8cd40ae80befcda83cc6dd2ff371a29633eb7ebc
+
