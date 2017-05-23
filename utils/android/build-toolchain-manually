@@ -1,7 +1,9 @@
 #!/bin/bash
 
-SWIFT_PATH=/home/amr/swift
-PATH=/home/amr/resources/git-plus:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+source /home/amr/.bashrc
+
+#SWIFT_PATH=/home/amr/swift
+#PATH=/home/amr/resources/git-plus:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 PARAM=x$1
 PARAM2=x$2
 cd $SWIFT_PATH
