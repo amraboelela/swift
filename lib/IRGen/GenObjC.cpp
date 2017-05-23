@@ -608,8 +608,17 @@ static void emitSuperArgument(IRGenFunction &IGF, bool isInstanceMethod,
     ClassDecl *searchClassDecl =
       searchClass.castTo<MetatypeType>().getInstanceType()
         .getClassOrBoundGenericClass();
-    searchValue = IGF.IGM.getAddrOfMetaclassObject(searchClassDecl,
-                                                   NotForDefinition);
+    if (doesClassMetadataRequireDynamicInitialization(IGF.IGM, searchClassDecl)) {
+      searchValue = emitClassHeapMetadataRef(IGF,
+                                             searchClass.castTo<MetatypeType>().getInstanceType(),
+                                             MetadataValueType::ObjCClass,
+                                             /*allow uninitialized*/ true);
+      searchValue = emitLoadOfObjCHeapMetadataRef(IGF, searchValue);
+      searchValue = IGF.Builder.CreateBitCast(searchValue, IGF.IGM.ObjCClassPtrTy);
+    } else {
+      searchValue = IGF.IGM.getAddrOfMetaclassObject(searchClassDecl,
+                                                     NotForDefinition);
+    }
   }
   
   // Store the receiver and class to the struct.
@@ -743,7 +752,7 @@ void irgen::addObjCMethodCallImplicitArguments(IRGenFunction &IGF,
 /// Call [self allocWithZone: nil].
 llvm::Value *irgen::emitObjCAllocObjectCall(IRGenFunction &IGF,
                                             llvm::Value *self,
-                                            CanType classType) {
+                                            SILType selfType) {
   // Get an appropriately-cast function pointer.
   auto fn = IGF.IGM.getObjCAllocWithZoneFn();
 
@@ -754,7 +763,11 @@ llvm::Value *irgen::emitObjCAllocObjectCall(IRGenFunction &IGF,
   }
   
   auto call = IGF.Builder.CreateCall(fn, self);
-  return call;
+
+  // Cast the returned pointer to the right type.
+  auto &classTI = IGF.getTypeInfo(selfType);
+  llvm::Type *destType = classTI.getStorageType();
+  return IGF.Builder.CreateBitCast(call, destType);
 }
 
 static llvm::Function *emitObjCPartialApplicationForwarder(IRGenModule &IGM,

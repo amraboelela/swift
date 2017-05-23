@@ -222,6 +222,7 @@ enum class RangeKind : int8_t{
   SingleDecl,
 
   MultiStatement,
+  PartOfExpression,
 };
 
 struct DeclaredDecl {
@@ -245,11 +246,24 @@ enum class OrphanKind : int8_t {
   Continue,
 };
 
-typedef llvm::PointerIntPair<TypeBase*, 1, bool> ReturnTyAndWhetherExit;
+enum class ExitState: int8_t {
+  Positive,
+  Negative,
+  Unsure,
+};
+
+struct ReturnInfo {
+  TypeBase* ReturnType;
+  ExitState Exit;
+  ReturnInfo(): ReturnInfo(nullptr, ExitState::Unsure) {}
+  ReturnInfo(TypeBase* ReturnType, ExitState Exit):
+    ReturnType(ReturnType), Exit(Exit) {}
+  ReturnInfo(ASTContext &Ctx, ArrayRef<ReturnInfo> Branches);
+};
 
 struct ResolvedRangeInfo {
   RangeKind Kind;
-  ReturnTyAndWhetherExit ExitInfo;
+  ReturnInfo ExitInfo;
   CharSourceRange Content;
   bool HasSingleEntry;
   bool ThrowingUnhandledError;
@@ -260,9 +274,12 @@ struct ResolvedRangeInfo {
   ArrayRef<DeclaredDecl> DeclaredDecls;
   ArrayRef<ReferencedDecl> ReferencedDecls;
   DeclContext* RangeContext;
-  ResolvedRangeInfo(RangeKind Kind, ReturnTyAndWhetherExit ExitInfo,
+  Expr* CommonExprParent;
+
+  ResolvedRangeInfo(RangeKind Kind, ReturnInfo ExitInfo,
                     CharSourceRange Content, DeclContext* RangeContext,
-                    bool HasSingleEntry, bool ThrowingUnhandledError,
+                    Expr *CommonExprParent, bool HasSingleEntry,
+                    bool ThrowingUnhandledError,
                     OrphanKind Orphan, ArrayRef<ASTNode> ContainedNodes,
                     ArrayRef<DeclaredDecl> DeclaredDecls,
                     ArrayRef<ReferencedDecl> ReferencedDecls): Kind(Kind),
@@ -272,14 +289,17 @@ struct ResolvedRangeInfo {
                       Orphan(Orphan), ContainedNodes(ContainedNodes),
                       DeclaredDecls(DeclaredDecls),
                       ReferencedDecls(ReferencedDecls),
-                      RangeContext(RangeContext) {}
+                      RangeContext(RangeContext),
+                      CommonExprParent(CommonExprParent) {}
   ResolvedRangeInfo(CharSourceRange Content) :
-  ResolvedRangeInfo(RangeKind::Invalid, {nullptr, false}, Content, nullptr,
+  ResolvedRangeInfo(RangeKind::Invalid, {nullptr, ExitState::Unsure}, Content,
+                    nullptr, /*Commom Expr Parent*/nullptr,
                     /*Single entry*/true, /*unhandled error*/false,
                     OrphanKind::None, {}, {}, {}) {}
+  ResolvedRangeInfo(): ResolvedRangeInfo(CharSourceRange()) {}
   void print(llvm::raw_ostream &OS);
-  bool exit() const { return ExitInfo.getInt(); }
-  Type getType() const { return ExitInfo.getPointer(); }
+  ExitState exit() const { return ExitInfo.Exit; }
+  Type getType() const { return ExitInfo.ReturnType; }
 };
 
 class RangeResolver : public SourceEntityWalker {

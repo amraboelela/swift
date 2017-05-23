@@ -5,5 +5,6 @@
 // See https://swift.org/LICENSE.txt for license information
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
+// REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol P extension P{var f=A.a}extension P{struct A{func a:Self
+@objc protocol P{typealias e:P{}var a}{}extension P{typealias e:P

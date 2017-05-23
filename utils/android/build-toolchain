@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 #
+<<<<<<< HEAD
 # utils/build-toolchain - documents process for building a toolchain
+=======
+# android/build-toolchain
+>>>>>>> 8cd40ae80befcda83cc6dd2ff371a29633eb7ebc
 #
 # This source file is part of the Swift.org open source project
 #
@@ -13,6 +17,7 @@
 cd "$(dirname $0)/../.." || exit
 SRC_DIR=$PWD
 
+<<<<<<< HEAD
 #DRY_RUN=
 #if [[ "$1" == "-n" || "$1" == "--dry-run" ]] ; then
 #    DRY_RUN="-n"
@@ -54,3 +59,26 @@ SWIFT_PACKAGE=buildbot_linux_armv7
         install_symroot="${SWIFT_INSTALL_SYMROOT}" \
         symbols_package="${SYMBOLS_PACKAGE}" \
 
+=======
+ANDROID_NDK_DIR="${ANDROID_NDK_DIR:?Please set the Android NDK directory in the ANDROID_NDK_DIR environment variable}"
+ANDROID_ICU_DIR="${ANDROID_ICU_DIR:?Please set the libiconv-libicu-android directory in the ANDROID_ICU_DIR environment variable}"
+
+SWIFT_TOOLCHAIN_DIR="${SRC_DIR}/../swift-android-toolchain"
+SWIFT_LINUX_DIR="${SRC_DIR}/../build/Ninja-ReleaseAssert/swift-linux-x86_64"
+
+./utils/build-script \
+    -R \
+    --android \
+    --android-ndk "${ANDROID_NDK_DIR}" \
+    --android-api-level 21 \
+    --android-icu-uc "${ANDROID_NDK_DIR}/armeabi-v7a" \
+    --android-icu-uc-include "${ANDROID_NDK_DIR}/armeabi-v7a/icu/source/common" \
+    --android-icu-i18n "${ANDROID_NDK_DIR}/armeabi-v7a" \
+    --android-icu-i18n-include "${ANDROID_NDK_DIR}/armeabi-v7a/icu/source/i18n" || exit
+
+test -e ${SWIFT_LINUX_DIR} || exit
+rm -rf ${SWIFT_TOOLCHAIN_DIR}
+mkdir -p ${SWIFT_TOOLCHAIN_DIR}/usr
+
+cp -r ${SWIFT_LINUX_DIR}/{bin,lib,include} ${SWIFT_TOOLCHAIN_DIR}/usr
+>>>>>>> 8cd40ae80befcda83cc6dd2ff371a29633eb7ebc

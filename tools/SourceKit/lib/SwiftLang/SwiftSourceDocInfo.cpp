@@ -1346,7 +1346,7 @@ static void resolveRange(SwiftLangSupport &Lang,
       case RangeKind::SingleExpression: {
         SmallString<64> SS;
         llvm::raw_svector_ostream OS(SS);
-        Info.ExitInfo.getPointer()->print(OS);
+        Info.ExitInfo.ReturnType->print(OS);
         Result.ExprType = OS.str();
         Receiver(Result);
         return;
@@ -1357,6 +1357,7 @@ static void resolveRange(SwiftLangSupport &Lang,
         Receiver(Result);
         return;
       }
+      case RangeKind::PartOfExpression:
       case RangeKind::Invalid:
         if (!getPreviousASTSnaps().empty()) {
           // Attempt again using the up-to-date AST.

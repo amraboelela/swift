@@ -1,0 +1,2 @@
+#!/bin/bash
+/home/amr/swift/swift/utils/android/build-toolchain-manually -c -u

@@ -11,10 +11,17 @@
 # See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
 ../build-script \
+<<<<<<< HEAD
     -R \                                       # Build in ReleaseAssert mode.
     --android \                                # Build for Android.
     --android-ndk /home/amr/Android/Sdk/ndk-bundle \   # Path to an Android NDK.
     --android-api-level 21 \                   # The Android API level to target. Swift only supports 21 or greater.
+=======
+    -R \
+    --android \
+    --android-ndk /home/amr/Android/Sdk/ndk-bundle \
+    --android-api-level 21 \
+>>>>>>> 8cd40ae80befcda83cc6dd2ff371a29633eb7ebc
     --android-icu-uc /home/amr/swift/libiconv-libicu-android/armeabi-v7a \
     --android-icu-uc-include /home/amr/swift/libiconv-libicu-android/armeabi-v7a/icu/source/common \
     --android-icu-i18n /home/amr/swift/libiconv-libicu-android/armeabi-v7a \

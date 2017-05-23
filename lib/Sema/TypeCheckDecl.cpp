@@ -6206,15 +6206,17 @@ public:
         if (func->isAccessor()) return;
       }
 
-      // If @objc was explicit or handles elsewhere, nothing to do.
+      // If @objc was explicit or handled elsewhere, nothing to do.
       if (!attr->isSwift3Inferred()) return;
 
-      // When warning about all deprecated @objc inference rules,
-      // we only need to do this check if we have implicit 'dynamic'.
-      if (TC.Context.LangOpts.WarnSwift3ObjCInference !=
-            Swift3ObjCInferenceWarnings::None) {
-        if (auto dynamicAttr = Base->getAttrs().getAttribute<DynamicAttr>())
-          if (!dynamicAttr->isImplicit()) return;
+      // If we aren't warning about Swift 3 @objc inference, we're done.
+      if (TC.Context.LangOpts.WarnSwift3ObjCInference ==
+            Swift3ObjCInferenceWarnings::None)
+        return;
+
+      // If 'dynamic' was implicit, we'll already have warned about this.
+      if (auto dynamicAttr = Base->getAttrs().getAttribute<DynamicAttr>()) {
+        if (!dynamicAttr->isImplicit()) return;
       }
 
       // The overridden declaration needs to be in an extension.
@@ -7227,6 +7229,17 @@ void TypeChecker::validateDecl(ValueDecl *D) {
     validateGenericTypeSignature(proto);
     proto->setIsBeingValidated(false);
 
+    // See the comment in validateDeclForNameLookup(); we may have validated
+    // the alias before we built the protocol's generic environment.
+    //
+    // FIXME: Hopefully this can all go away with the ITC.
+    for (auto member : proto->getMembers()) {
+      if (auto *aliasDecl = dyn_cast<TypeAliasDecl>(member)) {
+        if (!aliasDecl->isGeneric())
+          aliasDecl->setGenericEnvironment(proto->getGenericEnvironment());
+      }
+    }
+
     // Record inherited protocols.
     resolveInheritedProtocols(proto);
 
@@ -7502,6 +7515,13 @@ void TypeChecker::validateDeclForNameLookup(ValueDecl *D) {
         typealias->setUnderlyingType(
                                 typealias->getUnderlyingTypeLoc().getType());
 
+        // Note that this doesn't set the generic environment of the alias yet,
+        // because we haven't built one for the protocol.
+        //
+        // See how validateDecl() sets the generic environment on alias members
+        // explicitly.
+        //
+        // FIXME: Hopefully this can all go away with the ITC.
         return;
       }
     }

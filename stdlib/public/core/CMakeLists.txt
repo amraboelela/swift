@@ -68,11 +68,12 @@ set(SWIFTLIB_ESSENTIAL
   HashedCollectionsAnyHashableExtensions.swift
   Hashing.swift
   HeapBuffer.swift
+  ICU.swift
   ImplicitlyUnwrappedOptional.swift
   Index.swift
   Indices.swift.gyb
   InputStream.swift
-  IntegerParsing.swift.gyb
+  IntegerParsing.swift
   Integers.swift.gyb
   Join.swift
   KeyPath.swift
@@ -113,7 +114,7 @@ set(SWIFTLIB_ESSENTIAL
   ShadowProtocols.swift
   Shims.swift
   Slice.swift.gyb
-  Sort.swift
+  Sort.swift.gyb
   StaticString.swift
   Stride.swift.gyb
   StringCharacterView.swift # ORDER DEPENDENCY: Must precede String.swift
@@ -132,6 +133,7 @@ set(SWIFTLIB_ESSENTIAL
   StringUTF8.swift
   Substring.swift.gyb
   SwiftNativeNSArray.swift
+  ThreadLocalStorage.swift
   UIntBuffer.swift
   UnavailableStringAPIs.swift.gyb
   UnicodeEncoding.swift
@@ -176,6 +178,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   list(APPEND swift_core_link_flags "-all_load")
   list(APPEND swift_core_framework_depends Foundation)
   list(APPEND swift_core_framework_depends CoreFoundation)
+  list(APPEND swift_core_private_link_libraries icucore)
 else()
   # With the GNU linker the equivalent of -all_load is to tell the linker
   # --whole-archive before the archive and --no-whole-archive after (without
@@ -216,6 +219,9 @@ option(SWIFT_CHECK_ESSENTIAL_STDLIB
 if(SWIFT_STDLIB_SIL_DEBUGGING)
   list(APPEND swift_stdlib_compile_flags "-Xfrontend" "-gsil")
 endif()
+
+list(APPEND swift_stdlib_compile_flags "-Xllvm" "-sil-inline-generics")
+list(APPEND swift_stdlib_compile_flags "-Xllvm" "-sil-partial-specialization")
 
 if(SWIFT_CHECK_ESSENTIAL_STDLIB)
   add_swift_library(swift_stdlib_essential ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_STDLIB IS_STDLIB_CORE
