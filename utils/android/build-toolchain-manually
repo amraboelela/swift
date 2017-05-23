@@ -26,9 +26,8 @@ echo ========== Running script ==========
 
 echo ========== Finishing ==========
 cd $SWIFT_PATH
-test -e swift/swift-android-install || exit 
+test -e swift-android-toolchain || exit 
 mkdir -p toolchains/android
-rm -rf toolchains/android/swift-toolchain-$(date "+%u")
-mv toolchains/android/swift-toolchain toolchains/android/swift-toolchain-$(date "+%u")
-cp -r swift/swift-android-install toolchains/android/swift-toolchain
+rm -rf toolchains/swift-android-toolchain-$(date "+%u")
+cp swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
 
