@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#source /.bashrc
+source ~/.bashrc
 
 PARAM=x$1
 PARAM2=x$2
