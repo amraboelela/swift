@@ -58,12 +58,14 @@ For macOS, you need [Xcode 8.3.2](https://developer.apple.com/xcode/downloads/).
 
 For Ubuntu, you'll need the following development dependencies:
 
-    sudo apt-get install git cmake ninja-build clang python uuid-dev libicu-dev icu-devtools libbsd-dev libedit-dev libxml2-dev libsqlite3-dev swig libpython-dev libncurses5-dev pkg-config libblocksruntime-dev libcurl4-openssl-dev autoconf libtool systemtap-sdt-dev tzdata
+    sudo apt-get install git cmake ninja-build clang python uuid-dev libicu-dev icu-devtools libbsd-dev libedit-dev libxml2-dev libsqlite3-dev swig libpython-dev libncurses5-dev pkg-config libblocksruntime-dev libcurl4-openssl-dev autoconf libtool systemtap-sdt-dev postfix dh-autoreconf libkqueue-dev tzdata
 
 **Note:** LLDB currently requires at least `swig-1.3.40` but will successfully build
 with version 2 shipped with Ubuntu.
 
 Build instructions for Ubuntu 14.04 LTS can be found [here](docs/Ubuntu14.md)
+
+If you are building in a Virtual Machine, then make sure to setup memory to be at least 2GB and Disk space to be at least 20GB
 
 ### Getting Sources for Swift and Related Projects
 
@@ -147,6 +149,12 @@ Ninja:
 
     utils/build-script -r -t
 
+If you get error about SwiftGlibc is missing:
+
+    Download and unzip the swift 3.0 package from https://swift.org/download
+    find -name "glibc.modulemap"
+    cp /path/to/glibc.modulemap ./build/Ninja-DebugAssert/swift-linux-x86_64/lib/swift/linux/x86_64
+            
 ## Developing Swift in Xcode
 
 `build-script` can also generate Xcode projects:
@@ -175,3 +183,10 @@ To give clarity of what is expected of our members, Swift has adopted the
 code of conduct defined by the Contributor Covenant. This document is used
 across many open source communities, and we think it articulates our values
 well. For more, see the [Code of Conduct](https://swift.org/community/#code-of-conduct).
+
+## See also
+
+* [Foundation](../swift-corelibs-foundation/README.md)
+* [Grand Central Dispatch](../swift-corelibs-libdispatch/README.md)
+* [XCTest](../swift-corelibs-xctest/README.md)
+* [Package Manager](../swiftpm/README.md)

@@ -19,6 +19,8 @@ set(SWIFT_RUNTIME_CORE_LINK_FLAGS "${SWIFT_RUNTIME_LINK_FLAGS}")
 if(CMAKE_SYSTEM_NAME STREQUAL "CYGWIN")
   list(APPEND SWIFT_RUNTIME_CORE_CXX_FLAGS "-mcmodel=large")
 endif()
+list(APPEND SWIFT_RUNTIME_CORE_CXX_FLAGS "-fpie")
+list(APPEND SWIFT_RUNTIME_CORE_CXX_FLAGS "-fPIC")
 
 # C++ code in the runtime and standard library should generally avoid
 # introducing static constructors or destructors.

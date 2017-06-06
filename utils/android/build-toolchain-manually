@@ -1,0 +1,31 @@
+#!/bin/bash
+
+source ~/.bashrc
+
+PARAM=x$1
+PARAM2=x$2
+cd $SWIFT_PATH
+
+if [ ${PARAM} = "x-c" ] ; then
+echo ========== Cleaning ===========
+rm -rf build
+rm -f swift/*.tar.gz
+fi
+
+if [ ${PARAM2} = "x-u" ] ; then
+echo ========== Syncing ==========
+git multi pull
+git multi fetch apple
+git multi merge apple/master
+fi
+
+echo ========== Running script ==========
+./swift/utils/android/build-toolchain || exit
+
+echo ========== Finishing ==========
+cd $SWIFT_PATH
+test -e swift-android-toolchain || exit 
+mkdir -p toolchains/android
+rm -rf toolchains/swift-android-toolchain-$(date "+%u")
+cp swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
+
