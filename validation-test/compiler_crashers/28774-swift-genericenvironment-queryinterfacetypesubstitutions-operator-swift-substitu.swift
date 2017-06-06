@@ -5,6 +5,6 @@
 // See https://swift.org/LICENSE.txt for license information
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
-// REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-@objc protocol P{struct B{var f=_=a{}}class a{}typealias a
+protocol P{typealias e:P.e
+protocol P{typealias e:Self
