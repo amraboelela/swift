@@ -359,7 +359,7 @@ function(_add_variant_link_flags)
     endif()
   elseif("${LFLAGS_SDK}" STREQUAL "ANDROID")
     list(APPEND result
-        "-latomic" "-ldl"
+        "-lpthread" "-latomic" "-ldl"
         "${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a/libc++_shared.so")
     list(APPEND library_search_directories
         "${SWIFT_ANDROID_PREBUILT_PATH}/lib/gcc/arm-linux-androideabi/${SWIFT_ANDROID_NDK_GCC_VERSION}.x")
