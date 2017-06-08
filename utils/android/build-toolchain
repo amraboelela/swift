@@ -10,6 +10,8 @@
 # See https://swift.org/LICENSE.txt for license information
 # See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
+set -e
+
 cd "$(dirname $0)/../.." || exit
 SRC_DIR=$PWD
 
@@ -34,4 +36,3 @@ rm -rf ${SWIFT_TOOLCHAIN_DIR}
 mkdir -p ${SWIFT_TOOLCHAIN_DIR}/usr
 
 cp -r ${SWIFT_LINUX_DIR}/{bin,lib,include} ${SWIFT_TOOLCHAIN_DIR}/usr
-

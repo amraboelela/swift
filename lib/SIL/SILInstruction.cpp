@@ -109,19 +109,17 @@ SILModule &SILInstruction::getModule() const {
   return getFunction()->getModule();
 }
 
-/// removeFromParent - This method unlinks 'self' from the containing basic
-/// block, but does not delete it.
-///
-void SILInstruction::removeFromParent() {
-  getParent()->remove(this);
-}
-
 /// eraseFromParent - This method unlinks 'self' from the containing basic
 /// block and deletes it.
 ///
 void SILInstruction::eraseFromParent() {
   assert(use_empty() && "There are uses of instruction being deleted.");
   getParent()->erase(this);
+}
+
+void SILInstruction::moveFront(SILBasicBlock *Block) {
+  getParent()->remove(this);
+  Block->push_front(this);
 }
 
 /// Unlink this instruction from its current basic block and insert it into
@@ -171,9 +169,11 @@ void SILInstruction::dropAllReferences() {
 }
 
 namespace {
-  class InstructionDestroyer : public SILVisitor<InstructionDestroyer> {
-  public:
-#define VALUE(CLASS, PARENT) void visit##CLASS(CLASS *I) { I->~CLASS(); }
+class InstructionDestroyer
+    : public SILInstructionVisitor<InstructionDestroyer> {
+public:
+#define INST(CLASS, PARENT, TEXTUALNAME, MEMBEHAVIOR, MAYRELEASE)              \
+  void visit##CLASS(CLASS *I) { I->~CLASS(); }
 #include "swift/SIL/SILNodes.def"
   };
 } // end anonymous namespace
