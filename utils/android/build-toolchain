@@ -33,6 +33,7 @@ SWIFT_LINUX_DIR="${SRC_DIR}/../build/Ninja-ReleaseAssert/swift-linux-x86_64"
 
 test -e ${SWIFT_LINUX_DIR} || exit
 rm -rf ${SWIFT_TOOLCHAIN_DIR}
+rm -f ${SRC_DIR}/../swift-android-toolchain.zip
 mkdir -p ${SWIFT_TOOLCHAIN_DIR}/usr
 
 cp -r ${SWIFT_LINUX_DIR}/{bin,lib,include} ${SWIFT_TOOLCHAIN_DIR}/usr
