@@ -642,8 +642,10 @@ namespace {
     void printAbstractTypeParamCommon(AbstractTypeParamDecl *decl,
                                       const char *name) {
       printCommon(decl, name);
-      if (auto superclassTy = decl->getSuperclass()) {
-        OS << " superclass='" << superclassTy->getString() << "'";
+      if (decl->getDeclContext()->getGenericEnvironmentOfContext()) {
+        if (auto superclassTy = decl->getSuperclass()) {
+          OS << " superclass='" << superclassTy->getString() << "'";
+        }
       }
     }
 
@@ -734,6 +736,8 @@ namespace {
         OS << " final";
       if (VD->isObjC())
         OS << " @objc";
+      if (VD->isDynamic())
+        OS << " dynamic";
     }
 
     void printCommon(NominalTypeDecl *NTD, const char *Name,

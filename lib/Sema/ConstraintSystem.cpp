@@ -379,7 +379,7 @@ Type ConstraintSystem::openUnboundGenericType(UnboundGenericType *unbound,
 
   if (parentTy) {
     auto subs = parentTy->getContextSubstitutions(
-      parentTy->getAnyNominal());
+      unboundDecl->getDeclContext());
     for (auto pair : subs) {
       auto found = replacements.find(
         cast<GenericTypeParamType>(pair.first));
@@ -1314,7 +1314,11 @@ void ConstraintSystem::addOverloadSet(Type boundType,
                                        *favoredChoice,
                                        useDC,
                                        locator);
-    
+
+    assert((!favoredChoice->isDecl() ||
+            !favoredChoice->getDecl()->getAttrs().isUnavailable(
+                getASTContext())) &&
+           "Cannot make unavailable decl favored!");
     bindOverloadConstraint->setFavored();
     
     overloads.push_back(bindOverloadConstraint);
