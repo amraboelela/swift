@@ -12,7 +12,7 @@ rm -rf build
 rm -f swift/*.tar.gz
 fi
 
-if [ ${PARAM2} = "x-u" ] ; then
+if [ ${PARAM} = "x-u" ] || [ ${PARAM2} = "x-u" ] ; then
 echo ========== Syncing ==========
 git multi pull
 git multi fetch apple
