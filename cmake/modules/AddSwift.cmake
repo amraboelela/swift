@@ -359,7 +359,7 @@ function(_add_variant_link_flags)
     endif()
   elseif("${LFLAGS_SDK}" STREQUAL "ANDROID")
     list(APPEND result
-        "-ldl" "-llog" "-latomic" "-licui18n" "-licuuc" "-licudata"
+        "-ldl" "-llog" "-latomic" "-lscui18n" "-lscuuc" "-lscudata"
         "${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a/libc++_shared.so")
     list(APPEND library_search_directories
         "${SWIFT_ANDROID_PREBUILT_PATH}/arm-linux-androideabi/lib/armv7-a"
@@ -1505,7 +1505,7 @@ function(add_swift_library name)
             # after object files for libswiftCore.so
             if("${sdk}" STREQUAL "ANDROID")
               list(APPEND swiftlib_private_link_libraries_targets
-                   "-latomic" "-licui18n" "-licuuc" "-licudata")
+                   "-latomic")
             endif()
           elseif("${lib}" STREQUAL "ICU_I18N")
             list(APPEND swiftlib_private_link_libraries_targets
