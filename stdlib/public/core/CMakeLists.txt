@@ -69,7 +69,7 @@ set(SWIFTLIB_ESSENTIAL
   HashedCollectionsAnyHashableExtensions.swift
   Hashing.swift
   HeapBuffer.swift
-  ICU.swift
+#ICU.swift
   ImplicitlyUnwrappedOptional.swift
   Index.swift
   Indices.swift.gyb
