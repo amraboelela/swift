@@ -7,4 +7,6 @@
 
 // REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol P{protocol b:P{{}typealias e:a.a}typealias a
+[.a{}ExtendedGraphemeClusterLiteralConvertible
+& ManagedBuffer
+& ManagedBuffer

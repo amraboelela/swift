@@ -27,6 +27,7 @@
 #include "swift/Parse/Lexer.h"
 #include "swift/Subsystems.h"
 #include "swift/Syntax/LegacyASTTransformer.h"
+#include "swift/Syntax/Serialization/SyntaxSerialization.h"
 #include "swift/Syntax/SyntaxData.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -39,6 +40,7 @@ enum class ActionType {
   DumpTokenSyntax,
   FullLexRoundTrip,
   FullParseRoundTrip,
+  SerializeRawTree,
   None
 };
 
@@ -58,7 +60,11 @@ Action(llvm::cl::desc("Action (required):"),
         clEnumValN(ActionType::FullParseRoundTrip,
                    "round-trip-parse",
                    "Parse the source file and print it back out for "
-                   "comparing against the input")));
+                   "comparing against the input"),
+        clEnumValN(ActionType::SerializeRawTree,
+                   "serialize-raw-tree",
+                   "Parse the source file and serialize the raw tree"
+                   "to JSON")));
 
 static llvm::cl::opt<std::string>
 InputSourceFilename("input-source-filename",
@@ -94,6 +100,74 @@ getTokensFromFile(const StringRef InputFilename,
   return getTokensFromFile(BufferID, LangOpts, SourceMgr, Diags, Tokens);
 }
 
+void anchorForGetMainExecutable() {}
+
+int getSyntaxTree(const char *MainExecutablePath,
+                  const StringRef InputFilename,
+                  CompilerInstance &Instance,
+                  llvm::SmallVectorImpl<syntax::Syntax> &TopLevelDecls,
+                  std::vector<std::pair<RC<syntax::TokenSyntax>,
+                              syntax::AbsolutePosition>> &Tokens) {
+  CompilerInvocation Invocation;
+  Invocation.addInputFilename(InputFilename);
+
+  Invocation.setMainExecutablePath(
+    llvm::sys::fs::getMainExecutable(MainExecutablePath,
+      reinterpret_cast<void *>(&anchorForGetMainExecutable)));
+
+  Invocation.setModuleName("Test");
+
+  auto &SourceMgr = Instance.getSourceMgr();
+
+  PrintingDiagnosticConsumer DiagPrinter;
+  Instance.addDiagnosticConsumer(&DiagPrinter);
+  if (Instance.setup(Invocation)) {
+    return EXIT_FAILURE;
+  }
+
+  // First, parse the file normally and get the regular old AST.
+  Instance.performParseOnly();
+
+  if (Instance.getDiags().hadAnyError()) {
+    return EXIT_FAILURE;
+  }
+
+  auto BufferID = Instance.getInputBufferIDs().back();
+  SourceFile *SF = nullptr;
+  for (auto Unit : Instance.getMainModule()->getFiles()) {
+    SF = dyn_cast<SourceFile>(Unit);
+    if (SF != nullptr) {
+      break;
+    }
+  }
+  assert(SF && "No source file");
+
+  // Retokenize the buffer with full fidelity
+  if (getTokensFromFile(BufferID, Invocation.getLangOptions(),
+                        SourceMgr,
+                        Instance.getDiags(), Tokens) == EXIT_FAILURE) {
+    return EXIT_FAILURE;
+  }
+
+  SmallVector<Decl *, 256> FileDecls;
+  SF->getTopLevelDecls(FileDecls);
+  sema::Semantics Sema;
+  // Convert the old ASTs to the new full-fidelity syntax tree and print
+  // them out.
+  for (auto *Decl : FileDecls) {
+    if (Decl->escapedFromIfConfig()) {
+      continue;
+    }
+    auto NewNode = transformAST(ASTNode(Decl), Sema, SourceMgr,
+                                BufferID, Tokens);
+    if (NewNode.hasValue()) {
+      TopLevelDecls.push_back(NewNode.getValue());
+    }
+  }
+
+  return EXIT_SUCCESS;
+}
+
 int doFullLexRoundTrip(const StringRef InputFilename) {
   LangOptions LangOpts;
   SourceManager SourceMgr;
@@ -122,7 +196,6 @@ int doDumpTokenSyntax(const StringRef InputFilename) {
   PrintingDiagnosticConsumer DiagPrinter;
   Diags.addConsumer(DiagPrinter);
 
-
   std::vector<std::pair<RC<syntax::TokenSyntax>,
                         syntax::AbsolutePosition>> Tokens;
   if (getTokensFromFile(InputFilename, LangOpts, SourceMgr,
@@ -140,66 +213,48 @@ int doDumpTokenSyntax(const StringRef InputFilename) {
   return Diags.hadAnyError() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
-int doFullParseRoundTrip(const StringRef InputFilename) {
-  CompilerInvocation Invocation;
-  Invocation.addInputFilename(InputFilename);
-  Invocation.setModuleName("Test");
-  CompilerInstance Instance;
+int doFullParseRoundTrip(const char *MainExecutablePath,
+                         const StringRef InputFilename) {
 
-  auto &SourceMgr = Instance.getSourceMgr();
-
-  PrintingDiagnosticConsumer DiagPrinter;
-  Instance.addDiagnosticConsumer(&DiagPrinter);
-  if (Instance.setup(Invocation)) {
-    return EXIT_FAILURE;
-  }
-
-  // First, parse the file normally and get the regular old AST.
-  Instance.performParseOnly();
-
-  if (Instance.getDiags().hadAnyError()) {
-    return EXIT_FAILURE;
-  }
-
-  auto BufferID = Instance.getInputBufferIDs().back();
-  SourceFile *SF = nullptr;
-  for (auto Unit : Instance.getMainModule()->getFiles()) {
-    SF = dyn_cast<SourceFile>(Unit);
-    if (SF != nullptr) {
-      break;
-    }
-  }
-  assert(SF && "No source file");
-
-  // Retokenize the buffer with full fidelity
+  llvm::SmallVector<syntax::Syntax, 10> TopLevelDecls;
   std::vector<std::pair<RC<syntax::TokenSyntax>,
                         syntax::AbsolutePosition>> Tokens;
-  if (getTokensFromFile(BufferID, Invocation.getLangOptions(),
-                        SourceMgr,
-                        Instance.getDiags(), Tokens) == EXIT_FAILURE) {
-    return EXIT_FAILURE;
-  }
+  CompilerInstance Instance;
 
-  SmallVector<Decl *, 256> FileDecls;
-  SF->getTopLevelDecls(FileDecls);
-  sema::Semantics Sema;
-  // Convert the old ASTs to the new full-fidelity syntax tree and print
-  // them out.
-  for (auto *Decl : FileDecls) {
-    if (Decl->escapedFromIfConfig()) {
-      continue;
-    }
-    auto NewNode = transformAST(ASTNode(Decl), Sema, SourceMgr,
-                                BufferID, Tokens);
-    if (NewNode.hasValue()) {
-      NewNode.getValue().print(llvm::outs());
-      auto Symbol = Sema.getNodeForSyntax(NewNode.getValue());
-    }
+  getSyntaxTree(MainExecutablePath, InputFilename, Instance,
+                TopLevelDecls, Tokens);
+
+  for (auto &Node : TopLevelDecls) {
+    Node.print(llvm::outs());
   }
 
   if (Tokens.back().first->getTokenKind() == tok::eof) {
     Tokens.back().first->print(llvm::outs());
   }
+
+  return EXIT_SUCCESS;
+}
+
+int doSerializeRawTree(const char *MainExecutablePath,
+                       const StringRef InputFilename) {
+
+  llvm::SmallVector<syntax::Syntax, 10> TopLevelDecls;
+  std::vector<std::pair<RC<syntax::TokenSyntax>,
+                        syntax::AbsolutePosition>> Tokens;
+  CompilerInstance Instance;
+
+  getSyntaxTree(MainExecutablePath, InputFilename, Instance,
+                TopLevelDecls, Tokens);
+
+  std::vector<RC<syntax::RawSyntax>> RawTopLevelDecls;
+  for (auto &Decl : TopLevelDecls) {
+    RawTopLevelDecls.push_back(Decl.getRaw());
+  }
+
+  swift::json::Output out(llvm::outs());
+  out << RawTopLevelDecls;
+
+  llvm::outs() << "\n";
 
   return EXIT_SUCCESS;
 }
@@ -227,7 +282,10 @@ int main(int argc, char *argv[]) {
     ExitCode = doFullLexRoundTrip(options::InputSourceFilename);
     break;
   case ActionType::FullParseRoundTrip:
-    ExitCode = doFullParseRoundTrip(options::InputSourceFilename);
+    ExitCode = doFullParseRoundTrip(argv[0], options::InputSourceFilename);
+    break;
+  case ActionType::SerializeRawTree:
+    ExitCode = doSerializeRawTree(argv[0], options::InputSourceFilename);
     break;
   case ActionType::None:
     llvm::errs() << "an action is required\n";

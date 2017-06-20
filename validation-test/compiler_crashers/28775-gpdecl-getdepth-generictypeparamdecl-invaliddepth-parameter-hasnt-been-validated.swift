@@ -7,4 +7,4 @@
 
 // REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-&_ is Character
+protocol P{{}protocol A{typealias e{}}typealias a=A}extension P.a{protocol P

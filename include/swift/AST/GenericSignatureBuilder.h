@@ -265,6 +265,10 @@ private:
   GenericSignatureBuilder(const GenericSignatureBuilder &) = delete;
   GenericSignatureBuilder &operator=(const GenericSignatureBuilder &) = delete;
 
+  /// Record that the given potential archetype is unresolved, so we know to
+  /// resolve it later.
+  void recordUnresolvedType(PotentialArchetype *unresolvedPA);
+
   /// When a particular requirement cannot be resolved due to, e.g., a
   /// currently-unresolvable or nested type, this routine should be
   /// called to cope with the unresolved requirement.
@@ -293,6 +297,10 @@ private:
   ConstraintResult addConformanceRequirement(PotentialArchetype *T,
                                              ProtocolDecl *Proto,
                                              const RequirementSource *Source);
+
+  /// Try to resolve the given unresolved potential archetype.
+  ConstraintResult resolveUnresolvedType(PotentialArchetype *pa,
+                                         bool allowTypoCorrection);
 
 public:
   /// \brief Add a new same-type requirement between two fully resolved types
@@ -722,6 +730,16 @@ public:
     /// \c TypeRepr.
     Inferred,
 
+    /// A requirement inferred from part of the signature of a declaration
+    /// but for which we don't want to produce warnings, e.g., the result
+    /// type of a generic function:
+    ///
+    /// func f<T>() -> Set<T> { ... } // infers T: Hashable, but don't warn
+    ///
+    /// This is a root requirement source, which can be described by a
+    /// \c TypeRepr.
+    QuietlyInferred,
+
     /// A requirement for the creation of the requirement signature of a
     /// protocol.
     ///
@@ -816,6 +834,7 @@ private:
 
     case Explicit:
     case Inferred:
+    case QuietlyInferred:
     case NestedTypeNameMatch:
     case Superclass:
     case Parent:
@@ -853,6 +872,7 @@ private:
     switch (kind) {
     case Explicit:
     case Inferred:
+    case QuietlyInferred:
     case RequirementSignatureSelf:
     case NestedTypeNameMatch:
       return true;
@@ -949,7 +969,8 @@ public:
   /// inferred from some part of a generic declaration's signature, e.g., the
   /// parameter or result type of a generic function.
   static const RequirementSource *forInferred(PotentialArchetype *root,
-                                              const TypeRepr *typeRepr);
+                                              const TypeRepr *typeRepr,
+                                              bool quietly);
 
   /// Retrieve a requirement source representing the requirement signature
   /// computation for a protocol.
@@ -1021,7 +1042,7 @@ public:
 
   /// Whether the requirement is inferred or derived from an inferred
   /// requirement.
-  bool isInferredRequirement() const;
+  bool isInferredRequirement(bool includeQuietInferred) const;
 
   /// Classify the kind of this source for diagnostic purposes.
   unsigned classifyDiagKind() const;
@@ -1135,6 +1156,8 @@ class GenericSignatureBuilder::FloatingRequirementSource {
     Explicit,
     /// An inferred requirement source lacking a root.
     Inferred,
+    /// A quietly inferred requirement source lacking a root.
+    QuietlyInferred,
     /// A requirement source augmented by an abstract protocol requirement
     AbstractProtocol,
     /// A requirement source for a nested-type-name match introduced by
@@ -1180,8 +1203,9 @@ public:
     return { Explicit, requirementRepr };
   }
 
-  static FloatingRequirementSource forInferred(const TypeRepr *typeRepr) {
-    return { Inferred, typeRepr };
+  static FloatingRequirementSource forInferred(const TypeRepr *typeRepr,
+                                               bool quietly) {
+    return { quietly? QuietlyInferred : Inferred, typeRepr };
   }
 
   static FloatingRequirementSource viaProtocolRequirement(
@@ -1325,13 +1349,7 @@ class GenericSignatureBuilder::PotentialArchetype {
 
   /// \brief Construct a new potential archetype for an unresolved
   /// associated type.
-  PotentialArchetype(PotentialArchetype *parent, Identifier name)
-    : parentOrBuilder(parent), identifier(name), isUnresolvedNestedType(true),
-      IsRecursive(false), Invalid(false),
-      DiagnosedRename(false)
-  { 
-    assert(parent != nullptr && "Not an associated type?");
-  }
+  PotentialArchetype(PotentialArchetype *parent, Identifier name);
 
   /// \brief Construct a new potential archetype for an associated type.
   PotentialArchetype(PotentialArchetype *parent, AssociatedTypeDecl *assocType)
@@ -1678,7 +1696,22 @@ public:
 /// Describes a requirement whose processing has been delayed for some reason.
 class GenericSignatureBuilder::DelayedRequirement {
 public:
-  RequirementKind kind;
+  enum Kind {
+    /// A type requirement, which may be a conformance or a superclass
+    /// requirement.
+    Type,
+
+    /// A layout requirement.
+    Layout,
+
+    /// A same-type requirement.
+    SameType,
+
+    /// An unresolved potential archetype.
+    Unresolved,
+  };
+
+  Kind kind;
   UnresolvedType lhs;
   RequirementRHS rhs;
   FloatingRequirementSource source;
