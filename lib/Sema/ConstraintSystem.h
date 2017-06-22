@@ -36,6 +36,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstddef>
 #include <functional>
@@ -113,6 +114,35 @@ public:
 
     return None;
   }
+};
+
+
+class ExpressionTimer {
+  Expr* E;
+  unsigned WarnLimit;
+  bool ShouldDump;
+  ASTContext &Context;
+  llvm::TimeRecord StartTime = llvm::TimeRecord::getCurrentTime();
+
+public:
+  ExpressionTimer(Expr *E, bool shouldDump, unsigned warnLimit,
+                  ASTContext &Context)
+      : E(E), WarnLimit(warnLimit), ShouldDump(shouldDump), Context(Context) {
+  }
+
+  ~ExpressionTimer();
+
+  /// Return the elapsed process time (including fractional seconds)
+  /// as a double.
+  double getElapsedProcessTimeInFractionalSeconds() {
+    llvm::TimeRecord endTime = llvm::TimeRecord::getCurrentTime(false);
+
+    return endTime.getProcessTime() - StartTime.getProcessTime();
+  }
+
+  // Disable emission of warnings about expressions that take longer
+  // than the warning threshold.
+  void disableWarning() { WarnLimit = 0; }
 };
 
 } // end namespace constraints
@@ -750,6 +780,10 @@ enum class ConstraintSystemFlags {
   /// Set if the client prefers fixits to be in the form of force unwrapping
   /// or optional chaining to return an optional.
   PreferForceUnwrapToOptional = 0x02,
+
+  /// If set, this is going to prevent constraint system from erasing all
+  /// discovered solutions except the best one.
+  ReturnAllDiscoveredSolutions = 0x04,
 };
 
 /// Options that affect the constraint system as a whole.
@@ -846,6 +880,7 @@ public:
   TypeChecker &TC;
   DeclContext *DC;
   ConstraintSystemOptions Options;
+  Optional<ExpressionTimer> Timer;
   
   friend class Fix;
   friend class OverloadChoice;
@@ -2521,6 +2556,17 @@ public:
   /// \brief Determine if we've already explored too many paths in an
   /// attempt to solve this expression.
   bool getExpressionTooComplex(SmallVectorImpl<Solution> const &solutions) {
+    if (Timer.hasValue()) {
+      auto elapsed = Timer->getElapsedProcessTimeInFractionalSeconds();
+      if (unsigned(elapsed) > TC.getExpressionTimeoutThresholdInSeconds()) {
+        // Disable warnings about expressions that go over the warning
+        // threshold since we're arbitrarily ending evaluation and
+        // emitting an error.
+        Timer->disableWarning();
+        return true;
+      }
+    }
+
     if (!getASTContext().isSwiftVersion3()) {
       if (CountScopes < TypeCounter)
         return false;
@@ -2646,7 +2692,7 @@ public:
 /// \param parameterBindings Will be populated with the arguments that are
 /// bound to each of the parameters.
 /// \returns true if the call arguments could not be matched to the parameters.
-bool matchCallArguments(ArrayRef<CallArgParam> argTuple,
+bool matchCallArguments(ArrayRef<AnyFunctionType::Param> argTuple,
                         ArrayRef<AnyFunctionType::Param> params,
                         const SmallVectorImpl<bool> &defaultMap,
                         bool hasTrailingClosure,

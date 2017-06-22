@@ -1245,12 +1245,14 @@ static void validatePatternBindingEntries(TypeChecker &tc,
 
 void swift::makeFinal(ASTContext &ctx, ValueDecl *D) {
   if (D && !D->isFinal()) {
+    assert(!D->isDynamic());
     D->getAttrs().add(new (ctx) FinalAttr(/*IsImplicit=*/true));
   }
 }
 
 void swift::makeDynamic(ASTContext &ctx, ValueDecl *D) {
   if (D && !D->isDynamic()) {
+    assert(!D->isFinal());
     D->getAttrs().add(new (ctx) DynamicAttr(/*IsImplicit=*/true));
   }
 }
@@ -2556,14 +2558,28 @@ static void inferDynamic(ASTContext &ctx, ValueDecl *D) {
 
   // Variables declared with 'let' cannot be 'dynamic'.
   if (auto VD = dyn_cast<VarDecl>(D)) {
-    if (VD->isLet() && !isNSManaged) return;
+    auto staticSpelling = VD->getParentPatternBinding()->getStaticSpelling();
+
+    // The presence of 'static' bocks the inference of 'dynamic'.
+    if (VD->isStatic() && staticSpelling == StaticSpellingKind::KeywordStatic)
+      return;
+
+    if (VD->isLet() && !isNSManaged)
+      return;
   }
 
   // Accessors should not infer 'dynamic' on their own; they can get it from
   // their storage decls.
-  if (auto FD = dyn_cast<FuncDecl>(D))
+  if (auto FD = dyn_cast<FuncDecl>(D)) {
     if (FD->isAccessor())
       return;
+
+    auto staticSpelling = FD->getStaticSpelling();
+
+    // The presence of 'static' bocks the inference of 'dynamic'.
+    if (FD->isStatic() && staticSpelling == StaticSpellingKind::KeywordStatic)
+      return;
+  }
 
   // The presence of 'final' on a class prevents 'dynamic'.
   auto classDecl = D->getDeclContext()->getAsClassOrClassExtensionContext();
@@ -5176,8 +5192,7 @@ public:
 
         // If the storage is dynamic or final, propagate to this accessor.
         if (isObjC &&
-            storage->isDynamic() &&
-            !storage->isFinal())
+            storage->isDynamic())
           makeDynamic(TC.Context, FD);
 
         if (storage->isFinal())
@@ -7808,18 +7823,6 @@ void TypeChecker::validateExtension(ExtensionDecl *ext) {
   // FIXME: Probably the above comes up elsewhere, perhaps getAs<>()
   // should be fixed.
   if (auto proto = extendedType->getCanonicalType()->getAs<ProtocolType>()) {
-    if (!isa<ProtocolType>(extendedType.getPointer()) &&
-        proto->getDecl()->getParentModule() == ext->getParentModule()) {
-      // Protocols in the same module cannot be extended via a typealias;
-      // we could end up being unable to resolve the generic signature.
-      diagnose(ext->getLoc(), diag::extension_protocol_via_typealias, proto)
-        .fixItReplace(ext->getExtendedTypeLoc().getSourceRange(),
-                      proto->getDecl()->getName().str());
-      ext->setInvalid();
-      ext->getExtendedTypeLoc().setInvalidType(Context);
-      return;
-    }
-
     GenericEnvironment *env;
     std::tie(env, extendedType) =
         checkExtensionGenericParams(*this, ext, proto, ext->getGenericParams());

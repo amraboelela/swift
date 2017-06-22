@@ -42,7 +42,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/Timer.h"
 #include <iterator>
 #include <map>
 #include <memory>
@@ -1777,41 +1776,6 @@ namespace {
       }
     }
   };
-
-  class ExpressionTimer {
-    Expr* E;
-    unsigned WarnLimit;
-    bool ShouldDump;
-    ASTContext &Context;
-    llvm::TimeRecord StartTime = llvm::TimeRecord::getCurrentTime();
-
-  public:
-    ExpressionTimer(Expr *E, bool shouldDump, unsigned warnLimit,
-                    ASTContext &Context)
-        : E(E), WarnLimit(warnLimit), ShouldDump(shouldDump), Context(Context) {
-    }
-
-    ~ExpressionTimer() {
-      llvm::TimeRecord endTime = llvm::TimeRecord::getCurrentTime(false);
-
-      auto elapsed = endTime.getProcessTime() - StartTime.getProcessTime();
-      unsigned elapsedMS = static_cast<unsigned>(elapsed * 1000);
-
-      if (ShouldDump) {
-        // Round up to the nearest 100th of a millisecond.
-        llvm::errs() << llvm::format("%0.2f", ceil(elapsed * 100000) / 100)
-                     << "ms\t";
-        E->getLoc().print(llvm::errs(), Context.SourceMgr);
-        llvm::errs() << "\n";
-      }
-
-      if (WarnLimit != 0 && elapsedMS >= WarnLimit && E->getLoc().isValid())
-        Context.Diags.diagnose(E->getLoc(), diag::debug_long_expression,
-                               elapsedMS, WarnLimit)
-          .highlight(E->getSourceRange());
-    }
-  };
-
 } // end anonymous namespace
 
 #pragma mark High-level entry points
@@ -1821,11 +1785,6 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
                                       TypeCheckExprOptions options,
                                       ExprTypeCheckListener *listener,
                                       ConstraintSystem *baseCS) {
-  Optional<ExpressionTimer> timer;
-  if (DebugTimeExpressions || WarnLongExpressionTypeChecking)
-    timer.emplace(expr, DebugTimeExpressions, WarnLongExpressionTypeChecking,
-                  Context);
-
   PrettyStackTraceExpr stackTrace(Context, "type-checking", expr);
 
   // Construct a constraint system from this expression.
@@ -2020,6 +1979,48 @@ getTypeOfExpressionWithoutApplying(Expr *&expr, DeclContext *dc,
   // Recover the original type if needed.
   recoverOriginalType();
   return exprType;
+}
+
+void TypeChecker::getPossibleTypesOfExpressionWithoutApplying(
+    Expr *&expr, DeclContext *dc, SmallVectorImpl<Type> &types,
+    FreeTypeVariableBinding allowFreeTypeVariables,
+    ExprTypeCheckListener *listener) {
+  PrettyStackTraceExpr stackTrace(Context, "type-checking", expr);
+
+  // Construct a constraint system from this expression.
+  ConstraintSystemOptions options;
+  options |= ConstraintSystemFlags::AllowFixes;
+  options |= ConstraintSystemFlags::ReturnAllDiscoveredSolutions;
+
+  ConstraintSystem cs(*this, dc, options);
+  CleanupIllFormedExpressionRAII cleanup(Context, expr);
+
+  // Attempt to solve the constraint system.
+  SmallVector<Solution, 4> viable;
+  const Type originalType = expr->getType();
+  const bool needClearType = originalType && originalType->hasError();
+  const auto recoverOriginalType = [&]() {
+    if (needClearType)
+      expr->setType(originalType);
+  };
+
+  // If the previous checking gives the expr error type,
+  // clear the result and re-check.
+  if (needClearType)
+    expr->setType(Type());
+
+  solveForExpression(expr, dc, /*convertType*/ Type(), allowFreeTypeVariables,
+                     listener, cs, viable,
+                     TypeCheckExprFlags::SuppressDiagnostics);
+
+  for (auto &solution : viable) {
+    auto exprType = solution.simplifyType(cs.getType(expr));
+    assert(exprType && !exprType->hasTypeVariable());
+    types.push_back(exprType);
+  }
+
+  // Recover the original type if needed.
+  recoverOriginalType();
 }
 
 bool TypeChecker::typeCheckCompletionSequence(Expr *&expr, DeclContext *DC) {

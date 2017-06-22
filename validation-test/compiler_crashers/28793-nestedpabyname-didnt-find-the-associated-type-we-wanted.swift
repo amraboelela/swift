@@ -7,4 +7,7 @@
 
 // REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol P}extension P{{}typealias a:P}extension P.a{protocol P
+protocol A:RangeReplaceableCollection
+protocol P{
+protocol A
+class a:A{}typealias a:A{}typealias a:RangeReplaceableCollection

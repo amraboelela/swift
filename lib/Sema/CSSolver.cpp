@@ -1985,6 +1985,10 @@ ConstraintSystem::solve(Expr *&expr,
 
   assert(!solverState && "use solveRec for recursive calls");
 
+  // Set up the expression type checker timer.
+  Timer.emplace(expr, TC.getDebugTimeExpressions(),
+                TC.getWarnLongExpressionTypeChecking(), TC.Context);
+
   // Try to shrink the system by reducing disjunction domains. This
   // goes through every sub-expression and generate its own sub-system, to
   // try to reduce the domains of those subexpressions.
@@ -2069,7 +2073,8 @@ bool ConstraintSystem::solve(SmallVectorImpl<Solution> &solutions,
   // If there is more than one viable system, attempt to pick the best
   // solution.
   auto size = solutions.size();
-  if (size > 1) {
+  if (size > 1 &&
+      !Options.contains(ConstraintSystemFlags::ReturnAllDiscoveredSolutions)) {
     if (auto best = findBestSolution(solutions, /*minimize=*/false)) {
       if (*best != 0)
         solutions[0] = std::move(solutions[*best]);
