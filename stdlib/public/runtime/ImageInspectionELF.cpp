@@ -70,7 +70,7 @@ static SectionInfo getSectionInfo(const char *imageName,
   void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
 #ifdef __ANDROID__
-    fprintf(stderr, "dlopen() failed on `%s': %s", imageName, dlerror());
+    fprintf(stderr, "dlopen() failed on `%s': %s\n", imageName, dlerror());
     return sectionInfo;
 #else
     fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
@@ -107,9 +107,9 @@ static int iteratePHDRCallback(struct dl_phdr_info *info,
         return 0;
     }
     
-    fprintf(stderr, "iteratePHDRCallback 1");
+    fprintf(stderr, "iteratePHDRCallback 1\n");
     SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-    fprintf(stderr, "iteratePHDRCallback 2");
+    fprintf(stderr, "iteratePHDRCallback 2\n");
     if (block.size > 0) {
         inspectArgs->addBlock(block.data, block.size);
     }
@@ -127,9 +127,9 @@ static void addBlockInImage(const InspectArgs *inspectArgs, const void *addr) {
         }
         fname = info.dli_fname;
     }
-    fprintf(stderr, "addBlockInImage 1");
+    fprintf(stderr, "addBlockInImage 1\n");
     SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-    fprintf(stderr, "addBlockInImage 1");
+    fprintf(stderr, "addBlockInImage 1\n");
     if (block.size > 0) {
         inspectArgs->addBlock(block.data, block.size);
     }
