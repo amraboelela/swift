@@ -26,6 +26,7 @@
 #include <elf.h>
 #include <link.h>
 #include <string.h>
+#include <stdio.h>
 
 using namespace swift;
 
