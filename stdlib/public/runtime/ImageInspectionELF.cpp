@@ -69,6 +69,7 @@ static SectionInfo getSectionInfo(const char *imageName,
   void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
 #ifdef __ANDROID__
+    printf("dlopen() failed on `%s': %s", imageName, dlerror());
     return sectionInfo;
 #else
     fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
@@ -88,45 +89,49 @@ static SectionInfo getSectionInfo(const char *imageName,
 
 static int iteratePHDRCallback(struct dl_phdr_info *info,
                                size_t size, void *data) {
-  InspectArgs *inspectArgs = reinterpret_cast<InspectArgs *>(data);
-  const char *fname = info->dlpi_name;
-
-  // While dl_iterate_phdr() is in progress it holds a lock to prevent other
-  // images being loaded. The initialize flag is set here inside the callback so
-  // that addNewDSOImage() sees a consistent state. If it was set outside the
-  // dl_iterate_phdr() call then it could result in images being missed or
-  // added twice.
-  inspectArgs->didInitializeLookup = true;
-
-  if (fname == nullptr || fname[0] == '\0') {
-    // The filename may be null for both the dynamic loader and main executable.
-    // So ignore null image name here and explicitly add the main executable
-    // in initialize*Lookup() to avoid adding the data twice.
+    InspectArgs *inspectArgs = reinterpret_cast<InspectArgs *>(data);
+    const char *fname = info->dlpi_name;
+    
+    // While dl_iterate_phdr() is in progress it holds a lock to prevent other
+    // images being loaded. The initialize flag is set here inside the callback so
+    // that addNewDSOImage() sees a consistent state. If it was set outside the
+    // dl_iterate_phdr() call then it could result in images being missed or
+    // added twice.
+    inspectArgs->didInitializeLookup = true;
+    
+    if (fname == nullptr || fname[0] == '\0') {
+        // The filename may be null for both the dynamic loader and main executable.
+        // So ignore null image name here and explicitly add the main executable
+        // in initialize*Lookup() to avoid adding the data twice.
+        return 0;
+    }
+    
+    printf("iteratePHDRCallback 1");
+    SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
+    printf("iteratePHDRCallback 2");
+    if (block.size > 0) {
+        inspectArgs->addBlock(block.data, block.size);
+    }
     return 0;
-  }
-
-  SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-  if (block.size > 0) {
-    inspectArgs->addBlock(block.data, block.size);
-  }
-  return 0;
 }
 
 // Add the section information in an image specified by an address in that
 // image.
 static void addBlockInImage(const InspectArgs *inspectArgs, const void *addr) {
-  const char *fname = nullptr;
-  if (addr) {
-    Dl_info info;
-    if (dladdr(addr, &info) == 0 || info.dli_fname == nullptr) {
-      return;
+    const char *fname = nullptr;
+    if (addr) {
+        Dl_info info;
+        if (dladdr(addr, &info) == 0 || info.dli_fname == nullptr) {
+            return;
+        }
+        fname = info.dli_fname;
     }
-    fname = info.dli_fname;
-  }
-  SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-  if (block.size > 0) {
-    inspectArgs->addBlock(block.data, block.size);
-  }
+    printf("addBlockInImage 1");
+    SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
+    printf("addBlockInImage 1");
+    if (block.size > 0) {
+        inspectArgs->addBlock(block.data, block.size);
+    }
 }
 
 static void initializeSectionLookup(InspectArgs *inspectArgs) {
