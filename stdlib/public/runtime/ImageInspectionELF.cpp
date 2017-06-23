@@ -66,26 +66,27 @@ static InspectArgs TypeMetadataRecordArgs = {
 // can be nullptr to specify the main executable.
 static SectionInfo getSectionInfo(const char *imageName,
                                   const char *sectionName) {
-  SectionInfo sectionInfo = { 0, nullptr };
-  void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
-  if (!handle) {
+    SectionInfo sectionInfo = { 0, nullptr };
+    void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
+    if (!handle) {
 #ifdef __ANDROID__
-    fprintf(stderr, "dlopen() failed on `%s': %s\n", imageName, dlerror());
-    return sectionInfo;
+        fprintf(stderr, "dlopen() failed on `%s': %s\n", imageName, dlerror());
+        return sectionInfo;
 #else
-    fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
-               dlerror());
+        fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
+                   dlerror());
 #endif
-  }
-  void *symbol = dlsym(handle, sectionName);
-  if (symbol) {
-    // Extract the size of the section data from the head of the section.
-    const char *section = reinterpret_cast<const char *>(symbol);
-    memcpy(&sectionInfo.size, section, sizeof(uint64_t));
-    sectionInfo.data = section + sizeof(uint64_t);
-  }
-  dlclose(handle);
-  return sectionInfo;
+    }
+    fprintf(stderr, "dlopen() succeeded on %s\n", imageName);
+    void *symbol = dlsym(handle, sectionName);
+    if (symbol) {
+        // Extract the size of the section data from the head of the section.
+        const char *section = reinterpret_cast<const char *>(symbol);
+        memcpy(&sectionInfo.size, section, sizeof(uint64_t));
+        sectionInfo.data = section + sizeof(uint64_t);
+    }
+    dlclose(handle);
+    return sectionInfo;
 }
 
 static int iteratePHDRCallback(struct dl_phdr_info *info,
