@@ -70,14 +70,14 @@ static SectionInfo getSectionInfo(const char *imageName,
     void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
     if (!handle) {
 #ifdef __ANDROID__
-        fprintf(stderr, "dlopen() failed. imageName: %s, sectionName: %s, dlerror: %s\n", imageName, sectionName, dlerror());
+        fprintf(stderr, "dlopen failed. imageName: %s, sectionName: %s, dlerror: %s\n", imageName, sectionName, dlerror());
         return sectionInfo;
 #else
         fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
                    dlerror());
 #endif
     }
-    fprintf(stderr, "dlopen() succeeded. imageName: %s, sectionName: %s\n", imageName, sectionName);
+    fprintf(stderr, "dlopen succeeded. imageName: %s, sectionName: %s\n", imageName, sectionName);
     void *symbol = dlsym(handle, sectionName);
     if (symbol) {
         // Extract the size of the section data from the head of the section.
@@ -112,8 +112,10 @@ static int iteratePHDRCallback(struct dl_phdr_info *info,
     SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
     fprintf(stderr, "iteratePHDRCallback 2\n");
     if (block.size > 0) {
+        fprintf(stderr, "iteratePHDRCallback block.size: %d\n", block.size);
         inspectArgs->addBlock(block.data, block.size);
     }
+    fprintf(stderr, "iteratePHDRCallback return 0");
     return 0;
 }
 
@@ -137,20 +139,27 @@ static void addBlockInImage(const InspectArgs *inspectArgs, const void *addr) {
 }
 
 static void initializeSectionLookup(InspectArgs *inspectArgs) {
-  // Add section data in the main executable.
-  addBlockInImage(inspectArgs, nullptr);
-  // Search the loaded dls. This only searches the already
-  // loaded ones. Any images loaded after this are processed by
-  // addNewDSOImage() below.
-  dl_iterate_phdr(iteratePHDRCallback, reinterpret_cast<void *>(inspectArgs));
+    // Add section data in the main executable.
+    fprintf(stderr, "initializeSectionLookup 1\n");
+    addBlockInImage(inspectArgs, nullptr);
+    fprintf(stderr, "initializeSectionLookup 2\n");
+    // Search the loaded dls. This only searches the already
+    // loaded ones. Any images loaded after this are processed by
+    // addNewDSOImage() below.
+    dl_iterate_phdr(iteratePHDRCallback, reinterpret_cast<void *>(inspectArgs));
+    fprintf(stderr, "initializeSectionLookup 3\n");
 }
 
 void swift::initializeProtocolConformanceLookup() {
-  initializeSectionLookup(&ProtocolConformanceArgs);
+    fprintf(stderr, "initializeProtocolConformanceLookup 1\n");
+    initializeSectionLookup(&ProtocolConformanceArgs);
+    fprintf(stderr, "initializeProtocolConformanceLookup 2\n");
 }
 
 void swift::initializeTypeMetadataRecordLookup() {
-  initializeSectionLookup(&TypeMetadataRecordArgs);
+    fprintf(stderr, "initializeTypeMetadataRecordLookup 1\n");
+    initializeSectionLookup(&TypeMetadataRecordArgs);
+    fprintf(stderr, "initializeTypeMetadataRecordLookup 2\n");
 }
 
 // As ELF images are loaded, ImageInspectionInit:sectionDataInit() will call

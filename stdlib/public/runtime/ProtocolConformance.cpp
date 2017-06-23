@@ -223,10 +223,12 @@ struct ConformanceState {
   std::vector<ConformanceSection> SectionsToScan;
   Mutex SectionsToScanLock;
   
-  ConformanceState() {
-    SectionsToScan.reserve(16);
-    initializeProtocolConformanceLookup();
-  }
+    ConformanceState() {
+        SectionsToScan.reserve(16);
+        fprintf(stderr, "ConformanceState 1\n");
+        initializeProtocolConformanceLookup();
+        fprintf(stderr, "ConformanceState 2\n");
+    }
 
   void cacheSuccess(const void *type, const ProtocolDescriptor *proto,
                     const WitnessTable *witness) {
