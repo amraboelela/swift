@@ -1435,13 +1435,30 @@ void swift_objc_swift3ImplicitObjCEntrypoint(id self, SEL selector,
            sel_getName(selector));
   asprintf(&nullTerminatedFilename, "%*s", (int)filenameLength, filename);
 
-  RuntimeErrorDetails details = {
-    .version = 1,
-    .errorType = "implicit-objc-entrypoint",
-    .framesToSkip = 1
+  RuntimeErrorDetails::FixIt fixit = {
+    .filename = nullTerminatedFilename,
+    .startLine = line,
+    .endLine = line,
+    .startColumn = column,
+    .endColumn = column,
+    .replacementText = "@objc "
   };
-  bool isFatal = reporter == swift::fatalError;
-  reportToDebugger(isFatal, message, &details);
+  RuntimeErrorDetails::Note note = {
+    .description = "add '@objc' to expose this Swift declaration to Objective-C",
+    .numFixIts = 1,
+    .fixIts = &fixit
+  };
+  RuntimeErrorDetails details = {
+    .version = RuntimeErrorDetails::currentVersion,
+    .errorType = "implicit-objc-entrypoint",
+    .framesToSkip = 1,
+    .numNotes = 1,
+    .notes = &note
+  };
+  uintptr_t runtime_error_flags = RuntimeErrorFlagNone;
+  if (reporter == swift::fatalError)
+    runtime_error_flags = RuntimeErrorFlagFatal;
+  reportToDebugger(runtime_error_flags, message, &details);
 
   reporter(flags,
            "*** %s:%zu:%zu: %s; add explicit '@objc' to the declaration to "

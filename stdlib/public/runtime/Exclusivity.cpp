@@ -113,7 +113,7 @@ static void reportExclusivityConflict(ExclusivityFlags oldAction, void *oldPC,
     .frames = &oldPC
   };
   RuntimeErrorDetails details = {
-    .version = 1,
+    .version = RuntimeErrorDetails::currentVersion,
     .errorType = "exclusivity-violation",
     .currentStackDescription = newAccess,
     .framesToSkip = framesToSkip,
@@ -121,7 +121,10 @@ static void reportExclusivityConflict(ExclusivityFlags oldAction, void *oldPC,
     .numExtraThreads = 1,
     .threads = &secondaryThread
   };
-  reportToDebugger(!keepGoing, message, &details);
+  uintptr_t flags = RuntimeErrorFlagNone;
+  if (!keepGoing)
+    flags = RuntimeErrorFlagFatal;
+  reportToDebugger(flags, message, &details);
 
   if (keepGoing) {
     return;
