@@ -70,14 +70,14 @@ static SectionInfo getSectionInfo(const char *imageName,
     void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
     if (!handle) {
 #ifdef __ANDROID__
-        fprintf(stderr, "dlopen() failed on `%s': %s\n", imageName, dlerror());
+        fprintf(stderr, "dlopen() failed. imageName: %s, sectionName: %s, dlerror: %s\n", imageName, sectionName, dlerror());
         return sectionInfo;
 #else
         fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
                    dlerror());
 #endif
     }
-    fprintf(stderr, "dlopen() succeeded on %s\n", imageName);
+    fprintf(stderr, "dlopen() succeeded. imageName: %s, sectionName: %s\n", imageName, sectionName);
     void *symbol = dlsym(handle, sectionName);
     if (symbol) {
         // Extract the size of the section data from the head of the section.
