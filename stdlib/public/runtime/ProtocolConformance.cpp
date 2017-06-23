@@ -219,44 +219,44 @@ namespace {
 
 // Conformance Cache.
 struct ConformanceState {
-  ConcurrentMap<ConformanceCacheEntry> Cache;
-  std::vector<ConformanceSection> SectionsToScan;
-  Mutex SectionsToScanLock;
-  
+    ConcurrentMap<ConformanceCacheEntry> Cache;
+    std::vector<ConformanceSection> SectionsToScan;
+    Mutex SectionsToScanLock;
+    
     ConformanceState() {
         SectionsToScan.reserve(16);
         fprintf(stderr, "ConformanceState 1\n");
         initializeProtocolConformanceLookup();
         fprintf(stderr, "ConformanceState 2\n");
     }
-
-  void cacheSuccess(const void *type, const ProtocolDescriptor *proto,
-                    const WitnessTable *witness) {
-    auto result = Cache.getOrInsert(ConformanceCacheKey(type, proto),
-                                    witness, uintptr_t(0));
-
-    // If the entry was already present, we may need to update it.
-    if (!result.second) {
-      result.first->makeSuccessful(witness);
+    
+    void cacheSuccess(const void *type, const ProtocolDescriptor *proto,
+                      const WitnessTable *witness) {
+        auto result = Cache.getOrInsert(ConformanceCacheKey(type, proto),
+                                        witness, uintptr_t(0));
+        
+        // If the entry was already present, we may need to update it.
+        if (!result.second) {
+            result.first->makeSuccessful(witness);
+        }
     }
-  }
-
-  void cacheFailure(const void *type, const ProtocolDescriptor *proto) {
-    uintptr_t failureGeneration = SectionsToScan.size();
-    auto result = Cache.getOrInsert(ConformanceCacheKey(type, proto),
-                                    (const WitnessTable *) nullptr,
-                                    failureGeneration);
-
-    // If the entry was already present, we may need to update it.
-    if (!result.second) {
-      result.first->updateFailureGeneration(failureGeneration);
+    
+    void cacheFailure(const void *type, const ProtocolDescriptor *proto) {
+        uintptr_t failureGeneration = SectionsToScan.size();
+        auto result = Cache.getOrInsert(ConformanceCacheKey(type, proto),
+                                        (const WitnessTable *) nullptr,
+                                        failureGeneration);
+        
+        // If the entry was already present, we may need to update it.
+        if (!result.second) {
+            result.first->updateFailureGeneration(failureGeneration);
+        }
     }
-  }
-
-  ConformanceCacheEntry *findCached(const void *type,
-                                    const ProtocolDescriptor *proto) {
-    return Cache.find(ConformanceCacheKey(type, proto));
-  }
+    
+    ConformanceCacheEntry *findCached(const void *type,
+                                      const ProtocolDescriptor *proto) {
+        return Cache.find(ConformanceCacheKey(type, proto));
+    }
 };
 
 static Lazy<ConformanceState> Conformances;
@@ -265,8 +265,11 @@ static void
 _registerProtocolConformances(ConformanceState &C,
                               const ProtocolConformanceRecord *begin,
                               const ProtocolConformanceRecord *end) {
-  ScopedLock guard(C.SectionsToScanLock);
-  C.SectionsToScan.push_back(ConformanceSection{begin, end});
+    fprintf(stderr, "_registerProtocolConformances 1\n");
+    ScopedLock guard(C.SectionsToScanLock);
+    fprintf(stderr, "_registerProtocolConformances 2\n");
+    C.SectionsToScan.push_back(ConformanceSection{begin, end});
+    fprintf(stderr, "_registerProtocolConformances 3\n");
 }
 
 void swift::addImageProtocolConformanceBlockCallback(const void *conformances,
