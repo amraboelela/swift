@@ -115,7 +115,6 @@ static int iteratePHDRCallback(struct dl_phdr_info *info,
         fprintf(stderr, "iteratePHDRCallback block.size: %d\n", block.size);
         inspectArgs->addBlock(block.data, block.size);
     }
-    fprintf(stderr, "iteratePHDRCallback return 0");
     return 0;
 }
 
