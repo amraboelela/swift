@@ -77,7 +77,7 @@ static SectionInfo getSectionInfo(const char *imageName,
                    dlerror());
 #endif
     }
-    fprintf(stderr, "dlopen succeeded. imageName: %s, sectionName: %s\n", imageName, sectionName);
+    fprintf(stderr, "dlopen succeeded. imageName: %s\n", imageName);
     void *symbol = dlsym(handle, sectionName);
     if (symbol) {
         // Extract the size of the section data from the head of the section.
@@ -110,7 +110,7 @@ static int iteratePHDRCallback(struct dl_phdr_info *info,
     
     fprintf(stderr, "iteratePHDRCallback 1\n");
     SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-    fprintf(stderr, "iteratePHDRCallback 2\n");
+    //fprintf(stderr, "iteratePHDRCallback 2\n");
     if (block.size > 0) {
         fprintf(stderr, "iteratePHDRCallback block.size: %d\n", block.size);
         inspectArgs->addBlock(block.data, block.size);
