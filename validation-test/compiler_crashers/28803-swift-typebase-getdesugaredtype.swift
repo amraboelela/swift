@@ -5,9 +5,6 @@
 // See https://swift.org/LICENSE.txt for license information
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
-// REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol A:RangeReplaceableCollection
-protocol P{
-protocol A
-class a:A{}typealias a:A{}typealias a:RangeReplaceableCollection
+protocol P{typealias a:Collection
+typealias a=(t:Self.a

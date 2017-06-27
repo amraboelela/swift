@@ -61,80 +61,16 @@ public:
   operator sourcekitd_uid_t() const {
     return get();
   }
+
+  StringRef str() const {
+    return StringRef(Name);
+  }
 };
 } // anonymous namespace
 
-static LazySKDUID RequestProtocolVersion("source.request.protocol_version");
-
-static LazySKDUID RequestCrashWithExit("source.request.crash_exit");
-
-static LazySKDUID RequestDemangle("source.request.demangle");
-static LazySKDUID RequestMangleSimpleClass("source.request.mangle_simple_class");
-
-static LazySKDUID RequestIndex("source.request.indexsource");
-static LazySKDUID RequestDocInfo("source.request.docinfo");
-static LazySKDUID RequestCodeComplete("source.request.codecomplete");
-static LazySKDUID RequestCodeCompleteOpen("source.request.codecomplete.open");
-static LazySKDUID RequestCodeCompleteClose("source.request.codecomplete.close");
-static LazySKDUID
-    RequestCodeCompleteUpdate("source.request.codecomplete.update");
-static LazySKDUID
-    RequestCodeCompleteCacheOnDisk("source.request.codecomplete.cache.ondisk");
-static LazySKDUID RequestCodeCompleteSetPopularAPI(
-    "source.request.codecomplete.setpopularapi");
-static LazySKDUID
-    RequestCodeCompleteSetCustom("source.request.codecomplete.setcustom");
-static LazySKDUID RequestCursorInfo("source.request.cursorinfo");
-static LazySKDUID RequestRangeInfo("source.request.rangeinfo");
-static LazySKDUID RequestRelatedIdents("source.request.relatedidents");
-static LazySKDUID RequestEditorOpen("source.request.editor.open");
-static LazySKDUID RequestEditorOpenInterface(
-    "source.request.editor.open.interface");
-static LazySKDUID RequestEditorOpenHeaderInterface(
-    "source.request.editor.open.interface.header");
-static LazySKDUID RequestEditorOpenSwiftSourceInterface(
-    "source.request.editor.open.interface.swiftsource");
-static LazySKDUID RequestEditorOpenSwiftTypeInterface(
-    "source.request.editor.open.interface.swifttype");
-static LazySKDUID RequestEditorExtractTextFromComment(
-    "source.request.editor.extract.comment");
-static LazySKDUID RequestEditorClose("source.request.editor.close");
-static LazySKDUID RequestEditorReplaceText("source.request.editor.replacetext");
-static LazySKDUID RequestEditorFormatText("source.request.editor.formattext");
-static LazySKDUID RequestEditorExpandPlaceholder(
-    "source.request.editor.expand_placeholder");
-static LazySKDUID RequestEditorFindUSR("source.request.editor.find_usr");
-static LazySKDUID RequestEditorFindInterfaceDoc(
-    "source.request.editor.find_interface_doc");
-static LazySKDUID RequestBuildSettingsRegister(
-    "source.request.buildsettings.register");
-static LazySKDUID RequestModuleGroups(
-    "source.request.module.groups");
-static LazySKDUID RequestNameTranslation("source.request.name.translation");
-static LazySKDUID RequestMarkupToXML("source.request.convert.markup.xml");
-
-static LazySKDUID KindExpr("source.lang.swift.expr");
-static LazySKDUID KindStmt("source.lang.swift.stmt");
-static LazySKDUID KindType("source.lang.swift.type");
-
-static LazySKDUID KindEverything("source.codecompletion.everything");
-static LazySKDUID KindModule("source.codecompletion.module");
-static LazySKDUID KindKeyword("source.codecompletion.keyword");
-static LazySKDUID KindLiteral("source.codecompletion.literal");
-static LazySKDUID KindCustom("source.codecompletion.custom");
-static LazySKDUID KindIdentifier("source.codecompletion.identifier");
-static LazySKDUID KindDescription("source.codecompletion.description");
-
-static UIdent DiagKindNote("source.diagnostic.severity.note");
-static UIdent DiagKindWarning("source.diagnostic.severity.warning");
-static UIdent DiagKindError("source.diagnostic.severity.error");
-
-
-static UIdent KindNameObjc("source.lang.name.kind.objc");
-static UIdent KindNameSwift("source.lang.name.kind.swift");
-
-static LazySKDUID SwiftNameKind("source.lang.name.kind.swift");
-static LazySKDUID ObjcNameKind("source.lang.name.kind.objc");
+#define REQUEST(NAME, CONTENT) static LazySKDUID Request##NAME(CONTENT);
+#define KIND(NAME, CONTENT) static LazySKDUID Kind##NAME(CONTENT);
+#include "SourceKit/Core/ProtocolUIDs.def"
 
 static void onDocumentUpdateNotification(StringRef DocumentName) {
   static UIdent DocumentUpdateNotificationUID(
@@ -816,10 +752,10 @@ handleSemanticRequest(RequestDict Req,
     if (!NK) {
       return Rec(createErrorRequestInvalid("'key.namekind' is required"));
     }
-    if (NK == SwiftNameKind)
-      Input.NameKind = KindNameSwift;
-    else if (NK == ObjcNameKind)
-      Input.NameKind = KindNameObjc;
+    if (NK == KindNameSwift.get())
+      Input.NameKind = UIdent(KindNameSwift.str());
+    else if (NK == KindNameObjc.get())
+      Input.NameKind = UIdent(KindNameObjc.str());
     else
       return Rec(createErrorRequestInvalid("'key.namekind' is unrecognizable"));
     if (auto Base = Req.getString(KeyBaseName)) {
@@ -1376,10 +1312,10 @@ bool SKDocConsumer::handleDiagnostic(const DiagnosticEntryInfo &Info) {
   UIdent SeverityUID;
   switch (Info.Severity) {
   case DiagnosticSeverityKind::Warning:
-    SeverityUID = DiagKindWarning;
+    SeverityUID = UIdent(KindDiagWarning.str());
     break;
   case DiagnosticSeverityKind::Error:
-    SeverityUID = DiagKindError;
+    SeverityUID = UIdent(KindDiagError.str());
     break;
   }
 
@@ -1390,7 +1326,7 @@ bool SKDocConsumer::handleDiagnostic(const DiagnosticEntryInfo &Info) {
     auto NotesArr = Elem.setArray(KeyDiagnostics);
     for (auto &NoteDiag : Info.Notes) {
       auto NoteElem = NotesArr.appendDictionary();
-      NoteElem.set(KeySeverity, DiagKindNote);
+      NoteElem.set(KeySeverity, KindDiagNote);
       fillDictionaryForDiagnosticInfo(NoteElem, NoteDiag);
     }
   }
@@ -1517,8 +1453,8 @@ static void reportNameInfo(const NameTranslatingInfo &Info, ResponseReceiver Rec
     Elem.set(KeyBaseName, Info.BaseName);
   }
   if (!Info.ArgNames.empty()) {
-    auto Arr = Elem.setArray(Info.NameKind == KindNameSwift ? KeyArgNames :
-                             KeySelectorPieces);
+    auto Arr = Elem.setArray(Info.NameKind == UIdent(KindNameSwift.str()) ?
+                               KeyArgNames : KeySelectorPieces);
     for (auto N : Info.ArgNames) {
       auto NameEle = Arr.appendDictionary();
       NameEle.set(KeyName, N);
@@ -1708,19 +1644,19 @@ static sourcekitd_response_t codeCompleteOpen(StringRef Name,
     optionsDict->dictionaryArrayApply(KeyFilterRules, [&](RequestDict dict) {
       FilterRule rule;
       auto kind = dict.getUID(KeyKind);
-      if (kind == KindEverything) {
+      if (kind == KindCodeCompletionEverything) {
         rule.kind = FilterRule::Everything;
-      } else if (kind == KindModule) {
+      } else if (kind == KindCodeCompletionModule) {
         rule.kind = FilterRule::Module;
-      } else if (kind == KindKeyword) {
+      } else if (kind == KindCodeCompletionKeyword) {
         rule.kind = FilterRule::Keyword;
-      } else if (kind == KindLiteral) {
+      } else if (kind == KindCodeCompletionLiteral) {
         rule.kind = FilterRule::Literal;
-      } else if (kind == KindCustom) {
+      } else if (kind == KindCodeCompletionCustom) {
         rule.kind = FilterRule::CustomCompletion;
-      } else if (kind == KindIdentifier) {
+      } else if (kind == KindCodeCompletionIdentifier) {
         rule.kind = FilterRule::Identifier;
-      } else if (kind == KindDescription) {
+      } else if (kind == KindCodeCompletionDescription) {
         rule.kind = FilterRule::Description;
       } else {
         // Warning: unknown
@@ -2270,10 +2206,10 @@ bool SKEditorConsumer::handleDiagnostic(const DiagnosticEntryInfo &Info,
   UIdent SeverityUID;
   switch (Info.Severity) {
   case DiagnosticSeverityKind::Warning:
-    SeverityUID = DiagKindWarning;
+    SeverityUID = UIdent(KindDiagWarning.str());
     break;
   case DiagnosticSeverityKind::Error:
-    SeverityUID = DiagKindError;
+    SeverityUID = UIdent(KindDiagError.str());
     break;
   }
 
@@ -2285,7 +2221,7 @@ bool SKEditorConsumer::handleDiagnostic(const DiagnosticEntryInfo &Info,
     auto NotesArr = Elem.setArray(KeyDiagnostics);
     for (auto &NoteDiag : Info.Notes) {
       auto NoteElem = NotesArr.appendDictionary();
-      NoteElem.set(KeySeverity, DiagKindNote);
+      NoteElem.set(KeySeverity, KindDiagNote);
       fillDictionaryForDiagnosticInfo(NoteElem, NoteDiag);
     }
   }
