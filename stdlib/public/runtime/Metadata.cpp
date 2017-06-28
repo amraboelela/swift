@@ -375,29 +375,31 @@ const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata1(FunctionTypeFlags flags,
                                       const void *arg0,
                                       const Metadata *result) {
-  assert(flags.getNumArguments() == 1
-         && "wrong number of arguments in function metadata flags?!");
-  const void *flagsArgsAndResult[] = {
-    reinterpret_cast<const void*>(flags.getIntValue()),
-    arg0,
-    static_cast<const void *>(result)                      
-  };                                                       
-  return swift_getFunctionTypeMetadata(flagsArgsAndResult);
+    assert(flags.getNumArguments() == 1
+           && "wrong number of arguments in function metadata flags?!");
+    fprintf(stderr, "swift_getFunctionTypeMetadata1 1\n");
+    const void *flagsArgsAndResult[] = {
+        reinterpret_cast<const void*>(flags.getIntValue()),
+        arg0,
+        static_cast<const void *>(result)
+    };
+    return swift_getFunctionTypeMetadata(flagsArgsAndResult);
 }                                                          
 const FunctionTypeMetadata *                               
 swift::swift_getFunctionTypeMetadata2(FunctionTypeFlags flags,
                                       const void *arg0,
                                       const void *arg1,
                                       const Metadata *result) {
-  assert(flags.getNumArguments() == 2
-         && "wrong number of arguments in function metadata flags?!");
-  const void *flagsArgsAndResult[] = {
-    reinterpret_cast<const void*>(flags.getIntValue()),
-    arg0,
-    arg1,                                                  
-    static_cast<const void *>(result)                      
-  };                                                       
-  return swift_getFunctionTypeMetadata(flagsArgsAndResult);
+    assert(flags.getNumArguments() == 2
+           && "wrong number of arguments in function metadata flags?!");
+    fprintf(stderr, "swift_getFunctionTypeMetadata2 1\n");
+    const void *flagsArgsAndResult[] = {
+        reinterpret_cast<const void*>(flags.getIntValue()),
+        arg0,
+        arg1,
+        static_cast<const void *>(result)
+    };
+    return swift_getFunctionTypeMetadata(flagsArgsAndResult);
 }                                                          
 const FunctionTypeMetadata *                               
 swift::swift_getFunctionTypeMetadata3(FunctionTypeFlags flags,
@@ -405,62 +407,64 @@ swift::swift_getFunctionTypeMetadata3(FunctionTypeFlags flags,
                                       const void *arg1,
                                       const void *arg2,
                                       const Metadata *result) {
-  assert(flags.getNumArguments() == 3
-         && "wrong number of arguments in function metadata flags?!");
-  const void *flagsArgsAndResult[] = {
-    reinterpret_cast<const void*>(flags.getIntValue()),
-    arg0,                                                  
-    arg1,                                                  
-    arg2,                                                  
-    static_cast<const void *>(result)                      
-  };                                                       
-  return swift_getFunctionTypeMetadata(flagsArgsAndResult);
+    assert(flags.getNumArguments() == 3
+           && "wrong number of arguments in function metadata flags?!");
+    fprintf(stderr, "swift_getFunctionTypeMetadata3 1\n");
+    const void *flagsArgsAndResult[] = {
+        reinterpret_cast<const void*>(flags.getIntValue()),
+        arg0,
+        arg1,
+        arg2,
+        static_cast<const void *>(result)
+    };
+    return swift_getFunctionTypeMetadata(flagsArgsAndResult);
 }
 
 const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata(const void *flagsArgsAndResult[]) {
-  FunctionCacheEntry::Key key = { flagsArgsAndResult };
-  return &FunctionTypes.getOrInsert(key).first->Data;
+    fprintf(stderr, "swift_getFunctionTypeMetadata 1\n");
+    FunctionCacheEntry::Key key = { flagsArgsAndResult };
+    return &FunctionTypes.getOrInsert(key).first->Data;
 }
 
 FunctionCacheEntry::FunctionCacheEntry(Key key) {
-  auto flags = key.getFlags();
-
-  // Pick a value witness table appropriate to the function convention.
-  // All function types of a given convention have the same value semantics,
-  // so they share a value witness table.
-  switch (flags.getConvention()) {
-  case FunctionMetadataConvention::Swift:
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
-    break;
-
-  case FunctionMetadataConvention::Thin:
-  case FunctionMetadataConvention::CFunctionPointer:
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(THIN_FUNCTION_MANGLING);
-    break;
-
-  case FunctionMetadataConvention::Block:
+    auto flags = key.getFlags();
+    fprintf(stderr, "FunctionCacheEntry 1\n");
+    // Pick a value witness table appropriate to the function convention.
+    // All function types of a given convention have the same value semantics,
+    // so they share a value witness table.
+    switch (flags.getConvention()) {
+        case FunctionMetadataConvention::Swift:
+            Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
+            break;
+            
+        case FunctionMetadataConvention::Thin:
+        case FunctionMetadataConvention::CFunctionPointer:
+            Data.ValueWitnesses = &VALUE_WITNESS_SYM(THIN_FUNCTION_MANGLING);
+            break;
+            
+        case FunctionMetadataConvention::Block:
 #if SWIFT_OBJC_INTEROP
-    // Blocks are ObjC objects, so can share the Builtin.UnknownObject value
-    // witnesses.
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(BO);
+            // Blocks are ObjC objects, so can share the Builtin.UnknownObject value
+            // witnesses.
+            Data.ValueWitnesses = &VALUE_WITNESS_SYM(BO);
 #else
-    assert(false && "objc block without objc interop?");
+            assert(false && "objc block without objc interop?");
 #endif
-    break;
-  }
-
-  unsigned numArguments = flags.getNumArguments();
-
-  Data.setKind(MetadataKind::Function);
-  Data.Flags = flags;
-  Data.ResultType = key.getResult();
-
-  for (size_t i = 0; i < numArguments; ++i) {
-    auto opaqueArg = key.getArguments()[i];
-    auto arg = FunctionTypeMetadata::Argument::getFromOpaqueValue(opaqueArg);
-    Data.getArguments()[i] = arg;
-  }
+            break;
+    }
+    
+    unsigned numArguments = flags.getNumArguments();
+    
+    Data.setKind(MetadataKind::Function);
+    Data.Flags = flags;
+    Data.ResultType = key.getResult();
+    
+    for (size_t i = 0; i < numArguments; ++i) {
+        auto opaqueArg = key.getArguments()[i];
+        auto arg = FunctionTypeMetadata::Argument::getFromOpaqueValue(opaqueArg);
+        Data.getArguments()[i] = arg;
+    }
 }
 
 /***************************************************************************/
@@ -2509,22 +2513,22 @@ swift::swift_getForeignTypeMetadata(ForeignTypeMetadata *nonUnique) {
 
   // If we inserted the entry and there's an initialization function,
   // call it.  This has to be done with the lock dropped.
-  if (inserted && hasInit) {
-    nonUnique->getInitializationFunction()(nonUnique);
-
-    // Update the cache entry:
-
-    //   - Reacquire the lock.
-    ScopedLock guard(foreignTypes.Lock);
-
-    //   - Change the entry.
-    auto &entry = getCurrentEntry();
-    assert(entry == nullptr);
-    entry = nonUnique;
-
-    //   - Notify waiters.
-    foreignTypes.InitializationWaiters.notifyAll();
-  }
+    if (inserted && hasInit) {
+        nonUnique->getInitializationFunction()(nonUnique);
+        fprintf(stderr, "swift_getForeignTypeMetadata nonUnique->getInitializationFunction() 1\n");
+        // Update the cache entry:
+        
+        //   - Reacquire the lock.
+        ScopedLock guard(foreignTypes.Lock);
+        
+        //   - Change the entry.
+        auto &entry = getCurrentEntry();
+        assert(entry == nullptr);
+        entry = nonUnique;
+        
+        //   - Notify waiters.
+        foreignTypes.InitializationWaiters.notifyAll();
+    }
 
   // Remember the unique result in the invasive cache.  We don't want
   // to do this until after the initialization completes; otherwise,
@@ -2549,34 +2553,35 @@ Metadata::getGenericPattern() const {
 
 template<> const ClassMetadata *
 Metadata::getClassObject() const {
-  switch (getKind()) {
-  case MetadataKind::Class: {
-    // Native Swift class metadata is also the class object.
-    return static_cast<const ClassMetadata *>(this);
-  }
-  case MetadataKind::ObjCClassWrapper: {
-    // Objective-C class objects are referenced by their Swift metadata wrapper.
-    auto wrapper = static_cast<const ObjCClassWrapperMetadata *>(this);
-    return wrapper->Class;
-  }
-  // Other kinds of types don't have class objects.
-  case MetadataKind::Struct:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-  case MetadataKind::ForeignClass:
-  case MetadataKind::Opaque:
-  case MetadataKind::Tuple:
-  case MetadataKind::Function:
-  case MetadataKind::Existential:
-  case MetadataKind::ExistentialMetatype:
-  case MetadataKind::Metatype:
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-  case MetadataKind::ErrorObject:
-    return nullptr;
-  }
-
-  swift_runtime_unreachable("Unhandled MetadataKind in switch.");
+    fprintf(stderr, "getClassObject 1\n");
+    switch (getKind()) {
+        case MetadataKind::Class: {
+            // Native Swift class metadata is also the class object.
+            return static_cast<const ClassMetadata *>(this);
+        }
+        case MetadataKind::ObjCClassWrapper: {
+            // Objective-C class objects are referenced by their Swift metadata wrapper.
+            auto wrapper = static_cast<const ObjCClassWrapperMetadata *>(this);
+            return wrapper->Class;
+        }
+            // Other kinds of types don't have class objects.
+        case MetadataKind::Struct:
+        case MetadataKind::Enum:
+        case MetadataKind::Optional:
+        case MetadataKind::ForeignClass:
+        case MetadataKind::Opaque:
+        case MetadataKind::Tuple:
+        case MetadataKind::Function:
+        case MetadataKind::Existential:
+        case MetadataKind::ExistentialMetatype:
+        case MetadataKind::Metatype:
+        case MetadataKind::HeapLocalVariable:
+        case MetadataKind::HeapGenericLocalVariable:
+        case MetadataKind::ErrorObject:
+            return nullptr;
+    }
+    
+    swift_runtime_unreachable("Unhandled MetadataKind in switch.");
 }
 
 template <> OpaqueValue *Metadata::allocateBoxForExistentialIn(ValueBuffer *buffer) const {
@@ -2770,35 +2775,36 @@ allocateWitnessTable(GenericWitnessTable *genericTable,
 
 const WitnessTable *swift::swift_getGenericWitnessTable(
     GenericWitnessTable *genericTable, const Metadata *type,
-    void *const *instantiationArgs) SWIFT_CC(RegisterPreservingCC_IMPL) {
-  if (doesNotRequireInstantiation(genericTable)) {
-    return genericTable->Pattern;
-  }
-
-  // If type is not nullptr, the witness table depends on the substituted
-  // conforming type, so use that are the key.
-  constexpr const size_t numGenericArgs = 1;
-  const void *args[] = { type };
-
-  auto &cache = getCache(genericTable);
-  auto entry = cache.findOrAdd(args, numGenericArgs,
-    [&]() -> WitnessTableCacheEntry* {
-      // Allocate the witness table and fill it in.
-      auto entry = allocateWitnessTable(genericTable,
-                                        cache.getAllocator(),
-                                        args, numGenericArgs);
-
-      // Call the instantiation function to initialize
-      // dependent associated type metadata.
-      if (!genericTable->Instantiator.isNull()) {
-        genericTable->Instantiator(entry->get(genericTable),
-                                   type, instantiationArgs);
-      }
-
-      return entry;
-    });
-
-  return entry->get(genericTable);
+                                                        void *const *instantiationArgs) SWIFT_CC(RegisterPreservingCC_IMPL) {
+    fprintf(stderr, "swift_getGenericWitnessTable 1\n");
+    if (doesNotRequireInstantiation(genericTable)) {
+        return genericTable->Pattern;
+    }
+    
+    // If type is not nullptr, the witness table depends on the substituted
+    // conforming type, so use that are the key.
+    constexpr const size_t numGenericArgs = 1;
+    const void *args[] = { type };
+    
+    auto &cache = getCache(genericTable);
+    auto entry = cache.findOrAdd(args, numGenericArgs,
+                                 [&]() -> WitnessTableCacheEntry* {
+                                     // Allocate the witness table and fill it in.
+                                     auto entry = allocateWitnessTable(genericTable,
+                                                                       cache.getAllocator(),
+                                                                       args, numGenericArgs);
+                                     
+                                     // Call the instantiation function to initialize
+                                     // dependent associated type metadata.
+                                     if (!genericTable->Instantiator.isNull()) {
+                                         genericTable->Instantiator(entry->get(genericTable),
+                                                                    type, instantiationArgs);
+                                     }
+                                     
+                                     return entry;
+                                 });
+    
+    return entry->get(genericTable);
 }
 
 uint64_t swift::RelativeDirectPointerNullPtr = 0;
