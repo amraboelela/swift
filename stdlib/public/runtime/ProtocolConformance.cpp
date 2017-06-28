@@ -273,28 +273,32 @@ _registerProtocolConformances(ConformanceState &C,
 }
 
 void swift::addImageProtocolConformanceBlockCallback(const void *conformances,
-                                                   uintptr_t conformancesSize) {
-  assert(conformancesSize % sizeof(ProtocolConformanceRecord) == 0
-         && "weird-sized conformances section?!");
-
-  // If we have a section, enqueue the conformances for lookup.
-  auto conformanceBytes = reinterpret_cast<const char *>(conformances);
-  auto recordsBegin
+                                                     uintptr_t conformancesSize) {
+    assert(conformancesSize % sizeof(ProtocolConformanceRecord) == 0
+           && "weird-sized conformances section?!");
+    
+    // If we have a section, enqueue the conformances for lookup.
+    auto conformanceBytes = reinterpret_cast<const char *>(conformances);
+    auto recordsBegin
     = reinterpret_cast<const ProtocolConformanceRecord*>(conformances);
-  auto recordsEnd
+    auto recordsEnd
     = reinterpret_cast<const ProtocolConformanceRecord*>
-                                          (conformanceBytes + conformancesSize);
-  
-  // Conformance cache should always be sufficiently initialized by this point.
-  _registerProtocolConformances(Conformances.unsafeGetAlreadyInitialized(),
-                                recordsBegin, recordsEnd);
+    (conformanceBytes + conformancesSize);
+    
+    fprintf(stderr, "addImageProtocolConformanceBlockCallback 1\n");
+    // Conformance cache should always be sufficiently initialized by this point.
+    _registerProtocolConformances(Conformances.unsafeGetAlreadyInitialized(),
+                                  recordsBegin, recordsEnd);
+    fprintf(stderr, "addImageProtocolConformanceBlockCallback 2\n");
 }
 
 void
 swift::swift_registerProtocolConformances(const ProtocolConformanceRecord *begin,
                                           const ProtocolConformanceRecord *end){
-  auto &C = Conformances.get();
-  _registerProtocolConformances(C, begin, end);
+    auto &C = Conformances.get();
+    fprintf(stderr, "swift_registerProtocolConformances 1\n");
+    _registerProtocolConformances(C, begin, end);
+    fprintf(stderr, "swift_registerProtocolConformances 2\n");
 }
 
 
