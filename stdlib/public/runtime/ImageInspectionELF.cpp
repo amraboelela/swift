@@ -108,7 +108,7 @@ static int iteratePHDRCallback(struct dl_phdr_info *info,
         return 0;
     }
     
-    fprintf(stderr, "iteratePHDRCallback 1\n");
+    //fprintf(stderr, "iteratePHDRCallback 1\n");
     SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
     //fprintf(stderr, "iteratePHDRCallback 2\n");
     if (block.size > 0) {
