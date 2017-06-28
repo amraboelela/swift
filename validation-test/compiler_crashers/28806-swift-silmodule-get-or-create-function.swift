@@ -5,5 +5,6 @@
 // See https://swift.org/LICENSE.txt for license information
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
+// REQUIRES: asserts
 // RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol P{{}typealias e:a{}}class a:P=extension P{typealias e:Self
+@_cdecl("main")func x(){}

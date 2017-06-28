@@ -122,7 +122,7 @@ open class JSONEncoder {
     ///
     /// - parameter value: The value to encode.
     /// - returns: A new `Data` value containing the encoded JSON data.
-    /// - throws: `EncodingError.invalidValue` if a non-comforming floating-point value is encountered during encoding, and the encoding strategy is `.throw`.
+    /// - throws: `EncodingError.invalidValue` if a non-conforming floating-point value is encountered during encoding, and the encoding strategy is `.throw`.
     /// - throws: An error if any value throws an error during encoding.
     open func encode<T : Encodable>(_ value: T) throws -> Data {
         let encoder = _JSONEncoder(options: self.options)
@@ -141,7 +141,7 @@ open class JSONEncoder {
             throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: [], debugDescription: "Top-level \(T.self) encoded as string JSON fragment."))
         }
 
-        var writingOptions = JSONSerialization.WritingOptions(rawValue: self.outputFormatting.rawValue)
+        let writingOptions = JSONSerialization.WritingOptions(rawValue: self.outputFormatting.rawValue)
         return try JSONSerialization.data(withJSONObject: topLevel, options: writingOptions)
     }
 }
@@ -688,6 +688,9 @@ extension _JSONEncoder {
         } else if T.self == URL.self {
             // Encode URLs as single strings.
             return self.box((value as! URL).absoluteString)
+        } else if T.self == Decimal.self {
+            // JSONSerialization can natively handle NSDecimalNumber.
+            return (value as! Decimal) as NSDecimalNumber
         }
 
         // The value should request a container from the _JSONEncoder.
@@ -1948,6 +1951,19 @@ extension _JSONDecoder {
         }
     }
 
+    func unbox(_ value: Any?, as type: Decimal.Type) throws -> Decimal? {
+        guard let value = value else { return nil }
+        guard !(value is NSNull) else { return nil }
+
+        // Attempt to bridge from NSDecimalNumber.
+        if let decimal = value as? Decimal {
+            return decimal
+        } else {
+            let doubleValue = try self.unbox(value, as: Double.self)!
+            return Decimal(doubleValue)
+        }
+    }
+
     func unbox<T : Decodable>(_ value: Any?, as type: T.Type) throws -> T? {
         guard let value = value else { return nil }
         guard !(value is NSNull) else { return nil }
@@ -1968,6 +1984,8 @@ extension _JSONDecoder {
             }
 
             decoded = (url as! T)
+        } else if T.self == Decimal.self {
+            decoded = (try self.unbox(value, as: Decimal.self) as! T)
         } else {
             self.storage.push(container: value)
             decoded = try T(from: self)
