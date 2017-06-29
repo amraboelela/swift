@@ -286,21 +286,22 @@ static SimpleGlobalCache<ObjCClassCacheEntry> ObjCClassWrappers;
 
 const Metadata *
 swift::swift_getObjCClassMetadata(const ClassMetadata *theClass) {
-  // Make calls resilient against receiving a null Objective-C class. This can
-  // happen when classes are weakly linked and not available.
-  if (theClass == nullptr)
-    return nullptr;
-
-  // If the class pointer is valid as metadata, no translation is required.
-  if (theClass->isTypeMetadata()) {
-    return theClass;
-  }
-
+    fprintf(stderr, "swift_getObjCClassMetadata 1\n");
+    // Make calls resilient against receiving a null Objective-C class. This can
+    // happen when classes are weakly linked and not available.
+    if (theClass == nullptr)
+        return nullptr;
+    
+    // If the class pointer is valid as metadata, no translation is required.
+    if (theClass->isTypeMetadata()) {
+        return theClass;
+    }
+    fprintf(stderr, "swift_getObjCClassMetadata 2\n");
 #if SWIFT_OBJC_INTEROP
-  return &ObjCClassWrappers.getOrInsert(theClass).first->Data;
+    return &ObjCClassWrappers.getOrInsert(theClass).first->Data;
 #else
-  fatalError(/* flags = */ 0,
-             "swift_getObjCClassMetadata: no Objective-C interop");
+    fatalError(/* flags = */ 0,
+               "swift_getObjCClassMetadata: no Objective-C interop");
 #endif
 }
 
@@ -2553,7 +2554,7 @@ Metadata::getGenericPattern() const {
 
 template<> const ClassMetadata *
 Metadata::getClassObject() const {
-    fprintf(stderr, "getClassObject 1\n");
+    fprintf(stderr, "getClassObject getKind(): %d\n", getKind());
     switch (getKind()) {
         case MetadataKind::Class: {
             fprintf(stderr, "getClassObject MetadataKind::Class\n");

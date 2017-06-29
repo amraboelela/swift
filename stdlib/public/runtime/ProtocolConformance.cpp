@@ -334,15 +334,18 @@ static
 ConformanceCacheResult
 searchInConformanceCache(const Metadata *type,
                          const ProtocolDescriptor *protocol) {
+    fprintf(stderr, "searchInConformanceCache 1\n");
     auto &C = Conformances.get();
     auto origType = type;
     ConformanceCacheEntry *failureEntry = nullptr;
-    fprintf(stderr, "searchInConformanceCache 1\n");
+    fprintf(stderr, "searchInConformanceCache 2\n");
 recur:
     {
+        fprintf(stderr, "searchInConformanceCache recur\n");
         // Try the specific type first.
         if (auto *Value = C.findCached(type, protocol)) {
             if (Value->isSuccessful()) {
+                fprintf(stderr, "searchInConformanceCache Value->isSuccessful()\n");
                 // Found a conformance on the type or some superclass. Return it.
                 return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
             }
@@ -351,12 +354,14 @@ recur:
             
             bool isAuthoritative;
             if (type == origType) {
+                fprintf(stderr, "searchInConformanceCache type == origType\n");
                 // This negative cache entry is for the original query type.
                 // Remember it so it can be returned later.
                 failureEntry = Value;
                 // An up-to-date entry for the original type is authoritative.
                 isAuthoritative = true;
             } else {
+                fprintf(stderr, "searchInConformanceCache type != origType\n");
                 // An up-to-date cached failure for a superclass of the type is not
                 // authoritative: there may be a still-undiscovered conformance
                 // for the original query type.
@@ -367,6 +372,7 @@ recur:
             // FIXME: Using SectionsToScan.size() outside SectionsToScanLock
             // is undefined.
             if (Value->getFailureGeneration() == C.SectionsToScan.size()) {
+                fprintf(stderr, "searchInConformanceCache Value->getFailureGeneration() == C.SectionsToScan.size()\n");
                 // Negative cache entry is up-to-date. Return failure along with
                 // the original query type's own cache entry, if we found one.
                 // (That entry may be out of date but the caller still has use for it.)
@@ -380,6 +386,7 @@ recur:
     }
     
     {
+        fprintf(stderr, "searchInConformanceCache const auto description\n");
         // For generic and resilient types, nondependent conformances
         // are keyed by the nominal type descriptor rather than the
         // metadata, so try that.
@@ -387,6 +394,7 @@ recur:
         
         // Hash and lookup the type-protocol pair in the cache.
         if (auto *Value = C.findCached(description, protocol)) {
+            fprintf(stderr, "auto *Value = C.findCached(description, protocol)\n");
             if (Value->isSuccessful())
                 return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
             
@@ -395,7 +403,7 @@ recur:
         }
     }
     
-    fprintf(stderr, "searchInConformanceCache 2\n");
+    fprintf(stderr, "searchInConformanceCache 3\n");
     // If the type is a class, try its superclass.
     if (const ClassMetadata *classType = type->getClassObject()) {
         if (classHasSuperclass(classType)) {
@@ -411,6 +419,7 @@ recur:
         return ConformanceCacheResult::cachedFailure(failureEntry, false);
     else
         return ConformanceCacheResult::cacheMiss();
+    fprintf(stderr, "searchInConformanceCache 4\n");
 }
 
 /// Checks if a given candidate is a type itself, one of its
