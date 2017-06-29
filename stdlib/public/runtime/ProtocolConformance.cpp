@@ -301,32 +301,35 @@ swift::swift_registerProtocolConformances(const ProtocolConformanceRecord *begin
 
 
 struct ConformanceCacheResult {
-  // true if witnessTable is an authoritative result as-is.
-  // false if more searching is required (for example, because a cached
-  // failure was returned in failureEntry but it is out-of-date.
-  bool isAuthoritative;
-
-  // The matching witness table, or null if no cached conformance was found.
-  const WitnessTable *witnessTable;
-
-  // If the search fails, this may be the negative cache entry for the
-  // queried type itself. This entry may be null or out-of-date.
-  ConformanceCacheEntry *failureEntry;
-
-  static ConformanceCacheResult
-  cachedSuccess(const WitnessTable *table) {
-    return ConformanceCacheResult { true, table, nullptr };
-  }
-
-  static ConformanceCacheResult
-  cachedFailure(ConformanceCacheEntry *entry, bool auth) {
-    return ConformanceCacheResult { auth, nullptr, entry };
-  }
-
-  static ConformanceCacheResult
-  cacheMiss() {
-    return ConformanceCacheResult { false, nullptr, nullptr };
-  }
+    // true if witnessTable is an authoritative result as-is.
+    // false if more searching is required (for example, because a cached
+    // failure was returned in failureEntry but it is out-of-date.
+    bool isAuthoritative;
+    
+    // The matching witness table, or null if no cached conformance was found.
+    const WitnessTable *witnessTable;
+    
+    // If the search fails, this may be the negative cache entry for the
+    // queried type itself. This entry may be null or out-of-date.
+    ConformanceCacheEntry *failureEntry;
+    
+    static ConformanceCacheResult
+    cachedSuccess(const WitnessTable *table) {
+        fprintf(stderr, "ConformanceCacheResult cachedSuccess\n");
+        return ConformanceCacheResult { true, table, nullptr };
+    }
+    
+    static ConformanceCacheResult
+    cachedFailure(ConformanceCacheEntry *entry, bool auth) {
+        fprintf(stderr, "ConformanceCacheResult cachedFailure auth: %d\n", auth);
+        return ConformanceCacheResult { auth, nullptr, entry };
+    }
+    
+    static ConformanceCacheResult
+    cacheMiss() {
+        fprintf(stderr, "ConformanceCacheResult cacheMiss\n");
+        return ConformanceCacheResult { false, nullptr, nullptr };
+    }
 };
 
 /// Search for a witness table in the ConformanceCache.
@@ -394,7 +397,7 @@ recur:
         
         // Hash and lookup the type-protocol pair in the cache.
         if (auto *Value = C.findCached(description, protocol)) {
-            fprintf(stderr, "auto *Value = C.findCached(description, protocol)\n");
+            fprintf(stderr, "searchInConformanceCache auto *Value = C.findCached(description, protocol)\n");
             if (Value->isSuccessful())
                 return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
             
@@ -461,136 +464,140 @@ bool isRelatedType(const Metadata *type, const void *candidate,
 const WitnessTable *
 swift::swift_conformsToProtocol(const Metadata * const type,
                                 const ProtocolDescriptor *protocol) {
-  auto &C = Conformances.get();
-
-  // See if we have a cached conformance. The ConcurrentMap data structure
-  // allows us to insert and search the map concurrently without locking.
-  // We do lock the slow path because the SectionsToScan data structure is not
-  // concurrent.
-  auto FoundConformance = searchInConformanceCache(type, protocol);
-  // If the result (positive or negative) is authoritative, return it.
-  if (FoundConformance.isAuthoritative)
-    return FoundConformance.witnessTable;
-
-  auto failureEntry = FoundConformance.failureEntry;
-
-  // No up-to-date cache entry found.
-  // Acquire the lock so we can scan conformance records.
-  ScopedLock guard(C.SectionsToScanLock);
-
-  // The world may have changed while we waited for the lock.
-  // If we found an out-of-date negative cache entry before
-  // acquiring the lock, make sure the entry is still negative and out of date.
-  // If we found no entry before acquiring the lock, search the cache again.
-  if (failureEntry) {
-    if (failureEntry->isSuccessful()) {
-      // Somebody else found a conformance.
-      return failureEntry->getWitnessTable();
+    fprintf(stderr, "swift_conformsToProtocol 1\n");
+    auto &C = Conformances.get();
+    fprintf(stderr, "swift_conformsToProtocol 2\n");
+    // See if we have a cached conformance. The ConcurrentMap data structure
+    // allows us to insert and search the map concurrently without locking.
+    // We do lock the slow path because the SectionsToScan data structure is not
+    // concurrent.
+    auto FoundConformance = searchInConformanceCache(type, protocol);
+    // If the result (positive or negative) is authoritative, return it.
+    if (FoundConformance.isAuthoritative)
+        return FoundConformance.witnessTable;
+    fprintf(stderr, "swift_conformsToProtocol 3\n");
+    auto failureEntry = FoundConformance.failureEntry;
+    
+    // No up-to-date cache entry found.
+    // Acquire the lock so we can scan conformance records.
+    ScopedLock guard(C.SectionsToScanLock);
+    fprintf(stderr, "swift_conformsToProtocol 4\n");
+    // The world may have changed while we waited for the lock.
+    // If we found an out-of-date negative cache entry before
+    // acquiring the lock, make sure the entry is still negative and out of date.
+    // If we found no entry before acquiring the lock, search the cache again.
+    if (failureEntry) {
+        if (failureEntry->isSuccessful()) {
+            // Somebody else found a conformance.
+            return failureEntry->getWitnessTable();
+        }
+        if (failureEntry->getFailureGeneration() == C.SectionsToScan.size()) {
+            // Somebody else brought the negative cache entry up to date.
+            return nullptr;
+        }
     }
-    if (failureEntry->getFailureGeneration() == C.SectionsToScan.size()) {
-      // Somebody else brought the negative cache entry up to date.
-      return nullptr;
+    else {
+        FoundConformance = searchInConformanceCache(type, protocol);
+        if (FoundConformance.isAuthoritative) {
+            // Somebody else found a conformance or cached an up-to-date failure.
+            return FoundConformance.witnessTable;
+        }
+        failureEntry = FoundConformance.failureEntry;
     }
-  }
-  else {
-    FoundConformance = searchInConformanceCache(type, protocol);
-    if (FoundConformance.isAuthoritative) {
-      // Somebody else found a conformance or cached an up-to-date failure.
-      return FoundConformance.witnessTable;
-    }
-    failureEntry = FoundConformance.failureEntry;
-  }
-
-  // We are now caught up after acquiring the lock.
-  // Prepare to scan conformance records.
-
-  // Scan only sections that were not scanned yet.
-  // If we found an out-of-date negative cache entry,
-  // we need not to re-scan the sections that it covers.
-  unsigned startSectionIdx =
+    fprintf(stderr, "swift_conformsToProtocol 5\n");
+    // We are now caught up after acquiring the lock.
+    // Prepare to scan conformance records.
+    
+    // Scan only sections that were not scanned yet.
+    // If we found an out-of-date negative cache entry,
+    // we need not to re-scan the sections that it covers.
+    unsigned startSectionIdx =
     failureEntry ? failureEntry->getFailureGeneration() : 0;
-
-  unsigned endSectionIdx = C.SectionsToScan.size();
-
-  // If there are no unscanned sections outstanding
-  // then we can cache failure and give up now.
-  if (startSectionIdx == endSectionIdx) {
-    C.cacheFailure(type, protocol);
-    return nullptr;
-  }
-
-  // Really scan conformance records.
-
-  for (unsigned sectionIdx = startSectionIdx;
-       sectionIdx < endSectionIdx;
-       ++sectionIdx) {
-    auto &section = C.SectionsToScan[sectionIdx];
-    // Eagerly pull records for nondependent witnesses into our cache.
-    for (const auto &record : section) {
-      // If the record applies to a specific type, cache it.
-      if (auto metadata = record.getCanonicalTypeMetadata()) {
-        auto P = record.getProtocol();
-
-        // Look for an exact match.
-        if (protocol != P)
-          continue;
-
-        if (!isRelatedType(type, metadata, /*candidateIsMetadata=*/true))
-          continue;
-
-        // Store the type-protocol pair in the cache.
-        auto witness = record.getWitnessTable(metadata);
-        if (witness) {
-          C.cacheSuccess(metadata, P, witness);
-        } else {
-          C.cacheFailure(metadata, P);
-        }
-
-      // TODO: "Nondependent witness table" probably deserves its own flag.
-      // An accessor function might still be necessary even if the witness table
-      // can be shared.
-      } else if (record.getTypeKind()
-                   == TypeMetadataRecordKind::UniqueNominalTypeDescriptor) {
-
-        auto R = record.getNominalTypeDescriptor();
-        auto P = record.getProtocol();
-
-        // Look for an exact match.
-        if (protocol != P)
-          continue;
-
-        if (!isRelatedType(type, R, /*candidateIsMetadata=*/false))
-          continue;
-
-        // Store the type-protocol pair in the cache.
-        switch (record.getConformanceKind()) {
-        case ProtocolConformanceReferenceKind::WitnessTable:
-          // If the record provides a nondependent witness table for all
-          // instances of a generic type, cache it for the generic pattern.
-          C.cacheSuccess(R, P, record.getStaticWitnessTable());
-          break;
-
-        case ProtocolConformanceReferenceKind::WitnessTableAccessor:
-          // If the record provides a dependent witness table accessor,
-          // cache the result for the instantiated type metadata.
-          C.cacheSuccess(type, P, record.getWitnessTable(type));
-          break;
-
-        }
-      }
+    
+    unsigned endSectionIdx = C.SectionsToScan.size();
+    
+    // If there are no unscanned sections outstanding
+    // then we can cache failure and give up now.
+    if (startSectionIdx == endSectionIdx) {
+        C.cacheFailure(type, protocol);
+        return nullptr;
     }
-  }
-
-  // Conformance scan is complete.
-  // Search the cache once more, and this time update the cache if necessary.
-
-  FoundConformance = searchInConformanceCache(type, protocol);
-  if (FoundConformance.isAuthoritative) {
-    return FoundConformance.witnessTable;
-  } else {
-    C.cacheFailure(type, protocol);
-    return nullptr;
-  }
+    fprintf(stderr, "swift_conformsToProtocol 6\n");
+    // Really scan conformance records.
+    
+    for (unsigned sectionIdx = startSectionIdx;
+         sectionIdx < endSectionIdx;
+         ++sectionIdx) {
+        fprintf(stderr, "swift_conformsToProtocol 7\n");
+        auto &section = C.SectionsToScan[sectionIdx];
+        // Eagerly pull records for nondependent witnesses into our cache.
+        for (const auto &record : section) {
+            // If the record applies to a specific type, cache it.
+            if (auto metadata = record.getCanonicalTypeMetadata()) {
+                auto P = record.getProtocol();
+                
+                // Look for an exact match.
+                if (protocol != P)
+                    continue;
+                
+                if (!isRelatedType(type, metadata, /*candidateIsMetadata=*/true))
+                    continue;
+                
+                // Store the type-protocol pair in the cache.
+                auto witness = record.getWitnessTable(metadata);
+                if (witness) {
+                    C.cacheSuccess(metadata, P, witness);
+                } else {
+                    C.cacheFailure(metadata, P);
+                }
+                
+                // TODO: "Nondependent witness table" probably deserves its own flag.
+                // An accessor function might still be necessary even if the witness table
+                // can be shared.
+            } else if (record.getTypeKind()
+                       == TypeMetadataRecordKind::UniqueNominalTypeDescriptor) {
+                
+                auto R = record.getNominalTypeDescriptor();
+                auto P = record.getProtocol();
+                
+                // Look for an exact match.
+                if (protocol != P)
+                    continue;
+                
+                if (!isRelatedType(type, R, /*candidateIsMetadata=*/false))
+                    continue;
+                
+                // Store the type-protocol pair in the cache.
+                switch (record.getConformanceKind()) {
+                    case ProtocolConformanceReferenceKind::WitnessTable:
+                        // If the record provides a nondependent witness table for all
+                        // instances of a generic type, cache it for the generic pattern.
+                        C.cacheSuccess(R, P, record.getStaticWitnessTable());
+                        break;
+                        
+                    case ProtocolConformanceReferenceKind::WitnessTableAccessor:
+                        // If the record provides a dependent witness table accessor,
+                        // cache the result for the instantiated type metadata.
+                        C.cacheSuccess(type, P, record.getWitnessTable(type));
+                        break;
+                        
+                }
+            }
+        }
+    }
+    fprintf(stderr, "swift_conformsToProtocol 8\n");
+    // Conformance scan is complete.
+    // Search the cache once more, and this time update the cache if necessary.
+    
+    FoundConformance = searchInConformanceCache(type, protocol);
+    fprintf(stderr, "swift_conformsToProtocol 9\n");
+    if (FoundConformance.isAuthoritative) {
+        return FoundConformance.witnessTable;
+    } else {
+        C.cacheFailure(type, protocol);
+        return nullptr;
+    }
+    fprintf(stderr, "swift_conformsToProtocol 10\n");
 }
 
 const Metadata *

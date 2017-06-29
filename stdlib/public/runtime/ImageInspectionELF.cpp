@@ -129,9 +129,9 @@ static void addBlockInImage(const InspectArgs *inspectArgs, const void *addr) {
         }
         fname = info.dli_fname;
     }
-    fprintf(stderr, "addBlockInImage 1\n");
+    fprintf(stderr, "addBlockInImage addr: %p\n", addr);
     SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-    fprintf(stderr, "addBlockInImage 1\n");
+    fprintf(stderr, "addBlockInImage block.size: %d\n", block.size);
     if (block.size > 0) {
         inspectArgs->addBlock(block.data, block.size);
     }
@@ -167,7 +167,7 @@ void swift::initializeTypeMetadataRecordLookup() {
 // function has been called.
 SWIFT_RUNTIME_EXPORT
 void swift_addNewDSOImage(const void *addr) {
-    fprintf(stderr, "swift_addNewDSOImage 1\n");
+    fprintf(stderr, "swift_addNewDSOImage addr: %p\n", addr);
     if (ProtocolConformanceArgs.didInitializeLookup) {
         addBlockInImage(&ProtocolConformanceArgs, addr);
     }
