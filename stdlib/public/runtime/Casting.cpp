@@ -313,66 +313,67 @@ static bool _conformsToProtocol(const OpaqueValue *value,
                                 const Metadata *type,
                                 const ProtocolDescriptor *protocol,
                                 const WitnessTable **conformance) {
-  // Look up the witness table for protocols that need them.
-  if (protocol->Flags.needsWitnessTable()) {
-    auto witness = swift_conformsToProtocol(type, protocol);
-    if (!witness)
-      return false;
-    if (conformance)
-      *conformance = witness;
-    return true;
-  }
-
-  // For Objective-C protocols, check whether we have a class that
-  // conforms to the given protocol.
-  switch (type->getKind()) {
-  case MetadataKind::Class:
-#if SWIFT_OBJC_INTEROP
-    if (value) {
-      return _unknownClassConformsToObjCProtocol(value, protocol);
-    } else {
-      return classConformsToObjCProtocol(type, protocol);
+    fprintf(stderr, "_conformsToProtocol 1\n");
+    // Look up the witness table for protocols that need them.
+    if (protocol->Flags.needsWitnessTable()) {
+        auto witness = swift_conformsToProtocol(type, protocol);
+        if (!witness)
+            return false;
+        if (conformance)
+            *conformance = witness;
+        return true;
     }
-#endif
-    return false;
-
-  case MetadataKind::ObjCClassWrapper: {
+    fprintf(stderr, "_conformsToProtocol type->getKind(): %d\n", type->getKind());
+    // For Objective-C protocols, check whether we have a class that
+    // conforms to the given protocol.
+    switch (type->getKind()) {
+        case MetadataKind::Class:
 #if SWIFT_OBJC_INTEROP
-    if (value) {
-      return _unknownClassConformsToObjCProtocol(value, protocol);
-    } else {
-      auto wrapper = cast<ObjCClassWrapperMetadata>(type);
-      return classConformsToObjCProtocol(wrapper->Class, protocol);
-    }
+            if (value) {
+                return _unknownClassConformsToObjCProtocol(value, protocol);
+            } else {
+                return classConformsToObjCProtocol(type, protocol);
+            }
 #endif
-    return false;
-  }
-
-  case MetadataKind::ForeignClass:
+            return false;
+            
+        case MetadataKind::ObjCClassWrapper: {
 #if SWIFT_OBJC_INTEROP
-    if (value)
-      return _unknownClassConformsToObjCProtocol(value, protocol);
-    return false;
+            if (value) {
+                return _unknownClassConformsToObjCProtocol(value, protocol);
+            } else {
+                auto wrapper = cast<ObjCClassWrapperMetadata>(type);
+                return classConformsToObjCProtocol(wrapper->Class, protocol);
+            }
+#endif
+            return false;
+        }
+            
+        case MetadataKind::ForeignClass:
+#if SWIFT_OBJC_INTEROP
+            if (value)
+                return _unknownClassConformsToObjCProtocol(value, protocol);
+            return false;
 #else
-    _failCorruptType(type);
+            _failCorruptType(type);
 #endif
-
-  case MetadataKind::Existential: // FIXME
-  case MetadataKind::ExistentialMetatype: // FIXME
-  case MetadataKind::Function:
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-  case MetadataKind::ErrorObject:
-  case MetadataKind::Metatype:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-  case MetadataKind::Opaque:
-  case MetadataKind::Struct:
-  case MetadataKind::Tuple:
+            
+        case MetadataKind::Existential: // FIXME
+        case MetadataKind::ExistentialMetatype: // FIXME
+        case MetadataKind::Function:
+        case MetadataKind::HeapLocalVariable:
+        case MetadataKind::HeapGenericLocalVariable:
+        case MetadataKind::ErrorObject:
+        case MetadataKind::Metatype:
+        case MetadataKind::Enum:
+        case MetadataKind::Optional:
+        case MetadataKind::Opaque:
+        case MetadataKind::Struct:
+        case MetadataKind::Tuple:
+            return false;
+    }
+    
     return false;
-  }
-
-  return false;
 }
 
 /// Check whether a type conforms to the given protocols, filling in a

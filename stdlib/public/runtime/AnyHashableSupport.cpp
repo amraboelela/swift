@@ -137,76 +137,77 @@ void _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
   const void *anyHashableResultPointer,
   const Metadata *type,
   const WitnessTable *hashableWT
-) {
-  switch (type->getKind()) {
-  case MetadataKind::Class:
-  case MetadataKind::ObjCClassWrapper:
-  case MetadataKind::ForeignClass: {
+                                                              ) {
+    fprintf(stderr, "_swift_stdlib_makeAnyHashableUpcastingToHashableBaseType type->getKind(): %d\n", type->getKind());
+    switch (type->getKind()) {
+        case MetadataKind::Class:
+        case MetadataKind::ObjCClassWrapper:
+        case MetadataKind::ForeignClass: {
 #if SWIFT_OBJC_INTEROP
-    id srcObject;
-    memcpy(&srcObject, value, sizeof(id));
-    // Do we have a _SwiftValue?
-    if (_SwiftValue *srcSwiftValue = getAsSwiftValue(srcObject)) {
-      // If so, extract the boxed value and try to cast it.
-      const Metadata *unboxedType;
-      const OpaqueValue *unboxedValue;
-      std::tie(unboxedType, unboxedValue) =
-          getValueFromSwiftValue(srcSwiftValue);
-
-      if (auto unboxedHashableWT =
-              swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
-        ValueBuffer unboxedCopyBuf;
-        // Allocate buffer.
-        OpaqueValue *unboxedValueCopy =
-            unboxedType->allocateBufferIn(&unboxedCopyBuf);
-        // initWithCopy.
-        unboxedType->vw_initializeWithCopy(
-            unboxedValueCopy, const_cast<OpaqueValue *>(unboxedValue));
-
-        _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
-            unboxedValueCopy, anyHashableResultPointer, unboxedType,
-            unboxedHashableWT);
-        // Deallocate buffer.
-        unboxedType->deallocateBufferIn(&unboxedCopyBuf);
-        type->vw_destroy(value);
-        return;
-      }
-    }
+            id srcObject;
+            memcpy(&srcObject, value, sizeof(id));
+            // Do we have a _SwiftValue?
+            if (_SwiftValue *srcSwiftValue = getAsSwiftValue(srcObject)) {
+                // If so, extract the boxed value and try to cast it.
+                const Metadata *unboxedType;
+                const OpaqueValue *unboxedValue;
+                std::tie(unboxedType, unboxedValue) =
+                getValueFromSwiftValue(srcSwiftValue);
+                
+                if (auto unboxedHashableWT =
+                    swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
+                    ValueBuffer unboxedCopyBuf;
+                    // Allocate buffer.
+                    OpaqueValue *unboxedValueCopy =
+                    unboxedType->allocateBufferIn(&unboxedCopyBuf);
+                    // initWithCopy.
+                    unboxedType->vw_initializeWithCopy(
+                                                       unboxedValueCopy, const_cast<OpaqueValue *>(unboxedValue));
+                    
+                    _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
+                                                                             unboxedValueCopy, anyHashableResultPointer, unboxedType,
+                                                                             unboxedHashableWT);
+                    // Deallocate buffer.
+                    unboxedType->deallocateBufferIn(&unboxedCopyBuf);
+                    type->vw_destroy(value);
+                    return;
+                }
+            }
 #endif
-
-    _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
-        value, anyHashableResultPointer,
-        findHashableBaseTypeOfHashableType(type),
-        hashableWT);
-    return;
-  }
-
-  case MetadataKind::Struct:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-    _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
-        value, anyHashableResultPointer, type, hashableWT);
-    return;
-
-  case MetadataKind::ErrorObject:
-    // ErrorObject metadata is not used for any Swift-level values, so
-    // this case is unreachable.
+            
+            _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
+                                                                    value, anyHashableResultPointer,
+                                                                    findHashableBaseTypeOfHashableType(type),
+                                                                    hashableWT);
+            return;
+        }
+            
+        case MetadataKind::Struct:
+        case MetadataKind::Enum:
+        case MetadataKind::Optional:
+            _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
+                                                                    value, anyHashableResultPointer, type, hashableWT);
+            return;
+            
+        case MetadataKind::ErrorObject:
+            // ErrorObject metadata is not used for any Swift-level values, so
+            // this case is unreachable.
+            _failCorruptType(type);
+            
+        case MetadataKind::Opaque:
+        case MetadataKind::Tuple:
+        case MetadataKind::Function:
+        case MetadataKind::Existential:
+        case MetadataKind::Metatype:
+        case MetadataKind::ExistentialMetatype:
+        case MetadataKind::HeapLocalVariable:
+        case MetadataKind::HeapGenericLocalVariable:
+            // We assume that the value can not be an existential,
+            // because existentials can't conform to Hashable today.
+            //
+            // FIXME: handle generalized existentials when Swift has them.
+            _failCorruptType(type);
+    }
     _failCorruptType(type);
-
-  case MetadataKind::Opaque:
-  case MetadataKind::Tuple:
-  case MetadataKind::Function:
-  case MetadataKind::Existential:
-  case MetadataKind::Metatype:
-  case MetadataKind::ExistentialMetatype:
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-    // We assume that the value can not be an existential,
-    // because existentials can't conform to Hashable today.
-    //
-    // FIXME: handle generalized existentials when Swift has them.
-    _failCorruptType(type);
-  }
-  _failCorruptType(type);
 }
 

@@ -592,12 +592,14 @@ swift::swift_conformsToProtocol(const Metadata * const type,
     FoundConformance = searchInConformanceCache(type, protocol);
     fprintf(stderr, "swift_conformsToProtocol 9\n");
     if (FoundConformance.isAuthoritative) {
+        fprintf(stderr, "swift_conformsToProtocol FoundConformance.isAuthoritative\n");
         return FoundConformance.witnessTable;
     } else {
+        fprintf(stderr, "swift_conformsToProtocol C.cacheFailure(type, protocol)\n");
         C.cacheFailure(type, protocol);
+        fprintf(stderr, "swift_conformsToProtocol return nullptr\n");
         return nullptr;
     }
-    fprintf(stderr, "swift_conformsToProtocol 10\n");
 }
 
 const Metadata *
