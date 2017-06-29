@@ -672,6 +672,7 @@ static bool _dynamicCastToAnyHashable(OpaqueValue *destination,
                                       const Metadata *sourceType,
                                       const Metadata *targetType,
                                       DynamicCastFlags flags) {
+    fprintf(stderr, "_dynamicCastToAnyHashable 1\n");
   // Look for a conformance to Hashable.
   auto hashableConformance = reinterpret_cast<const HashableWitnessTable *>(
       swift_conformsToProtocol(sourceType, &HashableProtocolDescriptor));
@@ -1407,6 +1408,7 @@ static bool _dynamicCastUnknownClassIndirect(OpaqueValue *dest,
 extern "C" const ProtocolDescriptor PROTOCOL_DESCR_SYM(s5Error);
 
 static const WitnessTable *findErrorWitness(const Metadata *srcType) {
+    fprintf(stderr, "findErrorWitness 1\n");
   return swift_conformsToProtocol(srcType, &PROTOCOL_DESCR_SYM(s5Error));
 }
 #endif
@@ -2980,6 +2982,7 @@ extern "C" const _ObjectiveCBridgeableWitnessTable BRIDGING_CONFORMANCE_SYM;
 
 static const _ObjectiveCBridgeableWitnessTable *
 findBridgeWitness(const Metadata *T) {
+    fprintf(stderr, "findBridgeWitness 1\n");
   auto w = swift_conformsToProtocol(T,
                                 &PROTOCOL_DESCR_SYM(s21_ObjectiveCBridgeable));
   if (LLVM_LIKELY(w))

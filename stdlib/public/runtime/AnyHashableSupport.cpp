@@ -75,32 +75,34 @@ HashableConformances;
 template<bool KnownToConformToHashable>
 LLVM_ATTRIBUTE_ALWAYS_INLINE
 static const Metadata *findHashableBaseTypeImpl(const Metadata *type) {
-  // Check the cache first.
-  if (HashableConformanceEntry *entry =
-          HashableConformances.find(HashableConformanceKey{type})) {
-    return entry->baseTypeThatConformsToHashable;
-  }
-  if (!KnownToConformToHashable &&
-      !swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
-    // Don't cache the negative response because we don't invalidate
-    // this cache when a new conformance is loaded dynamically.
-    return nullptr;
-  }
-  // By this point, `type` is known to conform to `Hashable`.
-
-  const Metadata *baseTypeThatConformsToHashable = type;
-  while (true) {
-    const Metadata *superclass =
+    fprintf(stderr, "findHashableBaseTypeImpl 1\n");
+    // Check the cache first.
+    if (HashableConformanceEntry *entry =
+        HashableConformances.find(HashableConformanceKey{type})) {
+        return entry->baseTypeThatConformsToHashable;
+    }
+    fprintf(stderr, "findHashableBaseTypeImpl 2\n");
+    if (!KnownToConformToHashable &&
+        !swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
+        // Don't cache the negative response because we don't invalidate
+        // this cache when a new conformance is loaded dynamically.
+        return nullptr;
+    }
+    // By this point, `type` is known to conform to `Hashable`.
+    
+    const Metadata *baseTypeThatConformsToHashable = type;
+    while (true) {
+        const Metadata *superclass =
         _swift_class_getSuperclass(baseTypeThatConformsToHashable);
-    if (!superclass)
-      break;
-    if (!swift_conformsToProtocol(superclass, &HashableProtocolDescriptor))
-      break;
-    baseTypeThatConformsToHashable = superclass;
-  }
-  HashableConformances.getOrInsert(HashableConformanceKey{type},
-                                   baseTypeThatConformsToHashable);
-  return baseTypeThatConformsToHashable;
+        if (!superclass)
+            break;
+        if (!swift_conformsToProtocol(superclass, &HashableProtocolDescriptor))
+            break;
+        baseTypeThatConformsToHashable = superclass;
+    }
+    HashableConformances.getOrInsert(HashableConformanceKey{type},
+                                     baseTypeThatConformsToHashable);
+    return baseTypeThatConformsToHashable;
 }
 
 /// Find the base type that introduces the `Hashable` conformance.
