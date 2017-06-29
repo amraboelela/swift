@@ -569,69 +569,71 @@ static void deallocateDynamicValue(OpaqueValue *value, const Metadata *type) {
 SWIFT_CC(c) SWIFT_RUNTIME_EXPORT
 id
 swift_dynamicCastMetatypeToObjectConditional(const Metadata *metatype) {
-  switch (metatype->getKind()) {
-  case MetadataKind::Class:
-    // Swift classes are objects in and of themselves.
-    return (id)metatype;
-
-  case MetadataKind::ObjCClassWrapper: {
-    // Unwrap ObjC class objects.
-    auto wrapper = static_cast<const ObjCClassWrapperMetadata*>(metatype);
-    return (id)wrapper->getClassObject();
-  }
-  
-  // Other kinds of metadata don't cast to AnyObject.
-  case MetadataKind::Struct:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-  case MetadataKind::Opaque:
-  case MetadataKind::Tuple:
-  case MetadataKind::Function:
-  case MetadataKind::Existential:
-  case MetadataKind::Metatype:
-  case MetadataKind::ExistentialMetatype:
-  case MetadataKind::ForeignClass:
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-  case MetadataKind::ErrorObject:
-    return nullptr;
-  }
+    fprintf(stderr, "swift_dynamicCastMetatypeToObjectConditional 1\n");
+    switch (metatype->getKind()) {
+        case MetadataKind::Class:
+            // Swift classes are objects in and of themselves.
+            return (id)metatype;
+            
+        case MetadataKind::ObjCClassWrapper: {
+            // Unwrap ObjC class objects.
+            auto wrapper = static_cast<const ObjCClassWrapperMetadata*>(metatype);
+            return (id)wrapper->getClassObject();
+        }
+            
+            // Other kinds of metadata don't cast to AnyObject.
+        case MetadataKind::Struct:
+        case MetadataKind::Enum:
+        case MetadataKind::Optional:
+        case MetadataKind::Opaque:
+        case MetadataKind::Tuple:
+        case MetadataKind::Function:
+        case MetadataKind::Existential:
+        case MetadataKind::Metatype:
+        case MetadataKind::ExistentialMetatype:
+        case MetadataKind::ForeignClass:
+        case MetadataKind::HeapLocalVariable:
+        case MetadataKind::HeapGenericLocalVariable:
+        case MetadataKind::ErrorObject:
+            return nullptr;
+    }
 }
 
 SWIFT_CC(c) SWIFT_RUNTIME_EXPORT
 id
 swift_dynamicCastMetatypeToObjectUnconditional(const Metadata *metatype) {
-  switch (metatype->getKind()) {
-  case MetadataKind::Class:
-    // Swift classes are objects in and of themselves.
-    return (id)metatype;
-
-  case MetadataKind::ObjCClassWrapper: {
-    // Unwrap ObjC class objects.
-    auto wrapper = static_cast<const ObjCClassWrapperMetadata*>(metatype);
-    return (id)wrapper->getClassObject();
-  }
-  
-  // Other kinds of metadata don't cast to AnyObject.
-  case MetadataKind::Struct:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-  case MetadataKind::Opaque:
-  case MetadataKind::Tuple:
-  case MetadataKind::Function:
-  case MetadataKind::Existential:
-  case MetadataKind::Metatype:
-  case MetadataKind::ExistentialMetatype:
-  case MetadataKind::ForeignClass:
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-  case MetadataKind::ErrorObject: {
-    std::string sourceName = nameForMetadata(metatype);
-    swift_dynamicCastFailure(metatype, sourceName.c_str(),
-                             nullptr, "AnyObject",
-                         "only class metatypes can be converted to AnyObject");
-  }
-  }
+    fprintf(stderr, "swift_dynamicCastMetatypeToObjectUnconditional 1\n");
+    switch (metatype->getKind()) {
+        case MetadataKind::Class:
+            // Swift classes are objects in and of themselves.
+            return (id)metatype;
+            
+        case MetadataKind::ObjCClassWrapper: {
+            // Unwrap ObjC class objects.
+            auto wrapper = static_cast<const ObjCClassWrapperMetadata*>(metatype);
+            return (id)wrapper->getClassObject();
+        }
+            
+            // Other kinds of metadata don't cast to AnyObject.
+        case MetadataKind::Struct:
+        case MetadataKind::Enum:
+        case MetadataKind::Optional:
+        case MetadataKind::Opaque:
+        case MetadataKind::Tuple:
+        case MetadataKind::Function:
+        case MetadataKind::Existential:
+        case MetadataKind::Metatype:
+        case MetadataKind::ExistentialMetatype:
+        case MetadataKind::ForeignClass:
+        case MetadataKind::HeapLocalVariable:
+        case MetadataKind::HeapGenericLocalVariable:
+        case MetadataKind::ErrorObject: {
+            std::string sourceName = nameForMetadata(metatype);
+            swift_dynamicCastFailure(metatype, sourceName.c_str(),
+                                     nullptr, "AnyObject",
+                                     "only class metatypes can be converted to AnyObject");
+        }
+    }
 }
 
 // @_silgen_name("swift_stdlib_getErrorEmbeddedNSErrorIndirect")
@@ -2880,81 +2882,82 @@ static bool _dynamicCastClassToValueViaObjCBridgeable(
 static id bridgeAnythingNonVerbatimToObjectiveC(OpaqueValue *src,
                                                 const Metadata *srcType,
                                                 bool consume) {
-  // We can always bridge objects verbatim.
-  if (srcType->isAnyClass()) {
-    id result;
-    memcpy(&result, src, sizeof(id));
-    if (!consume)
-      swift_unknownRetain(result);
-    return result;
-  }
-  
-  // Dig through existential types.
-  if (auto srcExistentialTy = dyn_cast<ExistentialTypeMetadata>(srcType)) {
-    OpaqueValue *srcInnerValue;
-    const Metadata *srcInnerType;
-    bool isOutOfLine;
-    bool canTake;
+    fprintf(stderr, "bridgeAnythingNonVerbatimToObjectiveC 1\n");
+    // We can always bridge objects verbatim.
+    if (srcType->isAnyClass()) {
+        id result;
+        memcpy(&result, src, sizeof(id));
+        if (!consume)
+            swift_unknownRetain(result);
+        return result;
+    }
     
-    unwrapExistential(src, srcExistentialTy,
-                      srcInnerValue, srcInnerType, isOutOfLine, canTake);
-    auto result = bridgeAnythingNonVerbatimToObjectiveC(srcInnerValue,
-                                                        srcInnerType,
-                                                        consume && canTake);
-    // Clean up the existential, or its remains after taking the value from
-    // it.
-    if (consume) {
-      if (canTake) {
-        if (isOutOfLine) {
-          // Copy-on-write existentials share boxed and can't be 'take'n out of
-          // without a uniqueness check (which we currently don't do).
-          swift::fatalError(
-              0 /* flags */,
-              "Attempting to move out of a copy-on-write existential");
+    // Dig through existential types.
+    if (auto srcExistentialTy = dyn_cast<ExistentialTypeMetadata>(srcType)) {
+        OpaqueValue *srcInnerValue;
+        const Metadata *srcInnerType;
+        bool isOutOfLine;
+        bool canTake;
+        
+        unwrapExistential(src, srcExistentialTy,
+                          srcInnerValue, srcInnerType, isOutOfLine, canTake);
+        auto result = bridgeAnythingNonVerbatimToObjectiveC(srcInnerValue,
+                                                            srcInnerType,
+                                                            consume && canTake);
+        // Clean up the existential, or its remains after taking the value from
+        // it.
+        if (consume) {
+            if (canTake) {
+                if (isOutOfLine) {
+                    // Copy-on-write existentials share boxed and can't be 'take'n out of
+                    // without a uniqueness check (which we currently don't do).
+                    swift::fatalError(
+                                      0 /* flags */,
+                                      "Attempting to move out of a copy-on-write existential");
+                }
+            } else {
+                // We didn't take the value, so clean up the existential value.
+                srcType->vw_destroy(src);
+            }
         }
-      } else {
-        // We didn't take the value, so clean up the existential value.
-        srcType->vw_destroy(src);
-      }
+        return result;
     }
-    return result;
-  }
-  
-  // Handle metatypes.
-  if (isa<ExistentialMetatypeMetadata>(srcType)
-      || isa<MetatypeMetadata>(srcType)) {
-    const Metadata *srcMetatypeValue;
-    memcpy(&srcMetatypeValue, src, sizeof(srcMetatypeValue));
     
-    // Class metatypes bridge to their class object.
-    if (isa<ClassMetadata>(srcMetatypeValue)
-        || isa<ObjCClassWrapperMetadata>(srcMetatypeValue)) {
-      return (id)srcMetatypeValue->getClassObject();
-    
-    // ObjC protocols bridge to their Protocol object.
-    } else if (auto existential
-               = dyn_cast<ExistentialTypeMetadata>(srcMetatypeValue)) {
-      if (existential->isObjC() && existential->Protocols.NumProtocols == 1) {
-        // Though they're statically-allocated globals, Protocol inherits
-        // NSObject's default refcounting behavior so must be retained.
-        auto protocolObj = (id)existential->Protocols[0];
-        return objc_retain(protocolObj);
-      }
+    // Handle metatypes.
+    if (isa<ExistentialMetatypeMetadata>(srcType)
+        || isa<MetatypeMetadata>(srcType)) {
+        const Metadata *srcMetatypeValue;
+        memcpy(&srcMetatypeValue, src, sizeof(srcMetatypeValue));
+        
+        // Class metatypes bridge to their class object.
+        if (isa<ClassMetadata>(srcMetatypeValue)
+            || isa<ObjCClassWrapperMetadata>(srcMetatypeValue)) {
+            return (id)srcMetatypeValue->getClassObject();
+            
+            // ObjC protocols bridge to their Protocol object.
+        } else if (auto existential
+                   = dyn_cast<ExistentialTypeMetadata>(srcMetatypeValue)) {
+            if (existential->isObjC() && existential->Protocols.NumProtocols == 1) {
+                // Though they're statically-allocated globals, Protocol inherits
+                // NSObject's default refcounting behavior so must be retained.
+                auto protocolObj = (id)existential->Protocols[0];
+                return objc_retain(protocolObj);
+            }
+        }
+    } else if (auto srcBridgeWitness = findBridgeWitness(srcType)) {
+        // Bridge the source value to an object.
+        auto srcBridgedObject =
+        srcBridgeWitness->bridgeToObjectiveC(src, srcType, srcBridgeWitness);
+        
+        // Consume if the source object was passed in +1.
+        if (consume)
+            srcType->vw_destroy(src);
+        
+        return (id)srcBridgedObject;
     }
-  } else if (auto srcBridgeWitness = findBridgeWitness(srcType)) {
-    // Bridge the source value to an object.
-    auto srcBridgedObject =
-      srcBridgeWitness->bridgeToObjectiveC(src, srcType, srcBridgeWitness);
-
-    // Consume if the source object was passed in +1.
-    if (consume)
-      srcType->vw_destroy(src);
-
-    return (id)srcBridgedObject;
-  }
-
-  // Fall back to boxing.
-  return (id)bridgeAnythingToSwiftValueObject(src, srcType, consume);
+    
+    // Fall back to boxing.
+    return (id)bridgeAnythingToSwiftValueObject(src, srcType, consume);
 }
 
 SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
@@ -3200,10 +3203,11 @@ bool _swift_isClassOrObjCExistentialType(const Metadata *value,
 
 SWIFT_CC(swift)
 const Metadata *swift::_swift_class_getSuperclass(const Metadata *theClass) {
-  if (const ClassMetadata *classType = theClass->getClassObject())
-    if (classHasSuperclass(classType))
-      return swift_getObjCClassMetadata(classType->SuperClass);
-  return nullptr;
+    fprintf(stderr, "_swift_class_getSuperclass 1\n");
+    if (const ClassMetadata *classType = theClass->getClassObject())
+        if (classHasSuperclass(classType))
+            return swift_getObjCClassMetadata(classType->SuperClass);
+    return nullptr;
 }
 
 SWIFT_CC(c) SWIFT_RUNTIME_EXPORT

@@ -1354,12 +1354,13 @@ using ClassExtents = TwoWordPair<size_t, size_t>;
 SWIFT_CC(swift) SWIFT_RUNTIME_EXPORT
 ClassExtents::Return
 swift_class_getInstanceExtents(const Metadata *c) {
-  assert(c && c->isClassObject());
-  auto metaData = c->getClassObject();
-  return ClassExtents{
-    metaData->getInstanceAddressPoint(),
-    metaData->getInstanceSize() - metaData->getInstanceAddressPoint()
-  };
+    fprintf(stderr, "swift_class_getInstanceExtents 1\n");
+    assert(c && c->isClassObject());
+    auto metaData = c->getClassObject();
+    return ClassExtents{
+        metaData->getInstanceAddressPoint(),
+        metaData->getInstanceSize() - metaData->getInstanceAddressPoint()
+    };
 }
 
 #if SWIFT_OBJC_INTEROP

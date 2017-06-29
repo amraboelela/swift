@@ -267,9 +267,7 @@ _registerProtocolConformances(ConformanceState &C,
                               const ProtocolConformanceRecord *end) {
     fprintf(stderr, "_registerProtocolConformances 1\n");
     ScopedLock guard(C.SectionsToScanLock);
-    fprintf(stderr, "_registerProtocolConformances 2\n");
     C.SectionsToScan.push_back(ConformanceSection{begin, end});
-    fprintf(stderr, "_registerProtocolConformances 3\n");
 }
 
 void swift::addImageProtocolConformanceBlockCallback(const void *conformances,
@@ -336,82 +334,83 @@ static
 ConformanceCacheResult
 searchInConformanceCache(const Metadata *type,
                          const ProtocolDescriptor *protocol) {
-  auto &C = Conformances.get();
-  auto origType = type;
-  ConformanceCacheEntry *failureEntry = nullptr;
-
+    auto &C = Conformances.get();
+    auto origType = type;
+    ConformanceCacheEntry *failureEntry = nullptr;
+    fprintf(stderr, "searchInConformanceCache 1\n");
 recur:
-  {
-    // Try the specific type first.
-    if (auto *Value = C.findCached(type, protocol)) {
-      if (Value->isSuccessful()) {
-        // Found a conformance on the type or some superclass. Return it.
-        return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
-      }
-
-      // Found a negative cache entry.
-
-      bool isAuthoritative;
-      if (type == origType) {
-        // This negative cache entry is for the original query type.
-        // Remember it so it can be returned later.
-        failureEntry = Value;
-        // An up-to-date entry for the original type is authoritative.
-        isAuthoritative = true;
-      } else {
-        // An up-to-date cached failure for a superclass of the type is not
-        // authoritative: there may be a still-undiscovered conformance
-        // for the original query type.
-        isAuthoritative = false;
-      }
-
-      // Check if the negative cache entry is up-to-date.
-      // FIXME: Using SectionsToScan.size() outside SectionsToScanLock
-      // is undefined.
-      if (Value->getFailureGeneration() == C.SectionsToScan.size()) {
-        // Negative cache entry is up-to-date. Return failure along with
-        // the original query type's own cache entry, if we found one.
-        // (That entry may be out of date but the caller still has use for it.)
-        return ConformanceCacheResult::cachedFailure(failureEntry,
-                                                     isAuthoritative);
-      }
-
-      // Negative cache entry is out-of-date.
-      // Continue searching for a better result.
+    {
+        // Try the specific type first.
+        if (auto *Value = C.findCached(type, protocol)) {
+            if (Value->isSuccessful()) {
+                // Found a conformance on the type or some superclass. Return it.
+                return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
+            }
+            
+            // Found a negative cache entry.
+            
+            bool isAuthoritative;
+            if (type == origType) {
+                // This negative cache entry is for the original query type.
+                // Remember it so it can be returned later.
+                failureEntry = Value;
+                // An up-to-date entry for the original type is authoritative.
+                isAuthoritative = true;
+            } else {
+                // An up-to-date cached failure for a superclass of the type is not
+                // authoritative: there may be a still-undiscovered conformance
+                // for the original query type.
+                isAuthoritative = false;
+            }
+            
+            // Check if the negative cache entry is up-to-date.
+            // FIXME: Using SectionsToScan.size() outside SectionsToScanLock
+            // is undefined.
+            if (Value->getFailureGeneration() == C.SectionsToScan.size()) {
+                // Negative cache entry is up-to-date. Return failure along with
+                // the original query type's own cache entry, if we found one.
+                // (That entry may be out of date but the caller still has use for it.)
+                return ConformanceCacheResult::cachedFailure(failureEntry,
+                                                             isAuthoritative);
+            }
+            
+            // Negative cache entry is out-of-date.
+            // Continue searching for a better result.
+        }
     }
-  }
-
-  {
-    // For generic and resilient types, nondependent conformances
-    // are keyed by the nominal type descriptor rather than the
-    // metadata, so try that.
-    const auto description = type->getNominalTypeDescriptor().get();
-
-    // Hash and lookup the type-protocol pair in the cache.
-    if (auto *Value = C.findCached(description, protocol)) {
-      if (Value->isSuccessful())
-        return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
-
-      // We don't try to cache negative responses for generic
-      // patterns.
+    
+    {
+        // For generic and resilient types, nondependent conformances
+        // are keyed by the nominal type descriptor rather than the
+        // metadata, so try that.
+        const auto description = type->getNominalTypeDescriptor().get();
+        
+        // Hash and lookup the type-protocol pair in the cache.
+        if (auto *Value = C.findCached(description, protocol)) {
+            if (Value->isSuccessful())
+                return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
+            
+            // We don't try to cache negative responses for generic
+            // patterns.
+        }
     }
-  }
-
-  // If the type is a class, try its superclass.
-  if (const ClassMetadata *classType = type->getClassObject()) {
-    if (classHasSuperclass(classType)) {
-      type = swift_getObjCClassMetadata(classType->SuperClass);
-      goto recur;
+    
+    fprintf(stderr, "searchInConformanceCache 2\n");
+    // If the type is a class, try its superclass.
+    if (const ClassMetadata *classType = type->getClassObject()) {
+        if (classHasSuperclass(classType)) {
+            type = swift_getObjCClassMetadata(classType->SuperClass);
+            goto recur;
+        }
     }
-  }
-
-  // We did not find an up-to-date cache entry.
-  // If we found an out-of-date entry for the original query type then
-  // return it (non-authoritatively). Otherwise return a cache miss.
-  if (failureEntry)
-    return ConformanceCacheResult::cachedFailure(failureEntry, false);
-  else
-    return ConformanceCacheResult::cacheMiss();
+    
+    // We did not find an up-to-date cache entry.
+    // If we found an out-of-date entry for the original query type then
+    // return it (non-authoritatively). Otherwise return a cache miss.
+    if (failureEntry)
+        return ConformanceCacheResult::cachedFailure(failureEntry, false);
+    else
+        return ConformanceCacheResult::cacheMiss();
 }
 
 /// Checks if a given candidate is a type itself, one of its
@@ -425,29 +424,29 @@ recur:
 static
 bool isRelatedType(const Metadata *type, const void *candidate,
                    bool candidateIsMetadata) {
-
-  while (true) {
-    if (type == candidate && candidateIsMetadata)
-      return true;
-
-    // If the type is resilient or generic, see if there's a witness table
-    // keyed off the nominal type descriptor.
-    const auto description = type->getNominalTypeDescriptor().get();
-    if (description == candidate && !candidateIsMetadata)
-      return true;
-
-    // If the type is a class, try its superclass.
-    if (const ClassMetadata *classType = type->getClassObject()) {
-      if (classHasSuperclass(classType)) {
-        type = swift_getObjCClassMetadata(classType->SuperClass);
-        continue;
-      }
+    fprintf(stderr, "isRelatedType 1\n");
+    while (true) {
+        if (type == candidate && candidateIsMetadata)
+            return true;
+        
+        // If the type is resilient or generic, see if there's a witness table
+        // keyed off the nominal type descriptor.
+        const auto description = type->getNominalTypeDescriptor().get();
+        if (description == candidate && !candidateIsMetadata)
+            return true;
+        fprintf(stderr, "isRelatedType 2\n");
+        // If the type is a class, try its superclass.
+        if (const ClassMetadata *classType = type->getClassObject()) {
+            if (classHasSuperclass(classType)) {
+                type = swift_getObjCClassMetadata(classType->SuperClass);
+                continue;
+            }
+        }
+        
+        break;
     }
-
-    break;
-  }
-
-  return false;
+    
+    return false;
 }
 
 const WitnessTable *
