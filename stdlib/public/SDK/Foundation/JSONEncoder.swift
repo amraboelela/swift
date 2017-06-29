@@ -62,8 +62,11 @@ open class JSONEncoder {
 
     /// The strategy to use for encoding `Data` values.
     public enum DataEncodingStrategy {
+        /// Defer to `Data` for choosing an encoding.
+        case deferredToData
+
         /// Encoded the `Data` as a Base64-encoded string. This is the default strategy.
-        case base64Encode
+        case base64
 
         /// Encode the `Data` as a custom value encoded by the given closure.
         ///
@@ -86,8 +89,8 @@ open class JSONEncoder {
     /// The strategy to use in encoding dates. Defaults to `.deferredToDate`.
     open var dateEncodingStrategy: DateEncodingStrategy = .deferredToDate
 
-    /// The strategy to use in encoding binary data. Defaults to `.base64Encode`.
-    open var dataEncodingStrategy: DataEncodingStrategy = .base64Encode
+    /// The strategy to use in encoding binary data. Defaults to `.base64`.
+    open var dataEncodingStrategy: DataEncodingStrategy = .base64
 
     /// The strategy to use in encoding non-conforming numbers. Defaults to `.throw`.
     open var nonConformingFloatEncodingStrategy: NonConformingFloatEncodingStrategy = .throw
@@ -142,7 +145,11 @@ open class JSONEncoder {
         }
 
         let writingOptions = JSONSerialization.WritingOptions(rawValue: self.outputFormatting.rawValue)
-        return try JSONSerialization.data(withJSONObject: topLevel, options: writingOptions)
+        do {
+           return try JSONSerialization.data(withJSONObject: topLevel, options: writingOptions)
+        } catch {
+            throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: [], debugDescription: "Unable to encode the given top-level value to JSON.", underlyingError: error))
+        }
     }
 }
 
@@ -661,7 +668,12 @@ extension _JSONEncoder {
 
     fileprivate func box(_ data: Data) throws -> NSObject {
         switch self.options.dataEncodingStrategy {
-        case .base64Encode:
+        case .deferredToData:
+            // Must be called with a surrounding with(pushedKey:) call.
+            try data.encode(to: self)
+            return self.storage.popContainer()
+
+        case .base64:
             return NSString(string: data.base64EncodedString())
 
         case .custom(let closure):
@@ -813,8 +825,11 @@ open class JSONDecoder {
 
     /// The strategy to use for decoding `Data` values.
     public enum DataDecodingStrategy {
+        /// Defer to `Data` for decoding.
+        case deferredToData
+
         /// Decode the `Data` from a Base64-encoded string. This is the default strategy.
-        case base64Decode
+        case base64
 
         /// Decode the `Data` as a custom value decoded by the given closure.
         case custom((_ decoder: Decoder) throws -> Data)
@@ -832,8 +847,8 @@ open class JSONDecoder {
     /// The strategy to use in decoding dates. Defaults to `.deferredToDate`.
     open var dateDecodingStrategy: DateDecodingStrategy = .deferredToDate
 
-    /// The strategy to use in decoding binary data. Defaults to `.base64Decode`.
-    open var dataDecodingStrategy: DataDecodingStrategy = .base64Decode
+    /// The strategy to use in decoding binary data. Defaults to `.base64`.
+    open var dataDecodingStrategy: DataDecodingStrategy = .base64
 
     /// The strategy to use in decoding non-conforming numbers. Defaults to `.throw`.
     open var nonConformingFloatDecodingStrategy: NonConformingFloatDecodingStrategy = .throw
@@ -872,7 +887,13 @@ open class JSONDecoder {
     /// - throws: `DecodingError.dataCorrupted` if values requested from the payload are corrupted, or if the given data is not valid JSON.
     /// - throws: An error if any value throws an error during decoding.
     open func decode<T : Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        let topLevel = try JSONSerialization.jsonObject(with: data)
+        let topLevel: Any
+        do {
+           topLevel = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: [], debugDescription: "The given data was not valid JSON.", underlyingError: error))
+        }
+
         let decoder = _JSONDecoder(referencing: topLevel, options: self.options)
         return try T(from: decoder)
     }
@@ -1932,7 +1953,13 @@ extension _JSONDecoder {
         guard !(value is NSNull) else { return nil }
 
         switch self.options.dataDecodingStrategy {
-        case .base64Decode:
+        case .deferredToData:
+            self.storage.push(container: value)
+            let data = try Data(from: self)
+            self.storage.popContainer()
+            return data
+
+        case .base64:
             guard let string = value as? String else {
                 throw DecodingError._typeMismatch(at: self.codingPath, expectation: type, reality: value)
             }
