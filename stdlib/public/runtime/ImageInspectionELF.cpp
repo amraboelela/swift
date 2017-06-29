@@ -171,11 +171,9 @@ void swift_addNewDSOImage(const void *addr) {
     if (ProtocolConformanceArgs.didInitializeLookup) {
         addBlockInImage(&ProtocolConformanceArgs, addr);
     }
-    fprintf(stderr, "swift_addNewDSOImage 2\n");
     if (TypeMetadataRecordArgs.didInitializeLookup) {
         addBlockInImage(&TypeMetadataRecordArgs, addr);
     }
-    fprintf(stderr, "swift_addNewDSOImage 3\n");
 }
 
 int swift::lookupSymbol(const void *address, SymbolInfo *info) {

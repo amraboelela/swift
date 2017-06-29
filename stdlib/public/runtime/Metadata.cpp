@@ -2556,10 +2556,12 @@ Metadata::getClassObject() const {
     fprintf(stderr, "getClassObject 1\n");
     switch (getKind()) {
         case MetadataKind::Class: {
+            fprintf(stderr, "getClassObject MetadataKind::Class\n");
             // Native Swift class metadata is also the class object.
             return static_cast<const ClassMetadata *>(this);
         }
         case MetadataKind::ObjCClassWrapper: {
+            fprintf(stderr, "getClassObject MetadataKind::ObjCClassWrapper\n");
             // Objective-C class objects are referenced by their Swift metadata wrapper.
             auto wrapper = static_cast<const ObjCClassWrapperMetadata *>(this);
             return wrapper->Class;
@@ -2578,9 +2580,10 @@ Metadata::getClassObject() const {
         case MetadataKind::HeapLocalVariable:
         case MetadataKind::HeapGenericLocalVariable:
         case MetadataKind::ErrorObject:
+            fprintf(stderr, "getClassObject return nullptr\n");
             return nullptr;
     }
-    
+    fprintf(stderr, "getClassObject swift_runtime_unreachable\n");
     swift_runtime_unreachable("Unhandled MetadataKind in switch.");
 }
 
