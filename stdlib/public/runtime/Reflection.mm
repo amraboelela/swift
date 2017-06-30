@@ -663,16 +663,17 @@ SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 intptr_t swift_ClassMirror_count(HeapObject *owner,
                                  const OpaqueValue *value,
                                  const Metadata *type) {
-  auto Clas = static_cast<const ClassMetadata*>(type);
-  swift_release(owner);
-  auto count = Clas->getDescription()->Class.NumFields;
-
-  // If the class has a superclass, the superclass instance is treated as the
-  // first child.
-  if (classHasSuperclass(Clas))
-    count += 1;
-
-  return count;
+    fprintf(stderr, "swift_ClassMirror_count 1\n");
+    auto Clas = static_cast<const ClassMetadata*>(type);
+    swift_release(owner);
+    auto count = Clas->getDescription()->Class.NumFields;
+    
+    // If the class has a superclass, the superclass instance is treated as the
+    // first child.
+    if (classHasSuperclass(Clas))
+        count += 1;
+        
+        return count;
 }
 
 /// \param owner passed at +1, consumed.
@@ -684,56 +685,57 @@ void swift_ClassMirror_subscript(String *outString,
                                  HeapObject *owner,
                                  OpaqueValue *value,
                                  const Metadata *type) {
-  auto Clas = static_cast<const ClassMetadata*>(type);
-
-  if (classHasSuperclass(Clas)) {
-    // If the class has a superclass, the superclass instance is treated as the
-    // first child.
-    if (i == 0) {
-      // FIXME: Put superclass name here
-      new (outString) String("super");
-      new (outMirror) Mirror(
-        getMirrorForSuperclass(Clas->SuperClass, owner, value, type));
-      return;
+    fprintf(stderr, "swift_ClassMirror_subscript 1\n");
+    auto Clas = static_cast<const ClassMetadata*>(type);
+    
+    if (classHasSuperclass(Clas)) {
+        // If the class has a superclass, the superclass instance is treated as the
+        // first child.
+        if (i == 0) {
+            // FIXME: Put superclass name here
+            new (outString) String("super");
+            new (outMirror) Mirror(
+                                   getMirrorForSuperclass(Clas->SuperClass, owner, value, type));
+            return;
+        }
+        --i;
     }
-    --i;
-  }
-
-  if (i < 0 || (size_t)i > Clas->getDescription()->Class.NumFields)
-    swift::crash("Swift mirror subscript bounds check failure");
-
-  // Load the type and offset from their respective vectors.
-  auto fieldType = Clas->getFieldTypes()[i];
-  assert(!fieldType.isIndirect()
-         && "class indirect properties not implemented");
-
-  // FIXME: If the class has ObjC heritage, get the field offset using the ObjC
-  // metadata, because we don't update the field offsets in the face of
-  // resilient base classes.
-  uintptr_t fieldOffset;
-  if (usesNativeSwiftReferenceCounting(Clas)) {
-    fieldOffset = Clas->getFieldOffsets()[i];
-  } else {
+    
+    if (i < 0 || (size_t)i > Clas->getDescription()->Class.NumFields)
+        swift::crash("Swift mirror subscript bounds check failure");
+    
+    // Load the type and offset from their respective vectors.
+    auto fieldType = Clas->getFieldTypes()[i];
+    assert(!fieldType.isIndirect()
+           && "class indirect properties not implemented");
+    
+    // FIXME: If the class has ObjC heritage, get the field offset using the ObjC
+    // metadata, because we don't update the field offsets in the face of
+    // resilient base classes.
+    uintptr_t fieldOffset;
+    if (usesNativeSwiftReferenceCounting(Clas)) {
+        fieldOffset = Clas->getFieldOffsets()[i];
+    } else {
 #if SWIFT_OBJC_INTEROP
-    Ivar *ivars = class_copyIvarList((Class)Clas, nullptr);
-    fieldOffset = ivar_getOffset(ivars[i]);
-    free(ivars);
+        Ivar *ivars = class_copyIvarList((Class)Clas, nullptr);
+        fieldOffset = ivar_getOffset(ivars[i]);
+        free(ivars);
 #else
-    swift::crash("Object appears to be Objective-C, but no runtime.");
+        swift::crash("Object appears to be Objective-C, but no runtime.");
 #endif
-  }
-
-  auto bytes = *reinterpret_cast<char * const *>(value);
-  auto fieldData = reinterpret_cast<OpaqueValue *>(bytes + fieldOffset);
-
-  new (outString) String(getFieldName(Clas->getDescription()->Class.FieldNames,
-                                      i));
-
- if (loadSpecialReferenceStorage(owner, fieldData, fieldType, outMirror))
-   return;
-
-  // 'owner' is consumed by this call.
-  new (outMirror) Mirror(reflect(owner, fieldData, fieldType.getType()));
+    }
+    
+    auto bytes = *reinterpret_cast<char * const *>(value);
+    auto fieldData = reinterpret_cast<OpaqueValue *>(bytes + fieldOffset);
+    
+    new (outString) String(getFieldName(Clas->getDescription()->Class.FieldNames,
+                                        i));
+    
+    if (loadSpecialReferenceStorage(owner, fieldData, fieldType, outMirror))
+        return;
+    
+    // 'owner' is consumed by this call.
+    new (outMirror) Mirror(reflect(owner, fieldData, fieldType.getType()));
 }
 
 // -- Mirror witnesses for ObjC classes.

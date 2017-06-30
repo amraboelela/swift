@@ -1541,6 +1541,7 @@ void swift_objc_swift3ImplicitObjCEntrypoint(id self, SEL selector,
 const ClassMetadata *swift::getRootSuperclass() {
     fprintf(stderr, "getRootSuperclass 1\n");
 #if SWIFT_OBJC_INTEROP
+    fprintf(stderr, "getRootSuperclass SWIFT_OBJC_INTEROP\n");
     static Lazy<const ClassMetadata *> SwiftObjectClass;
     
     return SwiftObjectClass.get([](void *ptr) {
@@ -1548,6 +1549,7 @@ const ClassMetadata *swift::getRootSuperclass() {
         (const ClassMetadata *)[SwiftObject class];
     });
 #else
+    fprintf(stderr, "getRootSuperclass return nullptr\n");
     return nullptr;
 #endif
 }
