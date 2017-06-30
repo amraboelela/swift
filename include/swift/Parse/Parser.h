@@ -977,15 +977,11 @@ public:
     /// Any declaration attributes attached to the parameter.
     DeclAttributes Attrs;
 
-    /// The location of the 'let', 'var', or 'inout' keyword, if present.
-    SourceLoc LetVarInOutLoc;
-
-    enum SpecifierKindTy {
-      Let,
-      Var,
-      InOut
-    };
-    SpecifierKindTy SpecifierKind = Let; // Defaults to let.
+    /// The location of the 'inout' keyword, if present.
+    SourceLoc SpecifierLoc;
+    
+    /// The parsed specifier kind, if present.
+    VarDecl::Specifier SpecifierKind = VarDecl::Specifier::None;
 
     /// The location of the first name.
     ///
@@ -1097,7 +1093,8 @@ public:
                                                        bool isExprBasic);
   
 
-  Pattern *createBindingFromPattern(SourceLoc loc, Identifier name, bool isLet);
+  Pattern *createBindingFromPattern(SourceLoc loc, Identifier name,
+                                    VarDecl::Specifier specifier);
   
 
   /// \brief Determine whether this token can only start a matching pattern
