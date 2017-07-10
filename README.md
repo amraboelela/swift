@@ -54,7 +54,7 @@ discussed below.
 macOS, Ubuntu Linux LTS, and the latest Ubuntu Linux release are the current
 supported host development operating systems.
 
-For macOS, you need [Xcode 9.0 beta 1](https://developer.apple.com/xcode/downloads/).
+For macOS, you need [Xcode 9.0 beta 2](https://developer.apple.com/xcode/downloads/).
 
 For Ubuntu, you'll need the following development dependencies:
 
@@ -167,7 +167,7 @@ work with other SDKs, you'll need to create a second build using Ninja.
 
 ## Testing Swift
 
-See [docs/Testing.rst](docs/Testing.rst).
+See [docs/Testing.md](docs/Testing.md).
 
 ## Contributing to Swift
 

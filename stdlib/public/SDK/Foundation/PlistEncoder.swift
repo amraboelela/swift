@@ -94,7 +94,7 @@ fileprivate class _PlistEncoder : Encoder {
     fileprivate let options: PropertyListEncoder._Options
 
     /// The path to the current point in encoding.
-    fileprivate(set) public var codingPath: [CodingKey?]
+    fileprivate(set) public var codingPath: [CodingKey]
 
     /// Contextual user-provided information for use during encoding.
     public var userInfo: [CodingUserInfoKey : Any] {
@@ -104,23 +104,10 @@ fileprivate class _PlistEncoder : Encoder {
     // MARK: - Initialization
 
     /// Initializes `self` with the given top-level encoder options.
-    fileprivate init(options: PropertyListEncoder._Options, codingPath: [CodingKey?] = []) {
+    fileprivate init(options: PropertyListEncoder._Options, codingPath: [CodingKey] = []) {
         self.options = options
         self.storage = _PlistEncodingStorage()
         self.codingPath = codingPath
-    }
-
-    // MARK: - Coding Path Operations
-
-    /// Performs the given closure with the given key pushed onto the end of the current coding path.
-    ///
-    /// - parameter key: The key to push. May be nil for unkeyed containers.
-    /// - parameter work: The work to perform with the key in the path.
-    fileprivate func with<T>(pushedKey key: CodingKey?, _ work: () throws -> T) rethrows -> T {
-        self.codingPath.append(key)
-        let ret: T = try work()
-        self.codingPath.removeLast()
-        return ret
     }
 
     /// Returns whether a new element can be encoded at this coding path.
@@ -233,28 +220,15 @@ fileprivate struct _PlistKeyedEncodingContainer<K : CodingKey> : KeyedEncodingCo
     private let container: NSMutableDictionary
 
     /// The path of coding keys taken to get to this point in encoding.
-    private(set) public var codingPath: [CodingKey?]
+    private(set) public var codingPath: [CodingKey]
 
     // MARK: - Initialization
 
     /// Initializes `self` with the given references.
-    fileprivate init(referencing encoder: _PlistEncoder, codingPath: [CodingKey?], wrapping container: NSMutableDictionary) {
+    fileprivate init(referencing encoder: _PlistEncoder, codingPath: [CodingKey], wrapping container: NSMutableDictionary) {
         self.encoder = encoder
         self.codingPath = codingPath
         self.container = container
-    }
-
-    // MARK: - Coding Path Operations
-
-    /// Performs the given closure with the given key pushed onto the end of the current coding path.
-    ///
-    /// - parameter key: The key to push. May be nil for unkeyed containers.
-    /// - parameter work: The work to perform with the key in the path.
-    fileprivate mutating func with<T>(pushedKey key: CodingKey?, _ work: () throws -> T) rethrows -> T {
-        self.codingPath.append(key)
-        let ret: T = try work()
-        self.codingPath.removeLast()
-        return ret
     }
 
     // MARK: - KeyedEncodingContainerProtocol Methods
@@ -276,32 +250,33 @@ fileprivate struct _PlistKeyedEncodingContainer<K : CodingKey> : KeyedEncodingCo
     public mutating func encode(_ value: Double, forKey key: Key) throws { self.container[key.stringValue] = self.encoder.box(value) }
 
     public mutating func encode<T : Encodable>(_ value: T, forKey key: Key) throws {
-        try self.encoder.with(pushedKey: key) {
-            self.container[key.stringValue] = try self.encoder.box(value)
-        }
+        self.encoder.codingPath.append(key)
+        defer { self.encoder.codingPath.removeLast() }
+        self.container[key.stringValue] = try self.encoder.box(value)
     }
 
     public mutating func nestedContainer<NestedKey>(keyedBy keyType: NestedKey.Type, forKey key: Key) -> KeyedEncodingContainer<NestedKey> {
         let dictionary = NSMutableDictionary()
         self.container[key.stringValue] = dictionary
 
-        return self.with(pushedKey: key) {
-            let container = _PlistKeyedEncodingContainer<NestedKey>(referencing: self.encoder, codingPath: self.codingPath, wrapping: dictionary)
-            return KeyedEncodingContainer(container)
-        }
+        self.codingPath.append(key)
+        defer { self.codingPath.removeLast() }
+
+        let container = _PlistKeyedEncodingContainer<NestedKey>(referencing: self.encoder, codingPath: self.codingPath, wrapping: dictionary)
+        return KeyedEncodingContainer(container)
     }
 
     public mutating func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer {
         let array = NSMutableArray()
         self.container[key.stringValue] = array
 
-        return self.with(pushedKey: key) {
-            return _PlistUnkeyedEncodingContainer(referencing: self.encoder, codingPath: self.codingPath, wrapping: array)
-        }
+        self.codingPath.append(key)
+        defer { self.codingPath.removeLast() }
+        return _PlistUnkeyedEncodingContainer(referencing: self.encoder, codingPath: self.codingPath, wrapping: array)
     }
 
     public mutating func superEncoder() -> Encoder {
-        return _PlistReferencingEncoder(referencing: self.encoder, at: _PlistSuperKey.super, wrapping: self.container)
+        return _PlistReferencingEncoder(referencing: self.encoder, at: _PlistKey.super, wrapping: self.container)
     }
 
     public mutating func superEncoder(forKey key: Key) -> Encoder {
@@ -319,28 +294,20 @@ fileprivate struct _PlistUnkeyedEncodingContainer : UnkeyedEncodingContainer {
     private let container: NSMutableArray
 
     /// The path of coding keys taken to get to this point in encoding.
-    private(set) public var codingPath: [CodingKey?]
+    private(set) public var codingPath: [CodingKey]
+
+    /// The number of elements encoded into the container.
+    public var count: Int {
+        return self.container.count
+    }
 
     // MARK: - Initialization
 
     /// Initializes `self` with the given references.
-    fileprivate init(referencing encoder: _PlistEncoder, codingPath: [CodingKey?], wrapping container: NSMutableArray) {
+    fileprivate init(referencing encoder: _PlistEncoder, codingPath: [CodingKey], wrapping container: NSMutableArray) {
         self.encoder = encoder
         self.codingPath = codingPath
         self.container = container
-    }
-
-    // MARK: - Coding Path Operations
-
-    /// Performs the given closure with the given key pushed onto the end of the current coding path.
-    ///
-    /// - parameter key: The key to push. May be nil for unkeyed containers.
-    /// - parameter work: The work to perform with the key in the path.
-    fileprivate mutating func with<T>(pushedKey key: CodingKey?, _ work: () throws -> T) rethrows -> T {
-        self.codingPath.append(key)
-        let ret: T = try work()
-        self.codingPath.removeLast()
-        return ret
     }
 
     // MARK: - UnkeyedEncodingContainer Methods
@@ -362,28 +329,29 @@ fileprivate struct _PlistUnkeyedEncodingContainer : UnkeyedEncodingContainer {
     public mutating func encode(_ value: String) throws { self.container.add(self.encoder.box(value)) }
 
     public mutating func encode<T : Encodable>(_ value: T) throws {
-        try self.encoder.with(pushedKey: nil) {
-            self.container.add(try self.encoder.box(value))
-        }
+        self.encoder.codingPath.append(_PlistKey(index: self.count))
+        defer { self.encoder.codingPath.removeLast() }
+        self.container.add(try self.encoder.box(value))
     }
 
     public mutating func nestedContainer<NestedKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> {
+        self.codingPath.append(_PlistKey(index: self.count))
+        defer { self.codingPath.removeLast() }
+
         let dictionary = NSMutableDictionary()
         self.container.add(dictionary)
 
-        return self.with(pushedKey: nil) {
-            let container = _PlistKeyedEncodingContainer<NestedKey>(referencing: self.encoder, codingPath: self.codingPath, wrapping: dictionary)
-            return KeyedEncodingContainer(container)
-        }
+        let container = _PlistKeyedEncodingContainer<NestedKey>(referencing: self.encoder, codingPath: self.codingPath, wrapping: dictionary)
+        return KeyedEncodingContainer(container)
     }
 
     public mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer {
+        self.codingPath.append(_PlistKey(index: self.count))
+        defer { self.codingPath.removeLast() }
+
         let array = NSMutableArray()
         self.container.add(array)
-
-        return self.with(pushedKey: nil) {
-            return _PlistUnkeyedEncodingContainer(referencing: self.encoder, codingPath: self.codingPath, wrapping: array)
-        }
+        return _PlistUnkeyedEncodingContainer(referencing: self.encoder, codingPath: self.codingPath, wrapping: array)
     }
 
     public mutating func superEncoder() -> Encoder {
@@ -555,7 +523,7 @@ fileprivate class _PlistReferencingEncoder : _PlistEncoder {
         self.reference = .array(array, index)
         super.init(options: encoder.options, codingPath: encoder.codingPath)
 
-        self.codingPath.append(nil)
+        self.codingPath.append(_PlistKey(index: index))
     }
 
     /// Initializes `self` by referencing the given dictionary container in the given encoder.
@@ -669,7 +637,7 @@ fileprivate class _PlistDecoder : Decoder {
     fileprivate let options: PropertyListDecoder._Options
 
     /// The path to the current point in encoding.
-    fileprivate(set) public var codingPath: [CodingKey?]
+    fileprivate(set) public var codingPath: [CodingKey]
 
     /// Contextual user-provided information for use during encoding.
     public var userInfo: [CodingUserInfoKey : Any] {
@@ -679,24 +647,11 @@ fileprivate class _PlistDecoder : Decoder {
     // MARK: - Initialization
 
     /// Initializes `self` with the given top-level container and options.
-    fileprivate init(referencing container: Any, at codingPath: [CodingKey?] = [], options: PropertyListDecoder._Options) {
+    fileprivate init(referencing container: Any, at codingPath: [CodingKey] = [], options: PropertyListDecoder._Options) {
         self.storage = _PlistDecodingStorage()
         self.storage.push(container: container)
         self.codingPath = codingPath
         self.options = options
-    }
-
-    // MARK: - Coding Path Operations
-
-    /// Performs the given closure with the given key pushed onto the end of the current coding path.
-    ///
-    /// - parameter key: The key to push. May be nil for unkeyed containers.
-    /// - parameter work: The work to perform with the key in the path.
-    fileprivate func with<T>(pushedKey key: CodingKey?, _ work: () throws -> T) rethrows -> T {
-        self.codingPath.append(key)
-        let ret: T = try work()
-        self.codingPath.removeLast()
-        return ret
     }
 
     // MARK: - Decoder Methods
@@ -784,7 +739,7 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
     private let container: [String : Any]
 
     /// The path of coding keys taken to get to this point in decoding.
-    private(set) public var codingPath: [CodingKey?]
+    private(set) public var codingPath: [CodingKey]
 
     // MARK: - Initialization
 
@@ -822,13 +777,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Bool.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: Bool.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: Int.Type, forKey key: Key) throws -> Int {
@@ -836,13 +792,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Int.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: Int.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: Int8.Type, forKey key: Key) throws -> Int8 {
@@ -850,13 +807,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Int8.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: Int8.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: Int16.Type, forKey key: Key) throws -> Int16 {
@@ -864,13 +822,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Int16.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: Int16.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: Int32.Type, forKey key: Key) throws -> Int32 {
@@ -878,13 +837,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Int32.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: Int32.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: Int64.Type, forKey key: Key) throws -> Int64 {
@@ -892,13 +852,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Int64.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: Int64.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: UInt.Type, forKey key: Key) throws -> UInt {
@@ -906,13 +867,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: UInt.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: UInt.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: UInt8.Type, forKey key: Key) throws -> UInt8 {
@@ -920,13 +882,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: UInt8.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: UInt8.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: UInt16.Type, forKey key: Key) throws -> UInt16 {
@@ -934,13 +897,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: UInt16.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: UInt16.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: UInt32.Type, forKey key: Key) throws -> UInt32 {
@@ -948,13 +912,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: UInt32.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: UInt32.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: UInt64.Type, forKey key: Key) throws -> UInt64 {
@@ -962,13 +927,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: UInt64.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: UInt64.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: Float.Type, forKey key: Key) throws -> Float {
@@ -976,13 +942,13 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Float.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
-
-            return value
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
+        guard let value = try self.decoder.unbox(entry, as: Float.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: Double.Type, forKey key: Key) throws -> Double {
@@ -990,13 +956,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: Double.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: Double.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode(_ type: String.Type, forKey key: Key) throws -> String {
@@ -1004,13 +971,14 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: String.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: String.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func decode<T : Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
@@ -1018,57 +986,61 @@ fileprivate struct _PlistKeyedDecodingContainer<K : CodingKey> : KeyedDecodingCo
             throw DecodingError.keyNotFound(key, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "No value associated with key \(key) (\"\(key.stringValue)\")."))
         }
 
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = try self.decoder.unbox(entry, as: T.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            return value
+        guard let value = try self.decoder.unbox(entry, as: T.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath, debugDescription: "Expected \(type) value but found null instead."))
         }
+
+        return value
     }
 
     public func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type, forKey key: Key) throws -> KeyedDecodingContainer<NestedKey> {
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = self.container[key.stringValue] else {
-                throw DecodingError.valueNotFound(KeyedDecodingContainer<NestedKey>.self,
-                                                  DecodingError.Context(codingPath: self.codingPath,
-                                                          debugDescription: "Cannot get nested keyed container -- no value found for key \"\(key.stringValue)\""))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            guard let dictionary = value as? [String : Any] else {
-                throw DecodingError._typeMismatch(at: self.codingPath, expectation: [String : Any].self, reality: value)
-            }
-
-            let container = _PlistKeyedDecodingContainer<NestedKey>(referencing: self.decoder, wrapping: dictionary)
-            return KeyedDecodingContainer(container)
+        guard let value = self.container[key.stringValue] else {
+            throw DecodingError.valueNotFound(KeyedDecodingContainer<NestedKey>.self,
+                                              DecodingError.Context(codingPath: self.codingPath,
+                                                      debugDescription: "Cannot get nested keyed container -- no value found for key \"\(key.stringValue)\""))
         }
+
+        guard let dictionary = value as? [String : Any] else {
+            throw DecodingError._typeMismatch(at: self.codingPath, expectation: [String : Any].self, reality: value)
+        }
+
+        let container = _PlistKeyedDecodingContainer<NestedKey>(referencing: self.decoder, wrapping: dictionary)
+        return KeyedDecodingContainer(container)
     }
 
     public func nestedUnkeyedContainer(forKey key: Key) throws -> UnkeyedDecodingContainer {
-        return try self.decoder.with(pushedKey: key) {
-            guard let value = self.container[key.stringValue] else {
-                throw DecodingError.valueNotFound(UnkeyedDecodingContainer.self,
-                                                  DecodingError.Context(codingPath: self.codingPath,
-                                                          debugDescription: "Cannot get nested unkeyed container -- no value found for key \"\(key.stringValue)\""))
-            }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
 
-            guard let array = value as? [Any] else {
-                throw DecodingError._typeMismatch(at: self.codingPath, expectation: [Any].self, reality: value)
-            }
-
-            return _PlistUnkeyedDecodingContainer(referencing: self.decoder, wrapping: array)
+        guard let value = self.container[key.stringValue] else {
+            throw DecodingError.valueNotFound(UnkeyedDecodingContainer.self,
+                                              DecodingError.Context(codingPath: self.codingPath,
+                                                      debugDescription: "Cannot get nested unkeyed container -- no value found for key \"\(key.stringValue)\""))
         }
+
+        guard let array = value as? [Any] else {
+            throw DecodingError._typeMismatch(at: self.codingPath, expectation: [Any].self, reality: value)
+        }
+
+        return _PlistUnkeyedDecodingContainer(referencing: self.decoder, wrapping: array)
     }
 
     private func _superDecoder(forKey key: CodingKey) throws -> Decoder {
-        return self.decoder.with(pushedKey: key) {
-            let value: Any = self.container[key.stringValue] ?? NSNull()
-            return _PlistDecoder(referencing: value, at: self.decoder.codingPath, options: self.decoder.options)
-        }
+        self.decoder.codingPath.append(key)
+        defer { self.decoder.codingPath.removeLast() }
+
+        let value: Any = self.container[key.stringValue] ?? NSNull()
+        return _PlistDecoder(referencing: value, at: self.decoder.codingPath, options: self.decoder.options)
     }
 
     public func superDecoder() throws -> Decoder {
-        return try _superDecoder(forKey: _PlistSuperKey.super)
+        return try _superDecoder(forKey: _PlistKey.super)
     }
 
     public func superDecoder(forKey key: Key) throws -> Decoder {
@@ -1086,10 +1058,10 @@ fileprivate struct _PlistUnkeyedDecodingContainer : UnkeyedDecodingContainer {
     private let container: [Any]
 
     /// The path of coding keys taken to get to this point in decoding.
-    private(set) public var codingPath: [CodingKey?]
+    private(set) public var codingPath: [CodingKey]
 
     /// The index of the element we're about to decode.
-    private var currentIndex: Int
+    private(set) public var currentIndex: Int
 
     // MARK: - Initialization
 
@@ -1113,7 +1085,7 @@ fileprivate struct _PlistUnkeyedDecodingContainer : UnkeyedDecodingContainer {
 
     public mutating func decodeNil() throws -> Bool {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(Any?.self, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(Any?.self, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
         if self.container[self.currentIndex] is NSNull {
@@ -1126,289 +1098,307 @@ fileprivate struct _PlistUnkeyedDecodingContainer : UnkeyedDecodingContainer {
 
     public mutating func decode(_ type: Bool.Type) throws -> Bool {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Bool.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Bool.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: Int.Type) throws -> Int {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: Int8.Type) throws -> Int8 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int8.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int8.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: Int16.Type) throws -> Int16 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int16.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int16.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: Int32.Type) throws -> Int32 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int32.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int32.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: Int64.Type) throws -> Int64 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int64.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Int64.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: UInt.Type) throws -> UInt {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: UInt8.Type) throws -> UInt8 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt8.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt8.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: UInt16.Type) throws -> UInt16 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt16.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt16.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: UInt32.Type) throws -> UInt32 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt32.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt32.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: UInt64.Type) throws -> UInt64 {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt64.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: UInt64.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: Float.Type) throws -> Float {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Float.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Float.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: Double.Type) throws -> Double {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Double.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: Double.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode(_ type: String.Type) throws -> String {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: String.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: String.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func decode<T : Decodable>(_ type: T.Type) throws -> T {
         guard !self.isAtEnd else {
-            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Unkeyed container is at end."))
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Unkeyed container is at end."))
         }
 
-        return try self.decoder.with(pushedKey: nil) {
-            guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: T.self) else {
-                throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [nil], debugDescription: "Expected \(type) but found null instead."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            self.currentIndex += 1
-            return decoded
+        guard let decoded = try self.decoder.unbox(self.container[self.currentIndex], as: T.self) else {
+            throw DecodingError.valueNotFound(type, DecodingError.Context(codingPath: self.decoder.codingPath + [_PlistKey(index: self.currentIndex)], debugDescription: "Expected \(type) but found null instead."))
         }
+
+        self.currentIndex += 1
+        return decoded
     }
 
     public mutating func nestedContainer<NestedKey>(keyedBy type: NestedKey.Type) throws -> KeyedDecodingContainer<NestedKey> {
-        return try self.decoder.with(pushedKey: nil) {
-            guard !self.isAtEnd else {
-                throw DecodingError.valueNotFound(KeyedDecodingContainer<NestedKey>.self,
-                                                  DecodingError.Context(codingPath: self.codingPath,
-                                                          debugDescription: "Cannot get nested keyed container -- unkeyed container is at end."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            let value = self.container[self.currentIndex]
-            guard !(value is NSNull) else {
-                throw DecodingError.valueNotFound(KeyedDecodingContainer<NestedKey>.self,
-                                                  DecodingError.Context(codingPath: self.codingPath,
-                                                          debugDescription: "Cannot get keyed decoding container -- found null value instead."))
-            }
-
-            guard let dictionary = value as? [String : Any] else {
-                throw DecodingError._typeMismatch(at: self.codingPath, expectation: [String : Any].self, reality: value)
-            }
-
-            self.currentIndex += 1
-            let container = _PlistKeyedDecodingContainer<NestedKey>(referencing: self.decoder, wrapping: dictionary)
-            return KeyedDecodingContainer(container)
+        guard !self.isAtEnd else {
+            throw DecodingError.valueNotFound(KeyedDecodingContainer<NestedKey>.self,
+                                              DecodingError.Context(codingPath: self.codingPath,
+                                                      debugDescription: "Cannot get nested keyed container -- unkeyed container is at end."))
         }
+
+        let value = self.container[self.currentIndex]
+        guard !(value is NSNull) else {
+            throw DecodingError.valueNotFound(KeyedDecodingContainer<NestedKey>.self,
+                                              DecodingError.Context(codingPath: self.codingPath,
+                                                      debugDescription: "Cannot get keyed decoding container -- found null value instead."))
+        }
+
+        guard let dictionary = value as? [String : Any] else {
+            throw DecodingError._typeMismatch(at: self.codingPath, expectation: [String : Any].self, reality: value)
+        }
+
+        self.currentIndex += 1
+        let container = _PlistKeyedDecodingContainer<NestedKey>(referencing: self.decoder, wrapping: dictionary)
+        return KeyedDecodingContainer(container)
     }
 
     public mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
-        return try self.decoder.with(pushedKey: nil) {
-            guard !self.isAtEnd else {
-                throw DecodingError.valueNotFound(UnkeyedDecodingContainer.self,
-                                                  DecodingError.Context(codingPath: self.codingPath,
-                                                          debugDescription: "Cannot get nested unkeyed container -- unkeyed container is at end."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            let value = self.container[self.currentIndex]
-            guard !(value is NSNull) else {
-                throw DecodingError.valueNotFound(UnkeyedDecodingContainer.self,
-                                                  DecodingError.Context(codingPath: self.codingPath,
-                                                          debugDescription: "Cannot get keyed decoding container -- found null value instead."))
-            }
-
-            guard let array = value as? [Any] else {
-                throw DecodingError._typeMismatch(at: self.codingPath, expectation: [Any].self, reality: value)
-            }
-
-            self.currentIndex += 1
-            return _PlistUnkeyedDecodingContainer(referencing: self.decoder, wrapping: array)
+        guard !self.isAtEnd else {
+            throw DecodingError.valueNotFound(UnkeyedDecodingContainer.self,
+                                              DecodingError.Context(codingPath: self.codingPath,
+                                                      debugDescription: "Cannot get nested unkeyed container -- unkeyed container is at end."))
         }
+
+        let value = self.container[self.currentIndex]
+        guard !(value is NSNull) else {
+            throw DecodingError.valueNotFound(UnkeyedDecodingContainer.self,
+                                              DecodingError.Context(codingPath: self.codingPath,
+                                                      debugDescription: "Cannot get keyed decoding container -- found null value instead."))
+        }
+
+        guard let array = value as? [Any] else {
+            throw DecodingError._typeMismatch(at: self.codingPath, expectation: [Any].self, reality: value)
+        }
+
+        self.currentIndex += 1
+        return _PlistUnkeyedDecodingContainer(referencing: self.decoder, wrapping: array)
     }
 
     public mutating func superDecoder() throws -> Decoder {
-        return try self.decoder.with(pushedKey: nil) {
-            guard !self.isAtEnd else {
-                throw DecodingError.valueNotFound(Decoder.self, DecodingError.Context(codingPath: self.codingPath,
-                                                                        debugDescription: "Cannot get superDecoder() -- unkeyed container is at end."))
-            }
+        self.decoder.codingPath.append(_PlistKey(index: self.currentIndex))
+        defer { self.decoder.codingPath.removeLast() }
 
-            let value = self.container[self.currentIndex]
-            self.currentIndex += 1
-            return _PlistDecoder(referencing: value, at: self.decoder.codingPath, options: self.decoder.options)
+        guard !self.isAtEnd else {
+            throw DecodingError.valueNotFound(Decoder.self, DecodingError.Context(codingPath: self.codingPath,
+                                                                    debugDescription: "Cannot get superDecoder() -- unkeyed container is at end."))
         }
+
+        let value = self.container[self.currentIndex]
+        self.currentIndex += 1
+        return _PlistDecoder(referencing: value, at: self.decoder.codingPath, options: self.decoder.options)
     }
 }
 
@@ -1765,9 +1755,27 @@ fileprivate let _plistNull = "$null"
 fileprivate let _plistNullNSString = NSString(string: _plistNull)
 
 //===----------------------------------------------------------------------===//
-// Shared Super Key
+// Shared Key Types
 //===----------------------------------------------------------------------===//
 
-fileprivate enum _PlistSuperKey : String, CodingKey {
-    case `super`
+fileprivate struct _PlistKey : CodingKey {
+    public var stringValue: String
+    public var intValue: Int?
+
+    public init?(stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+
+    public init?(intValue: Int) {
+        self.stringValue = "\(intValue)"
+        self.intValue = intValue
+    }
+
+    fileprivate init(index: Int) {
+        self.stringValue = "Index \(index)"
+        self.intValue = index
+    }
+
+    fileprivate static let `super` = _PlistKey(stringValue: "super")!
 }

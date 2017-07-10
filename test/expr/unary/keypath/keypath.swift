@@ -322,6 +322,10 @@ func testKeyPathSubscriptTuple(readonly: (Z,Z), writable: inout (Z,Z),
   writable[keyPath: rkp] = sink
 }
 
+func testKeyPathSubscriptLValue(base: Z, kp: inout KeyPath<Z, Z>) {
+  _ = base[keyPath: kp]
+}
+
 struct AA {
   subscript(x: Int) -> Int { return x }
   var c: CC? = CC()
@@ -336,8 +340,20 @@ func testKeyPathOptional() {
   _ = \AA.c!.i
 }
 
+func testLiteralInAnyContext() {
+  let _: AnyKeyPath = \A.property
+  let _: AnyObject = \A.property
+  let _: Any = \A.property
+  let _: Any? = \A.property
+}
+
+func testMoreGeneralContext<T, U>(_: KeyPath<T, U>, with: T.Type) {}
+
+func testLiteralInMoreGeneralContext() {
+  testMoreGeneralContext(\.property, with: A.self)
+}
+
 func testSyntaxErrors() { // expected-note{{}}
-  // TODO: recovery
   _ = \.  ; // expected-error{{expected member name following '.'}}
   _ = \.a ;
   _ = \[a ;

@@ -345,9 +345,7 @@ mapParsedParameters(Parser &parser,
                                      paramInfo.SpecifierLoc,
                                      argNameLoc, argName,
                                      paramNameLoc, paramName, Type(),
-                                     parser.CurDeclContext);
-    param->getAttrs() = paramInfo.Attrs;
-    
+                                     parser.CurDeclContext);    
     if (argNameLoc.isInvalid() && paramNameLoc.isInvalid())
       param->setImplicit();
 
@@ -381,7 +379,7 @@ mapParsedParameters(Parser &parser,
     } else if (paramInfo.SpecifierKind == VarDecl::Specifier::InOut) {
       parser.diagnose(paramInfo.SpecifierLoc, diag::inout_must_have_type);
       paramInfo.SpecifierLoc = SourceLoc();
-      paramInfo.SpecifierKind = VarDecl::Specifier::None;
+      paramInfo.SpecifierKind = VarDecl::Specifier::Owned;
     }
     return param;
   };

@@ -261,6 +261,40 @@ SILGenFunction::emitFormalEvaluationManagedBorrowedRValueWithCleanup(
   return ManagedValue(borrowed, CleanupHandle::invalid());
 }
 
+namespace {
+
+struct EndBorrowArgumentCleanup : Cleanup {
+  SILPHIArgument *arg;
+
+  EndBorrowArgumentCleanup(SILPHIArgument *arg) : arg(arg) {}
+
+  void emit(SILGenFunction &gen, CleanupLocation l) override {
+    gen.B.createEndBorrowArgument(l, arg);
+  }
+
+  void dump(SILGenFunction &gen) const override {
+#ifndef NDEBUG
+    llvm::errs() << "EndBorrowArgumentCleanup "
+                 << "State:" << getState() << "\n"
+                 << "argument: " << *arg << "\n";
+#endif
+  }
+};
+
+} // end anonymous namespace
+
+ManagedValue
+SILGenFunction::emitManagedBorrowedArgumentWithCleanup(SILPHIArgument *arg) {
+  if (arg->getOwnershipKind() == ValueOwnershipKind::Trivial ||
+      arg->getType().isTrivial(arg->getModule())) {
+    return ManagedValue::forUnmanaged(arg);
+  }
+
+  assert(arg->getOwnershipKind() == ValueOwnershipKind::Guaranteed);
+  Cleanups.pushCleanup<EndBorrowArgumentCleanup>(arg);
+  return ManagedValue(arg, CleanupHandle::invalid());
+}
+
 ManagedValue
 SILGenFunction::emitManagedBorrowedRValueWithCleanup(SILValue original,
                                                      SILValue borrowed) {
@@ -2356,7 +2390,7 @@ RValue RValueEmitter::visitTupleShuffleExpr(TupleShuffleExpr *E,
 }
 
 SILValue SILGenFunction::emitMetatypeOfValue(SILLocation loc, Expr *baseExpr) {
-  Type formalBaseType = baseExpr->getType()->getLValueOrInOutObjectType();
+  Type formalBaseType = baseExpr->getType()->getWithoutSpecifierType();
   CanType baseTy = formalBaseType->getCanonicalType();
 
   // For class, archetype, and protocol types, look up the dynamic metatype.
@@ -2806,7 +2840,7 @@ RValue RValueEmitter::visitKeyPathExpr(KeyPathExpr *E, SGFContext C) {
         // If the stored value would need to be reabstracted in fully opaque
         // context, then we have to treat the component as computed.
         auto componentObjTy =
-          component.getComponentType()->getLValueOrInOutObjectType();
+          component.getComponentType()->getWithoutSpecifierType();
         auto storageTy = SGF.SGM.Types.getSubstitutedStorageType(decl,
                                                                 componentObjTy);
         auto opaqueTy = SGF.getLoweredType(AbstractionPattern::getOpaque(),
@@ -3243,7 +3277,7 @@ RValue RValueEmitter::visitRebindSelfInConstructorExpr(
 }
 
 static bool isVerbatimNullableTypeInC(SILModule &M, Type ty) {
-  ty = ty->getLValueOrInOutObjectType()->getReferenceStorageReferent();
+  ty = ty->getWithoutSpecifierType()->getReferenceStorageReferent();
 
   // Class instances, and @objc existentials are all nullable.
   if (ty->hasReferenceSemantics()) {
@@ -4150,7 +4184,7 @@ void SILGenFunction::emitOpenExistentialExprImpl(
     writebackScope.emplace(*this);
 
     Type formalRValueType =
-      E->getOpaqueValue()->getType()->getLValueOrInOutObjectType();
+      E->getOpaqueValue()->getType()->getWithoutSpecifierType();
 
     accessKind = E->getExistentialValue()->getLValueAccessKind();
     auto lv = emitLValue(E->getExistentialValue(), accessKind);

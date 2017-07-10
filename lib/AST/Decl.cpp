@@ -1681,7 +1681,7 @@ OverloadSignature ValueDecl::getOverloadSignature() const {
         if (auto funcTy = signature.InterfaceType->getAs<AnyFunctionType>()) {
           signature.InterfaceType
             = GenericFunctionType::get(genericSig,
-                                       funcTy->getInput(),
+                                       funcTy->getParams(),
                                        funcTy->getResult(),
                                        funcTy->getExtInfo())
                 ->getCanonicalType();
@@ -3021,9 +3021,8 @@ findProtocolSelfReferences(const ProtocolDecl *proto, Type type,
   // Tuples preserve variance.
   if (auto tuple = type->getAs<TupleType>()) {
     auto kind = SelfReferenceKind::None();
-    for (auto &elt: tuple->getElements()) {
-      kind |= findProtocolSelfReferences(proto, elt.getType(),
-                                         skipAssocTypes);
+    for (auto &elt : tuple->getElements()) {
+      kind |= findProtocolSelfReferences(proto, elt.getType(), skipAssocTypes);
     }
     return kind;
   } 
@@ -3031,8 +3030,11 @@ findProtocolSelfReferences(const ProtocolDecl *proto, Type type,
   // Function preserve variance in the result type, and flip variance in
   // the parameter type.
   if (auto funcTy = type->getAs<AnyFunctionType>()) {
-    auto inputKind = findProtocolSelfReferences(proto, funcTy->getInput(),
-                                                skipAssocTypes);
+    auto inputKind = SelfReferenceKind::None();
+    for (auto &elt : funcTy->getParams()) {
+      inputKind |= findProtocolSelfReferences(proto, elt.getType(),
+                                              skipAssocTypes);
+    }
     auto resultKind = findProtocolSelfReferences(proto, funcTy->getResult(),
                                                  skipAssocTypes);
 
@@ -3292,8 +3294,7 @@ void ProtocolDecl::computeRequirementSignature() {
                                   LookUpConformanceInModule(module));
   builder.addGenericParameter(selfType);
   auto selfPA =
-      builder.resolveArchetype(selfType,
-                               ArchetypeResolutionKind::CompleteWellFormed);
+      builder.resolveArchetype(selfType, ArchetypeResolutionKind::WellFormed);
 
   builder.addRequirement(
          requirement,
@@ -4190,7 +4191,7 @@ Type DeclContext::getSelfInterfaceType() const {
 /// generic parameters.
 ParamDecl *ParamDecl::createUnboundSelf(SourceLoc loc, DeclContext *DC) {
   ASTContext &C = DC->getASTContext();
-  auto *selfDecl = new (C) ParamDecl(VarDecl::Specifier::None, SourceLoc(), SourceLoc(),
+  auto *selfDecl = new (C) ParamDecl(VarDecl::Specifier::Owned, SourceLoc(), SourceLoc(),
                                      Identifier(), loc, C.Id_self, Type(), DC);
   selfDecl->setImplicit();
   return selfDecl;
@@ -4210,7 +4211,7 @@ ParamDecl *ParamDecl::createSelf(SourceLoc loc, DeclContext *DC,
   ASTContext &C = DC->getASTContext();
   auto selfType = DC->getSelfTypeInContext();
   auto selfInterfaceType = DC->getSelfInterfaceType();
-  auto specifier = VarDecl::Specifier::None;
+  auto specifier = VarDecl::Specifier::Owned;
   assert(selfType && selfInterfaceType);
 
   if (isStaticMethod) {

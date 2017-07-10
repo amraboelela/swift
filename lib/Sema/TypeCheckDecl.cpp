@@ -1272,7 +1272,10 @@ static void configureImplicitSelf(TypeChecker &tc,
 
   // 'self' is 'let' for reference types (i.e., classes) or when 'self' is
   // neither inout.
-  selfDecl->setLet(!selfIfaceTy->is<InOutType>());
+  auto specifier = selfIfaceTy->is<InOutType>()
+                 ? VarDecl::Specifier::InOut
+                 : VarDecl::Specifier::Owned;
+  selfDecl->setSpecifier(specifier);
 
   selfDecl->setInterfaceType(selfIfaceTy);
 }
@@ -2641,6 +2644,9 @@ static void checkBridgedFunctions(TypeChecker &TC) {
 
 /// Infer the Objective-C name for a given declaration.
 static void inferObjCName(TypeChecker &tc, ValueDecl *decl) {
+  if (isa<DestructorDecl>(decl))
+    return;
+
   // If this declaration overrides an @objc declaration, use its name.
   if (auto overridden = decl->getOverriddenDecl()) {
     if (overridden->isObjC()) {
@@ -4324,7 +4330,7 @@ public:
           TC.diagnose(NTD->getLoc(),
                       diag::unsupported_type_nested_in_generic_function,
                       NTD->getName(),
-                      AFD->getName());
+                      AFD->getFullName());
         } else {
           TC.diagnose(NTD->getLoc(),
                       diag::unsupported_type_nested_in_generic_closure,
@@ -6147,9 +6153,6 @@ public:
     UNINTERESTING_ATTR(Specialize)
 
     // These can't appear on overridable declarations.
-    UNINTERESTING_ATTR(AutoClosure)
-    UNINTERESTING_ATTR(NoEscape)
-
     UNINTERESTING_ATTR(Prefix)
     UNINTERESTING_ATTR(Postfix)
     UNINTERESTING_ATTR(Infix)
