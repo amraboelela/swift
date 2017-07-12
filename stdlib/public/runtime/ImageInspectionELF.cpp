@@ -169,9 +169,11 @@ SWIFT_RUNTIME_EXPORT
 void swift_addNewDSOImage(const void *addr) {
     fprintf(stderr, "swift_addNewDSOImage addr: %p\n", addr);
     if (ProtocolConformanceArgs.didInitializeLookup) {
+        fprintf(stderr, "ProtocolConformanceArgs.didInitializeLookup\n");
         addBlockInImage(&ProtocolConformanceArgs, addr);
     }
     if (TypeMetadataRecordArgs.didInitializeLookup) {
+        fprintf(stderr, "TypeMetadataRecordArgs.didInitializeLookup\n");
         addBlockInImage(&TypeMetadataRecordArgs, addr);
     }
 }
