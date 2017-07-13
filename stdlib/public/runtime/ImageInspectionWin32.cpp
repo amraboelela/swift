@@ -160,61 +160,64 @@ static uint8_t *_swift_getSectionDataPE(const void *handle, const char *sectionN
 
 static int _addImageCallback(struct _swift_dl_phdr_info *info,
                              size_t size, const void *data) {
-  const InspectArgs *inspectArgs = (InspectArgs *)data;
-  // inspectArgs contains addImage*Block function and the section name
+    fprintf(stderr, "_addImageCallback 1\n");
+    const InspectArgs *inspectArgs = (InspectArgs *)data;
+    // inspectArgs contains addImage*Block function and the section name
 #if defined(_WIN32)
-  HMODULE handle;
-
-  if (!info->dlpi_name || info->dlpi_name[0] == '\0')
-    handle = GetModuleHandle(nullptr);
-  else
-    handle = GetModuleHandleA(info->dlpi_name);
+    HMODULE handle;
+    
+    if (!info->dlpi_name || info->dlpi_name[0] == '\0')
+        handle = GetModuleHandle(nullptr);
+    else
+        handle = GetModuleHandleA(info->dlpi_name);
 #else
-  void *handle;
-  if (!info->dlpi_name || info->dlpi_name[0] == '\0')
-    handle = dlopen(nullptr, RTLD_LAZY);
-  else
-    handle = dlopen(info->dlpi_name, RTLD_LAZY | RTLD_NOLOAD);
+    void *handle;
+    if (!info->dlpi_name || info->dlpi_name[0] == '\0')
+        handle = dlopen(nullptr, RTLD_LAZY);
+    else
+        handle = dlopen(info->dlpi_name, RTLD_LAZY | RTLD_NOLOAD);
 #endif
-
-  unsigned long conformancesSize;
-  const uint8_t *conformances =
+    
+    unsigned long conformancesSize;
+    const uint8_t *conformances =
     _swift_getSectionDataPE(handle, inspectArgs->sectionName,
-                           &conformancesSize);
-
-  if (conformances)
-    inspectArgs->fnAddImageBlock(conformances, conformancesSize);
-
+                            &conformancesSize);
+    
+    if (conformances)
+        inspectArgs->fnAddImageBlock(conformances, conformancesSize);
+    
 #if defined(_WIN32)
-  FreeLibrary(handle);
+    FreeLibrary(handle);
 #else
-  dlclose(handle);
+    dlclose(handle);
 #endif
-  return 0;
+    return 0;
 }
 
 void swift::initializeProtocolConformanceLookup() {
-  // Search the loaded dls. This only searches the already
-  // loaded ones.
-  // FIXME: Find a way to have this continue to happen for dlopen-ed images.
-  // rdar://problem/19045112
-  const InspectArgs ProtocolConformancesArgs = {
-    addImageProtocolConformanceBlockCallback,
-    ProtocolConformancesSection,
-  };
-  _swift_dl_iterate_phdr(_addImageCallback, &ProtocolConformancesArgs);
+    fprintf(stderr, "initializeProtocolConformanceLookup 1\n");
+    // Search the loaded dls. This only searches the already
+    // loaded ones.
+    // FIXME: Find a way to have this continue to happen for dlopen-ed images.
+    // rdar://problem/19045112
+    const InspectArgs ProtocolConformancesArgs = {
+        addImageProtocolConformanceBlockCallback,
+        ProtocolConformancesSection,
+    };
+    _swift_dl_iterate_phdr(_addImageCallback, &ProtocolConformancesArgs);
 }
 
 void swift::initializeTypeMetadataRecordLookup() {
-  // Search the loaded dls. This only searches the already
-  // loaded ones.
-  // FIXME: Find a way to have this continue to happen for dlopen-ed images.
-  // rdar://problem/19045112
-  const InspectArgs TypeMetadataRecordsArgs = {
-    addImageTypeMetadataRecordBlockCallback,
-    TypeMetadataRecordsSection,
-  };
-  _swift_dl_iterate_phdr(_addImageCallback, &TypeMetadataRecordsArgs);
+    fprintf(stderr, "initializeTypeMetadataRecordLookup 1\n");
+    // Search the loaded dls. This only searches the already
+    // loaded ones.
+    // FIXME: Find a way to have this continue to happen for dlopen-ed images.
+    // rdar://problem/19045112
+    const InspectArgs TypeMetadataRecordsArgs = {
+        addImageTypeMetadataRecordBlockCallback,
+        TypeMetadataRecordsSection,
+    };
+    _swift_dl_iterate_phdr(_addImageCallback, &TypeMetadataRecordsArgs);
 }
 
 

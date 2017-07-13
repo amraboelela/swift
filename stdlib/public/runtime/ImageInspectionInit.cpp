@@ -26,8 +26,9 @@
 // allow the section data for the object to be loaded.
 __attribute__((constructor))
 static void sectionDataInit() {
-  void *addr = reinterpret_cast<void *>(std::addressof(sectionDataInit));
-  swift_addNewDSOImage(addr);
+    fprintf(stderr, "sectionDataInit 1\n");
+    void *addr = reinterpret_cast<void *>(std::addressof(sectionDataInit));
+    swift_addNewDSOImage(addr);
 }
 
 #endif
