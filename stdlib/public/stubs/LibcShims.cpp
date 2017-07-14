@@ -108,21 +108,21 @@ int swift::_swift_stdlib_pthread_key_create(
   __swift_pthread_key_t * _Nonnull key,
   void (* _Nullable destructor)(void *)
 ) {
-  return 0 //pthread_key_create(key, destructor);
+    return 0; //pthread_key_create(key, destructor);
 }
 
 SWIFT_RUNTIME_STDLIB_INTERFACE
 void * _Nullable swift::_swift_stdlib_pthread_getspecific(
   __swift_pthread_key_t key
 ) {
-  return 0 //pthread_getspecific(key);
+    return 0; //pthread_getspecific(key);
 }
 
 SWIFT_RUNTIME_STDLIB_INTERFACE
 int swift::_swift_stdlib_pthread_setspecific(
   __swift_pthread_key_t key, const void * _Nullable value
 ) {
-  return 0 // pthread_setspecific(key, value);
+    return 0; // pthread_setspecific(key, value);
 }
 
 #if defined(__APPLE__)
