@@ -113,8 +113,12 @@ double _swift_stdlib_squareRoot(double _self) {
 
 // TLS - thread local storage
 
-#if defined(__linux__)
+#if defined(__ANDROID__)
+typedef int __swift_pthread_key_t;
+#elif defined(__linux__)
 typedef unsigned int __swift_pthread_key_t;
+#elif defined(__FreeBSD__)
+typedef int __swift_pthread_key_t;
 #else
 typedef unsigned long __swift_pthread_key_t;
 #endif
