@@ -2,9 +2,6 @@
 
 source ~/.bashrc
 
-#SWIFT_PATH=/home/amr/swift
-#PATH=/home/amr/resources/git-plus:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
 PARAM=x$1
 PARAM2=x$2
 cd $SWIFT_PATH
@@ -15,7 +12,7 @@ rm -rf build
 rm -f swift/*.tar.gz
 fi
 
-if [ ${PARAM2} = "x-u" ] ; then
+if [ ${PARAM} = "x-u" ] || [ ${PARAM2} = "x-u" ] ; then
 echo ========== Syncing ==========
 git multi pull
 git multi fetch apple
@@ -31,4 +28,3 @@ test -e swift/swift-nightly-install || exit
 rm -rf toolchains/swift-toolchain-$(date "+%u")
 mv toolchains/swift-toolchain toolchains/swift-toolchain-$(date "+%u")
 cp -r swift/swift-nightly-install toolchains/swift-toolchain
-

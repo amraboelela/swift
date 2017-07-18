@@ -12,19 +12,11 @@ rm -rf build
 rm -f swift/*.tar.gz
 fi
 
-<<<<<<< HEAD
-if [ ${PARAM2} = "x-u" ] ; then
-echo ========== Syncing ==========
-git multi pull
-git multi fetch upstream
-git multi merge upstream/master
-=======
 if [ ${PARAM} = "x-u" ] || [ ${PARAM2} = "x-u" ] ; then
 echo ========== Syncing ==========
 git multi pull
 git multi fetch apple
 git multi merge apple/master
->>>>>>> 42272d9e932bb262590d4396fee7dfb142b0501c
 fi
 
 echo ========== Running script ==========
@@ -36,4 +28,3 @@ test -e swift-android-toolchain || exit
 mkdir -p toolchains/android
 rm -rf toolchains/swift-android-toolchain-$(date "+%u")
 cp swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
-
