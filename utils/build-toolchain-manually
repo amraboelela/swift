@@ -18,13 +18,8 @@ fi
 if [ ${PARAM2} = "x-u" ] ; then
 echo ========== Syncing ==========
 git multi pull
-<<<<<<< HEAD
-git multi fetch upstream
-git multi merge upstream/master
-=======
 git multi fetch apple
 git multi merge apple/master
->>>>>>> 42272d9e932bb262590d4396fee7dfb142b0501c
 fi
 
 echo ========== Running script ==========
