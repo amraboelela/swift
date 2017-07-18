@@ -108,13 +108,13 @@ public:
     return false;
   }
   void didGlobalize(Decl *D) override {}
-  bool lookupOverrides(Identifier Name, DeclContext *DC,
+  bool lookupOverrides(DeclBaseName Name, DeclContext *DC,
                        SourceLoc Loc, bool IsTypeLookup,
                        ResultVector &RV) override {
     return false;
   }
 
-  bool lookupAdditions(Identifier Name, DeclContext *DC,
+  bool lookupAdditions(DeclBaseName Name, DeclContext *DC,
                        SourceLoc Loc, bool IsTypeLookup,
                        ResultVector &RV) override {
     return false;
@@ -1572,15 +1572,27 @@ static int doPrintLocalTypes(const CompilerInvocation &InitInvok,
       node = node->getFirstChild();
 
       switch (node->getKind()) {
-        case NodeKind::Structure:
-        case NodeKind::Class:
-        case NodeKind::Enum:
-          break;
+      case NodeKind::Structure:
+      case NodeKind::Class:
+      case NodeKind::Enum:
+        break;
 
-        default:
-          llvm::errs() << "Expected a nominal type node in " <<
-            MangledName << "\n";
-          return EXIT_FAILURE;
+      case NodeKind::BoundGenericStructure:
+      case NodeKind::BoundGenericClass:
+      case NodeKind::BoundGenericEnum:
+        // Base type
+        typeNode = node->getFirstChild();
+        // Nominal type
+        node = typeNode->getFirstChild();
+        assert(node->getKind() == NodeKind::Structure ||
+               node->getKind() == NodeKind::Class ||
+               node->getKind() == NodeKind::Enum);
+        break;
+
+      default:
+        llvm::errs() << "Expected a nominal type node in " <<
+          MangledName << "\n";
+        return EXIT_FAILURE;
       }
 
       while (node->getKind() != NodeKind::LocalDeclName)
@@ -1979,7 +1991,7 @@ public:
     if (auto *VD = dyn_cast<ValueDecl>(D)) {
       OS.indent(IndentLevel * 2);
       OS << Decl::getKindName(VD->getKind()) << "Decl '''"
-         << VD->getName().str() << "''' ";
+         << VD->getBaseName() << "''' ";
       VD->getInterfaceType().print(OS, Options);
       OS << "\n";
     }
@@ -2101,9 +2113,9 @@ public:
       if (!Id.empty())
         OS << Id.str() << ".";
     }
-    Identifier Id = VD->getName();
-    if (!Id.empty()) {
-      OS << Id.str();
+    DeclBaseName Name = VD->getBaseName();
+    if (!Name.empty()) {
+      OS << Name;
       return;
     }
     if (auto FD = dyn_cast<FuncDecl>(VD)) {

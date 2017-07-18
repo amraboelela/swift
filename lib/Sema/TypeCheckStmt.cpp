@@ -255,7 +255,7 @@ static void tryDiagnoseUnnecessaryCastOverOptionSet(ASTContext &Ctx,
   if (!ME)
     return;
   ValueDecl *VD = ME->getMember().getDecl();
-  if (!VD || VD->getName() != Ctx.Id_rawValue)
+  if (!VD || VD->getBaseName() != Ctx.Id_rawValue)
     return;
   auto *BME = dyn_cast<MemberRefExpr>(ME->getBase());
   if (!BME)
@@ -512,14 +512,6 @@ public:
     return GS;
   }
 
-  Stmt *visitIfConfigStmt(IfConfigStmt *ICS) {
-    
-    // Active members are attached to the enclosing declaration, so there's no
-    // need to walk anything within.
-    
-    return ICS;
-  }
-
   Stmt *visitDoStmt(DoStmt *DS) {
     AddLabeledStmt loopNest(*this, DS);
     Stmt *S = DS->getBody();
@@ -672,7 +664,7 @@ public:
         name = "$"+np->getBoundName().str().str();
       name += "$generator";
       generator = new (TC.Context)
-        VarDecl(/*IsStatic*/false, /*IsLet*/false, /*IsCaptureList*/false,
+        VarDecl(/*IsStatic*/false, VarDecl::Specifier::Var, /*IsCaptureList*/false,
                 S->getInLoc(), TC.Context.getIdentifier(name), generatorTy, DC);
       generator->setInterfaceType(DC->mapTypeOutOfContext(generatorTy));
       generator->setImplicit();
@@ -862,7 +854,7 @@ public:
     // Type-check the subject expression.
     Expr *subjectExpr = S->getSubjectExpr();
     hadError |= TC.typeCheckExpression(subjectExpr, DC);
-    if (Expr *newSubjectExpr = TC.coerceToMaterializable(subjectExpr))
+    if (Expr *newSubjectExpr = TC.coerceToRValue(subjectExpr))
       subjectExpr = newSubjectExpr;
     S->setSubjectExpr(subjectExpr);
     Type subjectType = S->getSubjectExpr()->getType();
@@ -871,11 +863,12 @@ public:
     AddSwitchNest switchNest(*this);
     AddLabeledStmt labelNest(*this, S);
 
-    for (unsigned i = 0, e = S->getCases().size(); i < e; ++i) {
-      auto *caseBlock = S->getCases()[i];
+    auto cases = S->getCases();
+    for (auto i = cases.begin(), e = cases.end(); i != e; ++i) {
+      auto *caseBlock = *i;
       // Fallthrough transfers control to the next case block. In the
       // final case block, it is invalid.
-      FallthroughDest = i+1 == e ? nullptr : S->getCases()[i+1];
+      FallthroughDest = std::next(i) == e ? nullptr : *std::next(i);
 
       for (auto &labelItem : caseBlock->getMutableCaseLabelItems()) {
         // Resolve the pattern in the label.
@@ -1080,7 +1073,7 @@ void TypeChecker::checkIgnoredExpr(Expr *E) {
   }
 
   // Complain about l-values that are neither loaded nor stored.
-  if (E->getType()->isLValueType()) {
+  if (E->getType()->hasLValueType()) {
     diagnose(E->getLoc(), diag::expression_unused_lvalue)
       .highlight(E->getSourceRange());
     return;
@@ -1321,7 +1314,8 @@ static void checkDefaultArguments(TypeChecker &tc,
   // caller.
   auto expansion = func->getResilienceExpansion();
   if (!tc.Context.isSwiftVersion3() &&
-      func->getEffectiveAccess() == Accessibility::Public)
+      func->getFormalAccessScope(/*useDC=*/nullptr,
+                                 /*respectVersionedAttr=*/true).isPublic())
     expansion = ResilienceExpansion::Minimal;
 
   for (auto &param : *params) {

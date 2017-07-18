@@ -621,7 +621,9 @@ void swift::typeCheckExternalDefinitions(SourceFile &SF) {
 void swift::performTypeChecking(SourceFile &SF, TopLevelContext &TLC,
                                 OptionSet<TypeCheckingFlags> Options,
                                 unsigned StartElem,
-                                unsigned WarnLongFunctionBodies) {
+                                unsigned WarnLongFunctionBodies,
+                                unsigned WarnLongExpressionTypeChecking,
+                                unsigned ExpressionTimeoutThreshold) {
   if (SF.ASTStage == SourceFile::TypeChecked)
     return;
 
@@ -646,6 +648,10 @@ void swift::performTypeChecking(SourceFile &SF, TopLevelContext &TLC,
 
     if (MyTC) {
       MyTC->setWarnLongFunctionBodies(WarnLongFunctionBodies);
+      MyTC->setWarnLongExpressionTypeChecking(WarnLongExpressionTypeChecking);
+      if (ExpressionTimeoutThreshold != 0)
+        MyTC->setExpressionTimeoutThreshold(ExpressionTimeoutThreshold);
+
       if (Options.contains(TypeCheckingFlags::DebugTimeFunctionBodies))
         MyTC->enableDebugTimeFunctionBodies();
 
@@ -853,7 +859,7 @@ static Optional<Type> getTypeOfCompletionContextExpr(
 
   Type originalType = parsedExpr->getType();
   if (auto T = TC.getTypeOfExpressionWithoutApplying(parsedExpr, DC,
-                 referencedDecl, FreeTypeVariableBinding::GenericParameters))
+                 referencedDecl, FreeTypeVariableBinding::UnresolvedType))
     return T;
 
   // Try to recover if we've made any progress.
@@ -977,14 +983,16 @@ void TypeChecker::checkForForbiddenPrefix(const Decl *D) {
   if (!hasEnabledForbiddenTypecheckPrefix())
     return;
   if (auto VD = dyn_cast<ValueDecl>(D)) {
-    checkForForbiddenPrefix(VD->getNameStr());
+    if (!VD->getBaseName().isSpecial())
+      checkForForbiddenPrefix(VD->getBaseName().getIdentifier().str());
   }
 }
 
 void TypeChecker::checkForForbiddenPrefix(const UnresolvedDeclRefExpr *E) {
   if (!hasEnabledForbiddenTypecheckPrefix())
     return;
-  checkForForbiddenPrefix(E->getName().getBaseName());
+  if (!E->getName().isSpecial())
+    checkForForbiddenPrefix(E->getName().getBaseIdentifier());
 }
 
 void TypeChecker::checkForForbiddenPrefix(Identifier Ident) {

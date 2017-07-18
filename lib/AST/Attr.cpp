@@ -413,12 +413,7 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     Printer << ")";
     break;
   }
-  case DAK_AutoClosure:
-    Printer.printAttrName("@autoclosure");
-    if (cast<AutoClosureAttr>(this)->isEscaping())
-      Printer << "(escaping)";
-    break;
-      
+
   case DAK_CDecl:
     Printer << "@_cdecl(\"" << cast<CDeclAttr>(this)->Name << "\")";
     break;
@@ -493,10 +488,10 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     break;
   }
 
-  case DAK_NSKeyedArchiverClassName: {
-    Printer.printAttrName("@NSKeyedArchiverClassName");
+  case DAK_ObjCRuntimeName: {
+    Printer.printAttrName("@objc");
     Printer << "(";
-    auto *attr = cast<NSKeyedArchiverClassNameAttr>(this);
+    auto *attr = cast<ObjCRuntimeNameAttr>(this);
     Printer << "\"" << attr->Name << "\"";
     Printer << ")";
     break;
@@ -506,6 +501,10 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     Printer.printAttrName("@_staticInitializeObjCMetadata");
     break;
 
+  case DAK_DowngradeExhaustivityCheck:
+    Printer.printAttrName("@_downgrade_exhaustivity_check");
+    break;
+    
   case DAK_Count:
     llvm_unreachable("exceed declaration attribute kinds");
 
@@ -564,9 +563,8 @@ StringRef DeclAttribute::getAttrName() const {
     return "_semantics";
   case DAK_Available:
     return "availability";
-  case DAK_AutoClosure:
-    return "autoclosure";
   case DAK_ObjC:
+  case DAK_ObjCRuntimeName:
     return "objc";
   case DAK_Inline: {
     switch (cast<InlineAttr>(this)->getKind()) {
@@ -622,8 +620,6 @@ StringRef DeclAttribute::getAttrName() const {
     return "_specialize";
   case DAK_Implements:
     return "_implements";
-  case DAK_NSKeyedArchiverClassName:
-    return "NSKeyedArchiverClassName";
   }
   llvm_unreachable("bad DeclAttrKind");
 }

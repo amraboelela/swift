@@ -16,6 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "TypeChecker.h"
+#include "swift/AST/Initializer.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/Basic/TopCollection.h"
@@ -186,21 +187,19 @@ LookupResult TypeChecker::lookupUnqualified(DeclContext *dc, DeclName name,
   for (const auto &found : lookup.Results) {
     // Determine which type we looked through to find this result.
     Type foundInType;
+
     if (!found.getBaseDecl()) {
       // Not found within a type.
-    } else if (auto baseParam = dyn_cast<ParamDecl>(found.getBaseDecl())) {
-      auto baseDC = baseParam->getDeclContext();
-      if (isa<AbstractFunctionDecl>(baseDC))
-        baseDC = baseDC->getParent();
-      foundInType = baseDC->getDeclaredTypeInContext();
     } else {
-      auto baseNominal = cast<NominalTypeDecl>(found.getBaseDecl());
-      for (auto currentDC = dc; currentDC; currentDC = currentDC->getParent()) {
-        if (currentDC->getAsNominalTypeOrNominalTypeExtensionContext()
-              == baseNominal) {
-          foundInType = currentDC->getDeclaredTypeInContext();
-        }
+      DeclContext *baseDC = nullptr;
+      if (auto baseParam = dyn_cast<ParamDecl>(found.getBaseDecl())) {
+        baseDC = baseParam->getDeclContext()->getParent();
+      } else {
+        baseDC = cast<NominalTypeDecl>(found.getBaseDecl());
       }
+
+      foundInType = dc->mapTypeIntoContext(
+        baseDC->getDeclaredInterfaceType());
       assert(foundInType && "bogus base declaration?");
     }
 
@@ -410,6 +409,14 @@ LookupTypeResult TypeChecker::lookupMemberType(DeclContext *dc,
           continue;
         }
       }
+
+      // Nominal type members of protocols cannot be accessed with an
+      // archetype base, because we have no way to recover the correct
+      // substitutions.
+      if (type->is<ArchetypeType>() &&
+          isa<NominalTypeDecl>(typeDecl)) {
+        continue;
+      }
     }
 
     // Substitute the base into the member's type.
@@ -447,6 +454,13 @@ LookupTypeResult TypeChecker::lookupMemberType(DeclContext *dc,
       // Use the type witness.
       auto concrete = conformance->getConcrete();
       Type memberType = concrete->getTypeWitness(assocType, this);
+
+      // This is the only case where NormalProtocolConformance::
+      // getTypeWitnessAndDecl() returns a null type.
+      if (concrete->getState() ==
+          ProtocolConformanceState::CheckingTypeWitnesses)
+        continue;
+
       assert(memberType && "Missing type witness?");
 
       // If we haven't seen this type result yet, add it to the result set.
@@ -478,8 +492,9 @@ static unsigned getCallEditDistance(DeclName argName, DeclName paramName,
   // TODO: maybe ignore certain kinds of missing / present labels for the
   //   first argument label?
   // TODO: word-based rather than character-based?
-  StringRef argBase = argName.getBaseName().str();
-  StringRef paramBase = paramName.getBaseName().str();
+  // TODO: Handle special names
+  StringRef argBase = argName.getBaseIdentifier().str();
+  StringRef paramBase = paramName.getBaseIdentifier().str();
 
   unsigned distance = argBase.edit_distance(paramBase, maxEditDistance);
 
@@ -547,6 +562,7 @@ void TypeChecker::performTypoCorrection(DeclContext *DC, DeclRefKind refKind,
                                         SourceLoc nameLoc,
                                         NameLookupOptions lookupOptions,
                                         LookupResult &result,
+                                        GenericSignatureBuilder *gsb,
                                         unsigned maxResults) {
   // Disable typo-correction if we won't show the diagnostic anyway.
   if (getLangOpts().DisableTypoCorrection ||
@@ -587,7 +603,7 @@ void TypeChecker::performTypoCorrection(DeclContext *DC, DeclRefKind refKind,
   TypoCorrectionResolver resolver(*this, nameLoc);
   if (baseTypeOrNull) {
     lookupVisibleMemberDecls(consumer, baseTypeOrNull, DC, &resolver,
-                             /*include instance members*/ true);
+                             /*include instance members*/ true, gsb);
   } else {
     lookupVisibleDecls(consumer, DC, &resolver, /*top level*/ true, nameLoc);
   }
@@ -606,7 +622,7 @@ diagnoseTypoCorrection(TypeChecker &tc, DeclNameLoc loc, ValueDecl *decl) {
     // of the function.
     if (var->isSelfParameter())
       return tc.diagnose(loc.getBaseNameLoc(), diag::note_typo_candidate,
-                         decl->getName().str());
+                         var->getName().str());
   }
 
   if (!decl->getLoc().isValid() && decl->getDeclContext()->isTypeContext()) {
@@ -619,12 +635,15 @@ diagnoseTypoCorrection(TypeChecker &tc, DeclNameLoc loc, ValueDecl *decl) {
                         isa<FuncDecl>(decl) ? "method" :
                         "member");
 
+      // TODO: Handle special names
       return tc.diagnose(parentDecl, diag::note_typo_candidate_implicit_member,
-                         decl->getName().str(), kind);
+                         decl->getBaseName().getIdentifier().str(), kind);
     }
   }
 
-  return tc.diagnose(decl, diag::note_typo_candidate, decl->getName().str());
+  // TODO: Handle special names
+  return tc.diagnose(decl, diag::note_typo_candidate,
+                     decl->getBaseName().getIdentifier().str());
 }
 
 void TypeChecker::noteTypoCorrection(DeclName writtenName, DeclNameLoc loc,
@@ -635,7 +654,8 @@ void TypeChecker::noteTypoCorrection(DeclName writtenName, DeclNameLoc loc,
   DeclName declName = decl->getFullName();
 
   if (writtenName.getBaseName() != declName.getBaseName())
-    diagnostic.fixItReplace(loc.getBaseNameLoc(), declName.getBaseName().str());
+    diagnostic.fixItReplace(loc.getBaseNameLoc(),
+                            declName.getBaseIdentifier().str());
 
   // TODO: add fix-its for typo'ed argument labels.  This is trickier
   // because of the reordering rules.

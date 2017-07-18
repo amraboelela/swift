@@ -187,7 +187,7 @@ struct FooStruct {
   mutating
   func instanceFunc8(_ a: (Int, Int)) {}
   mutating
-  func instanceFunc9(@autoclosure a: () -> Int) {}
+  func instanceFunc9(a: @autoclosure () -> Int) {}
 
   mutating
   func varargInstanceFunc0(_ v: Int...) {}
@@ -1266,8 +1266,8 @@ func testTypeCheckWithUnsolvedVariables1() {
 }
 // TC_UNSOLVED_VARIABLES_1: Begin completions
 // TC_UNSOLVED_VARIABLES_1-NEXT: Decl[InstanceVar]/CurrNominal: count[#Int#]{{; name=.+$}}
-// TC_UNSOLVED_VARIABLES_1-NEXT: Decl[InstanceMethod]/CurrNominal: addString({#(s): String#})[#BuilderStyle<T>#]{{; name=.+$}}
-// TC_UNSOLVED_VARIABLES_1-NEXT: Decl[InstanceMethod]/CurrNominal: add({#(t): T#})[#BuilderStyle<T>#]{{; name=.+$}}
+// TC_UNSOLVED_VARIABLES_1-NEXT: Decl[InstanceMethod]/CurrNominal: addString({#(s): String#})[#BuilderStyle<_>#]{{; name=.+$}}
+// TC_UNSOLVED_VARIABLES_1-NEXT: Decl[InstanceMethod]/CurrNominal: add({#(t): _#})[#BuilderStyle<_>#]{{; name=.+$}}
 // TC_UNSOLVED_VARIABLES_1-NEXT: Decl[InstanceMethod]/CurrNominal: get()[#Int#]{{; name=.+$}}
 // TC_UNSOLVED_VARIABLES_1-NEXT: End completions
 
@@ -1276,8 +1276,8 @@ func testTypeCheckWithUnsolvedVariables2() {
 }
 // TC_UNSOLVED_VARIABLES_2: Begin completions
 // TC_UNSOLVED_VARIABLES_2-NEXT: Decl[InstanceVar]/CurrNominal:    count[#Int#]{{; name=.+$}}
-// TC_UNSOLVED_VARIABLES_2-NEXT: Decl[InstanceMethod]/CurrNominal: addString({#(s): String#})[#BuilderStyle<T>#]{{; name=.+$}}
-// TC_UNSOLVED_VARIABLES_2-NEXT: Decl[InstanceMethod]/CurrNominal: add({#(t): T#})[#BuilderStyle<T>#]{{; name=.+$}}
+// TC_UNSOLVED_VARIABLES_2-NEXT: Decl[InstanceMethod]/CurrNominal: addString({#(s): String#})[#BuilderStyle<_>#]{{; name=.+$}}
+// TC_UNSOLVED_VARIABLES_2-NEXT: Decl[InstanceMethod]/CurrNominal: add({#(t): _#})[#BuilderStyle<_>#]{{; name=.+$}}
 // TC_UNSOLVED_VARIABLES_2-NEXT: Decl[InstanceMethod]/CurrNominal: get()[#Int#]{{; name=.+$}}
 // TC_UNSOLVED_VARIABLES_2-NEXT: End completions
 

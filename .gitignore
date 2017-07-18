@@ -57,3 +57,5 @@ compile_commands.json
 8
 4
 SortedCFDatabase.def
+htmlcov
+.coverage

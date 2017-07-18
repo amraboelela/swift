@@ -122,10 +122,6 @@ public:
     return F.getModule().getOptions().EnableSILOwnership;
   }
 
-  bool areCOWExistentialsEnabled() const {
-    return F.getModule().getOptions().UseCOWExistentials;
-  }
-
   void _require(bool condition, const Twine &complaint,
                 const std::function<void()> &extraContext = nullptr) {
     if (condition) return;
@@ -2323,9 +2319,6 @@ public:
             "Archetype opened by open_existential_addr should be registered in "
             "SILFunction");
 
-    if (!areCOWExistentialsEnabled())
-      return;
-
     // Check all the uses. Consuming or mutating uses must have mutable access
     // to the opened value.
     auto allowedAccessKind = OEI->getAccessKind();
@@ -3822,6 +3815,24 @@ public:
                     "setter should have no results");
           }
 
+          break;
+        }
+        case KeyPathPatternComponent::Kind::OptionalChain: {
+          require(OptionalType::get(componentTy)->isEqual(baseTy),
+                  "chaining component should unwrap optional");
+          require(leafTy->getAnyOptionalObjectType(),
+                  "key path with chaining component should have optional "
+                  "result");
+          break;
+        }
+        case KeyPathPatternComponent::Kind::OptionalForce: {
+          require(OptionalType::get(componentTy)->isEqual(baseTy),
+                  "forcing component should unwrap optional");
+          break;
+        }
+        case KeyPathPatternComponent::Kind::OptionalWrap: {
+          require(OptionalType::get(baseTy)->isEqual(componentTy),
+                  "wrapping component should wrap optional");
           break;
         }
         }

@@ -169,6 +169,11 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     Opts.GroupInfoPath = A->getValue();
   }
 
+  if (const Arg *A = Args.getLastArg(OPT_index_store_path)) {
+    Opts.IndexStorePath = A->getValue();
+  }
+  Opts.IndexSystemModules |= Args.hasArg(OPT_index_system_modules);
+
   Opts.EmitVerboseSIL |= Args.hasArg(OPT_emit_verbose_sil);
   Opts.EmitSortedSIL |= Args.hasArg(OPT_emit_sorted_sil);
 
@@ -191,7 +196,20 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     Opts.StatsOutputDir = A->getValue();
   }
 
-  Opts.ValidateTBDAgainstIR |= Args.hasArg(OPT_validate_tbd_against_ir);
+  if (const Arg *A = Args.getLastArg(OPT_validate_tbd_against_ir_EQ)) {
+    using Mode = FrontendOptions::TBDValidationMode;
+    StringRef value = A->getValue();
+    if (value == "none") {
+      Opts.ValidateTBDAgainstIR = Mode::None;
+    } else if (value == "missing") {
+      Opts.ValidateTBDAgainstIR = Mode::MissingFromTBD;
+    } else if (value == "all") {
+      Opts.ValidateTBDAgainstIR = Mode::All;
+    } else {
+      Diags.diagnose(SourceLoc(), diag::error_unsupported_option_argument,
+                     A->getOption().getPrefixedName(), value);
+    }
+  }
 
   if (const Arg *A = Args.getLastArg(OPT_warn_long_function_bodies)) {
     unsigned attempt;
@@ -200,6 +218,26 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
                      A->getAsString(Args), A->getValue());
     } else {
       Opts.WarnLongFunctionBodies = attempt;
+    }
+  }
+
+  if (const Arg *A = Args.getLastArg(OPT_warn_long_expression_type_checking)) {
+    unsigned attempt;
+    if (StringRef(A->getValue()).getAsInteger(10, attempt)) {
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                     A->getAsString(Args), A->getValue());
+    } else {
+      Opts.WarnLongExpressionTypeChecking = attempt;
+    }
+  }
+
+  if (const Arg *A = Args.getLastArg(OPT_solver_expression_time_threshold_EQ)) {
+    unsigned attempt;
+    if (StringRef(A->getValue()).getAsInteger(10, attempt)) {
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                     A->getAsString(Args), A->getValue());
+    } else {
+      Opts.SolverExpressionTimeThreshold = attempt;
     }
   }
 
@@ -836,7 +874,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       Args.hasArg(OPT_serialize_debugging_options);
   Opts.EnableSourceImport |= Args.hasArg(OPT_enable_source_import);
   Opts.ImportUnderlyingModule |= Args.hasArg(OPT_import_underlying_module);
-  Opts.SILSerializeAll |= Args.hasArg(OPT_sil_serialize_all);
   Opts.EnableSerializationNestedTypeLookupTable &=
       !Args.hasArg(OPT_disable_serialization_nested_type_lookup_table);
 
@@ -931,6 +968,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   Opts.DisableTsanInoutInstrumentation |=
       Args.hasArg(OPT_disable_tsan_inout_instrumentation);
+
+  Opts.ReportErrorsToDebugger |=
+      Args.hasArg(OPT_report_errors_to_debugger);
 
   if (FrontendOpts.InputKind == InputFileKind::IFK_SIL)
     Opts.DisableAvailabilityChecking = true;
@@ -1107,6 +1147,9 @@ static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
 
   if (const Arg *A = Args.getLastArg(OPT_target_cpu))
     Opts.TargetCPU = A->getValue();
+
+  if (const Arg *A = Args.getLastArg(OPT_index_store_path))
+    Opts.IndexStorePath = A->getValue();
 
   for (const Arg *A : make_range(Args.filtered_begin(OPT_Xcc),
                                  Args.filtered_end())) {
@@ -1306,6 +1349,10 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   if (Args.hasArg(OPT_sil_merge_partial_modules))
     Opts.MergePartialModules = true;
 
+  Opts.SILSerializeAll |= Args.hasArg(OPT_sil_serialize_all);
+  Opts.SILSerializeWitnessTables |=
+    Args.hasArg(OPT_sil_serialize_witness_tables);
+
   // Parse the optimization level.
   if (const Arg *A = Args.getLastArg(OPT_O_Group)) {
     if (A->getOption().matches(OPT_Onone)) {
@@ -1397,17 +1444,22 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   }
 
   if (const Arg *A = Args.getLastArg(options::OPT_sanitize_EQ)) {
-    Opts.Sanitize = parseSanitizerArgValues(A, Triple, Diags);
+    Opts.Sanitize = parseSanitizerArgValues(
+        A, Triple, Diags,
+        /* sanitizerRuntimeLibExists= */[](StringRef libName) {
+
+          // The driver has checked the existence of the library
+          // already.
+          return true;
+        });
     IRGenOpts.Sanitize = Opts.Sanitize;
   }
 
+  if (Opts.Optimization > SILOptions::SILOptMode::None)
+    Opts.EnforceExclusivityDynamic = false;
   if (const Arg *A = Args.getLastArg(options::OPT_enforce_exclusivity_EQ)) {
     parseExclusivityEnforcementOptions(A, Opts, Diags);
   }
-
-  /// Should we use the copy-on-write implementation of opaque existentials.
-  /// FIXME: Use during bootstraping this feature. Remove later.
-  Opts.UseCOWExistentials |= Args.hasArg(OPT_enable_cow_existentials);
 
   return false;
 }

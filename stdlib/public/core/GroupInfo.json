@@ -17,6 +17,7 @@
     "StringComparable.swift",
     "StringCore.swift",
     "StringHashable.swift",
+    "StringIndex.swift",
     "StringIndexConversions.swift",
     "StringInterpolation.swift",
     "StringLegacy.swift",
@@ -34,7 +35,8 @@
     "UTFEncoding.swift",
     "UTF8.swift",
     "UTF16.swift",
-    "UTF32.swift"
+    "UTF32.swift",
+    "ValidUTF8Buffer.swift"
   ],
   "Bool": [
     "Bool.swift"
@@ -91,6 +93,7 @@
         "Arrays.swift",
         "CocoaArray.swift",
         "ContiguousArrayBuffer.swift",
+        "FixedArray.swift",
         "SliceBuffer.swift",
         "SwiftNativeNSArray.swift"],
       "HashedCollections": [
@@ -123,6 +126,7 @@
     "BuiltinMath.swift",
     {
     "Integers": [
+      "DoubleWidth.swift",
       "Integers.swift",
       "IntegerParsing.swift"],
     "Floating": [

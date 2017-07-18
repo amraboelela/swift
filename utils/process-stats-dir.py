@@ -17,11 +17,16 @@
 
 import argparse
 import csv
+import datetime
 import json
 import os
+import platform
 import random
 import re
 import sys
+import time
+import urllib
+import urllib2
 
 
 class JobStats:
@@ -90,11 +95,64 @@ class JobStats:
                 "dur": self.dur_usec,
                 "args": self.jobargs}
 
+    def start_timestr(self):
+        t = datetime.datetime.fromtimestamp(self.start_usec / 1000000.0)
+        return t.strftime("%Y-%m-%d %H:%M:%S")
+
+    def end_timestr(self):
+        t = datetime.datetime.fromtimestamp((self.start_usec +
+                                             self.dur_usec) / 1000000.0)
+        return t.strftime("%Y-%m-%d %H:%M:%S")
+
+    def pick_lnt_metric_suffix(self, metric_name):
+        if "BytesOutput" in metric_name:
+            return "code_size"
+        if "RSS" in metric_name or "BytesAllocated" in metric_name:
+            return "mem"
+        return "compile"
+
+    # Return a JSON-formattable object of the form preferred by LNT's
+    # 'submit' format.
+    def to_lnt_test_obj(self, args):
+        run_info = {
+            "run_order": str(args.lnt_order),
+            "tag": str(args.lnt_tag),
+        }
+        run_info.update(dict(args.lnt_run_info))
+        stats = self.stats
+        return {
+            "Machine":
+            {
+                "Name": args.lnt_machine,
+                "Info": dict(args.lnt_machine_info)
+            },
+            "Run":
+            {
+                "Start Time": self.start_timestr(),
+                "End Time": self.end_timestr(),
+                "Info": run_info
+            },
+            "Tests":
+            [
+                {
+                    "Data": [v],
+                    "Info": {},
+                    "Name": "%s.%s.%s.%s" % (args.lnt_tag, self.module,
+                                             k, self.pick_lnt_metric_suffix(k))
+                }
+                for (k, v) in stats.items()
+            ]
+        }
+
 
 # Return an array of JobStats objects
 def load_stats_dir(path):
     jobstats = []
-    fpat = r"^stats-(?P<start>\d+)-swift-(?P<kind>\w+)-(?P<pid>\d+).json$"
+    auxpat = (r"(?P<module>[^-]+)-(?P<input>[^-]+)-(?P<triple>[^-]+)" +
+              r"-(?P<out>[^-]+)-(?P<opt>[^-]+)")
+    fpat = (r"^stats-(?P<start>\d+)-swift-(?P<kind>\w+)-" +
+            auxpat +
+            r"-(?P<pid>\d+)(-.*)?.json$")
     for root, dirs, files in os.walk(path):
         for f in files:
             m = re.match(fpat, f)
@@ -104,13 +162,13 @@ def load_stats_dir(path):
                 jobkind = mg['kind']
                 jobid = int(mg['pid'])
                 start_usec = int(mg['start'])
+                module = mg["module"]
+                jobargs = [mg["input"], mg["triple"], mg["out"], mg["opt"]]
 
                 j = json.load(open(os.path.join(root, f)))
                 dur_usec = 1
-                jobargs = None
-                module = "module"
-                patstr = (r"time\.swift-" + jobkind +
-                          r"\.(?P<module>[^\.]+)(?P<filename>.*)\.wall$")
+                patstr = (r"time\.swift-" + jobkind + r"\." + auxpat +
+                          r"\.wall$")
                 pat = re.compile(patstr)
                 stats = dict()
                 for (k, v) in j.items():
@@ -119,14 +177,7 @@ def load_stats_dir(path):
                     stats[k] = v
                     tm = re.match(pat, k)
                     if tm:
-                        tmg = tm.groupdict()
                         dur_usec = v
-                        module = tmg['module']
-                        if 'filename' in tmg:
-                            ff = tmg['filename']
-                            if ff.startswith('.'):
-                                ff = ff[1:]
-                            jobargs = [ff]
 
                 e = JobStats(jobkind=jobkind, jobid=jobid,
                              module=module, start_usec=start_usec,
@@ -163,6 +214,30 @@ def write_catapult_trace(args):
     for path in args.remainder:
         allstats += load_stats_dir(path)
     json.dump([s.to_catapult_trace_obj() for s in allstats], args.output)
+
+
+def write_lnt_values(args):
+    for d in args.remainder:
+        stats = load_stats_dir(d)
+        merged = merge_all_jobstats(stats)
+        j = merged.to_lnt_test_obj(args)
+        if args.lnt_submit is None:
+            json.dump(j, args.output, indent=4)
+        else:
+            url = args.lnt_submit
+            print "\nsubmitting to LNT server: " + url
+            json_report = {'input_data': json.dumps(j), 'commit': '1'}
+            data = urllib.urlencode(json_report)
+            response_str = urllib2.urlopen(urllib2.Request(url, data))
+            response = json.loads(response_str.read())
+            print "### response:"
+            print response
+            if 'success' in response:
+                print "server response:\tSuccess"
+            else:
+                print "server response:\tError"
+                print "error:\t", response['error']
+                sys.exit(1)
 
 
 def merge_all_jobstats(jobstats):
@@ -216,40 +291,127 @@ def show_incrementality(args):
                                   incrementality=pct))
 
 
-def compare_frontend_stats(args):
-    assert(len(args.remainder) == 2)
-    (olddir, newdir) = args.remainder
+def diff_and_pct(old, new):
+    if old == 0:
+        if new == 0:
+            return (0, 0.0)
+        else:
+            return (new, 100.0)
+    delta = (new - old)
+    delta_pct = round((float(delta) / float(old)) * 100.0, 2)
+    return (delta, delta_pct)
+
+
+def update_epoch_value(d, name, epoch, value):
+    changed = 0
+    if name in d:
+        (existing_epoch, existing_value) = d[name]
+        if existing_epoch > epoch:
+            print("note: keeping newer value %d from epoch %d for %s"
+                  % (existing_value, existing_epoch, name))
+            epoch = existing_epoch
+            value = existing_value
+        elif existing_value == value:
+            epoch = existing_epoch
+        else:
+            (_, delta_pct) = diff_and_pct(existing_value, value)
+            print ("note: changing value %d -> %d (%.2f%%) for %s" %
+                   (existing_value, value, delta_pct, name))
+            changed = 1
+    d[name] = (epoch, value)
+    return (epoch, value, changed)
+
+
+def read_stats_dict_from_csv(f):
+    infieldnames = ["epoch", "name", "value"]
+    c = csv.DictReader(f, infieldnames,
+                       dialect='excel-tab',
+                       quoting=csv.QUOTE_NONNUMERIC)
+    d = {}
+    for row in c:
+        epoch = int(row["epoch"])
+        name = row["name"]
+        value = int(row["value"])
+        update_epoch_value(d, name, epoch, value)
+    return d
+
+
+# The idea here is that a "baseline" is a (tab-separated) CSV file full of
+# the counters you want to track, each prefixed by an epoch timestamp of
+# the last time the value was reset.
+#
+# When you set a fresh baseline, all stats in the provided stats dir are
+# written to the baseline. When you set against an _existing_ baseline,
+# only the counters mentioned in the existing baseline are updated, and
+# only if their values differ.
+#
+# Finally, since it's a line-oriented CSV file, you can put:
+#
+#    mybaseline.csv merge=union
+#
+# in your .gitattributes file, and forget about merge conflicts. The reader
+# function above will take the later epoch anytime it detects duplicates,
+# so union-merging is harmless. Duplicates will be eliminated whenever the
+# next baseline-set is done.
+def set_csv_baseline(args):
+    existing = None
+    if os.path.exists(args.set_csv_baseline):
+        with open(args.set_csv_baseline, "r") as f:
+            existing = read_stats_dict_from_csv(f)
+            print ("updating %d baseline entries in %s" %
+                   (len(existing), args.set_csv_baseline))
+    else:
+        print "making new baseline " + args.set_csv_baseline
+    fieldnames = ["epoch", "name", "value"]
+    with open(args.set_csv_baseline, "wb") as f:
+        out = csv.DictWriter(f, fieldnames, dialect='excel-tab',
+                             quoting=csv.QUOTE_NONNUMERIC)
+        m = merge_all_jobstats([s for d in args.remainder
+                                for s in load_stats_dir(d)])
+        changed = 0
+        newepoch = int(time.time())
+        for name in sorted(m.stats.keys()):
+            epoch = newepoch
+            value = m.stats[name]
+            if existing is not None:
+                if name not in existing:
+                    continue
+                (epoch, value, chg) = update_epoch_value(existing, name,
+                                                         epoch, value)
+                changed += chg
+            out.writerow(dict(epoch=int(epoch),
+                              name=name,
+                              value=int(value)))
+        if existing is not None:
+            print "changed %d entries in baseline" % changed
+    return 0
+
+
+def compare_to_csv_baseline(args):
+    old_stats = read_stats_dict_from_csv(args.compare_to_csv_baseline)
+    m = merge_all_jobstats([s for d in args.remainder
+                            for s in load_stats_dir(d)])
+    new_stats = m.stats
 
     regressions = 0
-    fieldnames = ["old", "new", "delta_pct", "name"]
-    out = csv.DictWriter(args.output, fieldnames, dialect='excel-tab')
+    outfieldnames = ["old", "new", "delta_pct", "name"]
+    out = csv.DictWriter(args.output, outfieldnames, dialect='excel-tab')
     out.writeheader()
 
-    old_stats = load_stats_dir(olddir)
-    new_stats = load_stats_dir(newdir)
-    old_merged = merge_all_jobstats([x for x in old_stats
-                                     if x.is_frontend_job()])
-    new_merged = merge_all_jobstats([x for x in new_stats
-                                     if x.is_frontend_job()])
-    if old_merged is None or new_merged is None:
-        return regressions
-    for stat_name in sorted(old_merged.stats.keys()):
-        if stat_name in new_merged.stats:
-            old = old_merged.stats[stat_name]
-            new = new_merged.stats.get(stat_name, 0)
-            if old == 0 or new == 0:
-                continue
-            delta = (new - old)
-            delta_pct = round((float(delta) / float(old)) * 100.0, 2)
-            if (stat_name.startswith("time.") and
-               abs(delta) < args.delta_usec_thresh):
-                continue
-            if abs(delta_pct) < args.delta_pct_thresh:
-                continue
-            out.writerow(dict(name=stat_name, old=old, new=new,
-                              delta_pct=delta_pct))
-            if delta > 0:
-                regressions += 1
+    for stat_name in sorted(old_stats.keys()):
+        (_, old) = old_stats[stat_name]
+        new = new_stats.get(stat_name, 0)
+        (delta, delta_pct) = diff_and_pct(old, new)
+        if (stat_name.startswith("time.") and
+           abs(delta) < args.delta_usec_thresh):
+            continue
+        if abs(delta_pct) < args.delta_pct_thresh:
+            continue
+        out.writerow(dict(name=stat_name,
+                          old=int(old), new=int(new),
+                          delta_pct=delta_pct))
+        if delta > 0:
+            regressions += 1
     return regressions
 
 
@@ -266,13 +428,34 @@ def main():
                         help="Percentage change required to report")
     parser.add_argument("--delta-usec-thresh", type=int, default=100000,
                         help="Absolute delta on times required to report")
+    parser.add_argument("--lnt-machine", type=str, default=platform.node(),
+                        help="Machine name for LNT submission")
+    parser.add_argument("--lnt-run-info", action='append', default=[],
+                        type=lambda kv: kv.split("="),
+                        help="Extra key=value pairs for LNT run-info")
+    parser.add_argument("--lnt-machine-info", action='append', default=[],
+                        type=lambda kv: kv.split("="),
+                        help="Extra key=value pairs for LNT machine-info")
+    parser.add_argument("--lnt-order", type=str,
+                        default=str(int(time.time())),
+                        help="Order for LNT submission")
+    parser.add_argument("--lnt-tag", type=str, default="swift-compile",
+                        help="Tag for LNT submission")
+    parser.add_argument("--lnt-submit", type=str, default=None,
+                        help="URL to submit LNT data to (rather than print)")
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--catapult", action="store_true",
                        help="emit a 'catapult'-compatible trace of events")
     modes.add_argument("--incrementality", action="store_true",
                        help="summarize the 'incrementality' of a build")
-    modes.add_argument("--compare-frontend-stats", action="store_true",
-                       help="Compare frontend stats from two stats-dirs")
+    modes.add_argument("--set-csv-baseline", type=str, default=None,
+                       help="Merge stats from a stats-dir into a CSV baseline")
+    modes.add_argument("--compare-to-csv-baseline",
+                       type=argparse.FileType('rb', 0), default=None,
+                       metavar="BASELINE.csv",
+                       help="Compare stats dir to named CSV baseline")
+    modes.add_argument("--lnt", action="store_true",
+                       help="Emit an LNT-compatible test summary")
     parser.add_argument('remainder', nargs=argparse.REMAINDER,
                         help="stats-dirs to process")
 
@@ -282,13 +465,18 @@ def main():
         return 1
     if args.catapult:
         write_catapult_trace(args)
-    elif args.compare_frontend_stats:
-        return compare_frontend_stats(args)
+    elif args.set_csv_baseline is not None:
+        return set_csv_baseline(args)
+    elif args.compare_to_csv_baseline is not None:
+        return compare_to_csv_baseline(args)
     elif args.incrementality:
         if args.paired:
             show_paired_incrementality(args)
         else:
             show_incrementality(args)
+    elif args.lnt:
+        write_lnt_values(args)
     return None
+
 
 sys.exit(main())

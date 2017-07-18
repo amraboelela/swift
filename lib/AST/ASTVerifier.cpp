@@ -446,10 +446,44 @@ public:
     bool shouldVerify(Decl *S) { return true; }
 
     // Default cases for whether we should verify a checked subtree.
-    bool shouldVerifyChecked(Expr *E) { return !E->getType().isNull(); }
+    bool shouldVerifyChecked(Expr *E) {
+      if (!E->getType()) {
+        // For @objc enums, we serialize the pre-type-checked integer
+        // literal raw values, and thus when they are deserialized
+        // they do not have a type on them.
+        if (!isa<IntegerLiteralExpr>(E)) {
+          Out << "expression has no type\n";
+          E->print(Out);
+          abort();
+        }
+      }
+      return true;
+    }
     bool shouldVerifyChecked(Stmt *S) { return true; }
     bool shouldVerifyChecked(Pattern *S) { return S->hasType(); }
     bool shouldVerifyChecked(Decl *S) { return true; }
+
+    // Only verify functions if they have bodies we can safely walk.
+    // FIXME: This is a bit of a hack; we should be able to check the
+    // invariants of a parsed body as well.
+    bool shouldVerify(AbstractFunctionDecl *afd) {
+      switch (afd->getBodyKind()) {
+      case AbstractFunctionDecl::BodyKind::None:
+      case AbstractFunctionDecl::BodyKind::TypeChecked:
+      case AbstractFunctionDecl::BodyKind::Skipped:
+      case AbstractFunctionDecl::BodyKind::MemberwiseInitializer:
+        return true;
+
+      case AbstractFunctionDecl::BodyKind::Unparsed:
+      case AbstractFunctionDecl::BodyKind::Parsed:
+      case AbstractFunctionDecl::BodyKind::Synthesize:
+        if (auto SF = dyn_cast<SourceFile>(afd->getModuleScopeContext())) {
+          return SF->ASTStage < SourceFile::TypeChecked;
+        }
+
+        return false;
+      }
+    }
 
     // Default cases for cleaning up as we exit a node.
     void cleanup(Expr *E) { }
@@ -506,8 +540,9 @@ public:
       // Some imported expressions don't have types, even in checked mode.
       // TODO: eliminate all these
       if (!E->getType()) {
-        // The raw value of an imported EnumElementDecl doesn't seem to have
-        // a type for some reason.
+        // For @objc enums, we serialize the pre-type-checked integer
+        // literal raw values, and thus when they are deserialized
+        // they do not have a type on them.
         if (!isa<IntegerLiteralExpr>(E)) {
           Out << "expression has no type\n";
           E->print(Out);
@@ -519,7 +554,7 @@ public:
       // Require an access kind to be set on every l-value expression.
       // Note that the empty tuple type is assignable but usually isn't
       // an l-value, so we have to be conservative there.
-      if (E->getType()->isLValueType() != E->hasLValueAccessKind() &&
+      if (E->getType()->hasLValueType() != E->hasLValueAccessKind() &&
           !(E->hasLValueAccessKind() && E->getType()->isAssignableType())) {
         Out << "l-value expression does not have l-value access kind set\n";
         E->print(Out);
@@ -697,6 +732,11 @@ public:
       if (!shouldVerify(cast<Expr>(expr)))
         return false;
 
+      // In rare instances we clear the opaque value because we no
+      // longer have a subexpression that references it.
+      if (!expr->getOpaqueValue())
+        return true;
+
       assert(!OpaqueValues.count(expr->getOpaqueValue()));
       OpaqueValues[expr->getOpaqueValue()] = 0;
       assert(OpenedExistentialArchetypes.count(expr->getOpenedArchetype())==0);
@@ -705,6 +745,11 @@ public:
     }
 
     void cleanup(OpenExistentialExpr *expr) {
+      // In rare instances we clear the opaque value because we no
+      // longer have a subexpression that references it.
+      if (!expr->getOpaqueValue())
+        return;
+
       assert(OpaqueValues.count(expr->getOpaqueValue()));
       OpaqueValues.erase(expr->getOpaqueValue());
       assert(OpenedExistentialArchetypes.count(expr->getOpenedArchetype())==1);
@@ -1552,7 +1597,7 @@ public:
       }
       
       // The base of a member reference cannot be an existential type.
-      if (E->getBase()->getType()->getLValueOrInOutObjectType()
+      if (E->getBase()->getType()->getWithoutSpecifierType()
             ->isAnyExistentialType()) {
         Out << "Member reference into an unopened existential type\n";
         E->dump(Out);
@@ -1582,7 +1627,7 @@ public:
 
       // The base of a dynamic member reference cannot be an
       // existential type.
-      if (E->getBase()->getType()->getLValueOrInOutObjectType()
+      if (E->getBase()->getType()->getWithoutSpecifierType()
             ->isAnyExistentialType()) {
         Out << "Member reference into an unopened existential type\n";
         E->dump(Out);
@@ -1601,7 +1646,7 @@ public:
       }
 
       // The base of a subscript cannot be an existential type.
-      if (E->getBase()->getType()->getLValueOrInOutObjectType()
+      if (E->getBase()->getType()->getWithoutSpecifierType()
             ->isAnyExistentialType()) {
         Out << "Member reference into an unopened existential type\n";
         E->dump(Out);
@@ -1617,7 +1662,7 @@ public:
       PrettyStackTraceExpr debugStack(Ctx, "verifying DynamicSubscriptExpr", E);
 
       // The base of a subscript cannot be an existential type.
-      if (E->getBase()->getType()->getLValueOrInOutObjectType()
+      if (E->getBase()->getType()->getWithoutSpecifierType()
             ->isAnyExistentialType()) {
         Out << "Member reference into an unopened existential type\n";
         E->dump(Out);
@@ -1646,7 +1691,7 @@ public:
     }
 
     void verifyChecked(OptionalEvaluationExpr *E) {
-      if (E->getType()->isLValueType()) {
+      if (E->getType()->hasLValueType()) {
         Out << "Optional evaluation should not produce an lvalue";
         E->print(Out);
         abort();
@@ -2277,7 +2322,7 @@ public:
             dumpRef(decl);
             Out << " is missing witness for "
                 << conformance->getProtocol()->getName().str() 
-                << "." << req->getName().str()
+                << "." << req->getBaseName()
                 << "\n";
             abort();
           }
@@ -2303,7 +2348,7 @@ public:
       if (!normal->isInvalid()){
         auto conformances = normal->getSignatureConformances();
         unsigned idx = 0;
-        for (auto req : proto->getRequirementSignature()->getRequirements()) {
+        for (const auto &req : proto->getRequirementSignature()) {
           if (req.getKind() != RequirementKind::Conformance)
             continue;
 
@@ -2552,18 +2597,8 @@ public:
       // dependent member types.
       // FIXME: This is a general property of the type system.
       auto interfaceTy = AFD->getInterfaceType();
-      Type unresolvedDependentTy;
-      interfaceTy.findIf([&](Type type) -> bool {
-        if (auto dependent = type->getAs<DependentMemberType>()) {
-          if (dependent->getAssocType() == nullptr) {
-            unresolvedDependentTy = dependent;
-            return true;
-          }
-        }
-        return false;
-      });
-
-      if (unresolvedDependentTy) {
+      if (auto unresolvedDependentTy
+            = interfaceTy->findUnresolvedDependentMemberType()) {
         Out << "Unresolved dependent member type ";
         unresolvedDependentTy->print(Out);
         abort();
@@ -2674,6 +2709,28 @@ public:
             abort();
           }
           break;
+        }
+      }
+
+      if (FD->isMutating()) {
+        if (!FD->isInstanceMember()) {
+          Out << "mutating function is not an instance member\n";
+          abort();
+        }
+        if (FD->getDeclContext()->getAsClassOrClassExtensionContext()) {
+          Out << "mutating function in a class\n";
+          abort();
+        }
+        const ParamDecl *selfParam = FD->getImplicitSelfDecl();
+        if (!selfParam->getInterfaceType()->is<InOutType>()) {
+          Out << "mutating function does not have inout 'self'\n";
+          abort();
+        }
+      } else {
+        const ParamDecl *selfParam = FD->getImplicitSelfDecl();
+        if (selfParam && selfParam->getInterfaceType()->is<InOutType>()) {
+          Out << "non-mutating function has inout 'self'\n";
+          abort();
         }
       }
 
@@ -2983,23 +3040,23 @@ public:
                         [&]{ S->print(Out); });
     }
 
-    void checkSourceRanges(IfConfigStmt *S) {
-      checkSourceRangesBase(S);
+    void checkSourceRanges(IfConfigDecl *ICD) {
+      checkSourceRangesBase(ICD);
 
-      SourceLoc Location = S->getStartLoc();
-      for (auto &Clause : S->getClauses()) {
+      SourceLoc Location = ICD->getStartLoc();
+      for (auto &Clause : ICD->getClauses()) {
         // Clause start, note that the first clause start location is the
         // same as that of the whole statement
-        if (Location == S->getStartLoc()) {
+        if (Location == ICD->getStartLoc()) {
           if (Location != Clause.Loc) {
-            Out << "bad start location of IfConfigStmt first clause\n";
-            S->print(Out);
+            Out << "bad start location of IfConfigDecl first clause\n";
+            ICD->print(Out);
             abort();
           }
         } else {
           if (!Ctx.SourceMgr.isBeforeInBuffer(Location, Clause.Loc)) {
-            Out << "bad start location of IfConfigStmt clause\n";
-            S->print(Out);
+            Out << "bad start location of IfConfigDecl clause\n";
+            ICD->print(Out);
             abort();
           }
         }
@@ -3009,8 +3066,8 @@ public:
         Expr *Cond = Clause.Cond;
         if (Cond) {
           if (!Ctx.SourceMgr.isBeforeInBuffer(Location, Cond->getStartLoc())) {
-            Out << "invalid IfConfigStmt clause condition start location\n";
-            S->print(Out);
+            Out << "invalid IfConfigDecl clause condition start location\n";
+            ICD->print(Out);
             abort();
           }
           Location = Cond->getEndLoc();
@@ -3025,8 +3082,8 @@ public:
           }
           
           if (!Ctx.SourceMgr.isBeforeInBuffer(StoredLoc, StartLocation)) {
-            Out << "invalid IfConfigStmt clause element start location\n";
-            S->print(Out);
+            Out << "invalid IfConfigDecl clause element start location\n";
+            ICD->print(Out);
             abort();
           }
           
@@ -3038,9 +3095,9 @@ public:
         }
       }
 
-      if (Ctx.SourceMgr.isBeforeInBuffer(S->getEndLoc(), Location)) {
-        Out << "invalid IfConfigStmt end location\n";
-        S->print(Out);
+      if (Ctx.SourceMgr.isBeforeInBuffer(ICD->getEndLoc(), Location)) {
+        Out << "invalid IfConfigDecl end location\n";
+        ICD->print(Out);
         abort();
       }
     }
@@ -3202,7 +3259,7 @@ bool swift::shouldVerify(const Decl *D, const ASTContext &Context) {
     return true;
   }
 
-  size_t Hash = llvm::hash_value(VD->getNameStr());
+  size_t Hash = llvm::hash_value(VD->getBaseName().userFacingName());
   return Hash % ProcessCount == ProcessId;
 #else
   return false;

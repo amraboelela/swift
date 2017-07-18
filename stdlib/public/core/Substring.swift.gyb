@@ -70,12 +70,12 @@ extension String {
 /// Calling this initializer copies the contents of the substring to a new
 /// string.
 ///
-/// - Important: Don't store substrings longer than you need to perform a
+/// - Important: Don't store substrings longer than you need them to perform a
 ///   specific operation. A substring holds a reference to the entire storage
-///   of the string it came from, not just to the portion it presents, even
+///   of the string it comes from, not just to the portion it presents, even
 ///   when there is no other reference to the original string. Storing
-///   substrings may therefore prolong the lifetime of string data that is no
-///   longer otherwise accessible, which can appear to be memory leakage.
+///   substrings may, therefore, prolong the lifetime of string data that is
+///   no longer otherwise accessible, which can appear to be memory leakage.
 public struct Substring : StringProtocol {
   public typealias Index = String.Index
   public typealias IndexDistance = String.IndexDistance
@@ -88,6 +88,10 @@ public struct Substring : StringProtocol {
     _slice = RangeReplaceableBidirectionalSlice()
   }
 
+  internal init(_slice: RangeReplaceableBidirectionalSlice<String>) {
+    self._slice = _slice
+  }
+  
   /// Creates a substring with the specified bounds within the given string.
   ///
   /// - Parameters:
@@ -217,14 +221,14 @@ public struct Substring : StringProtocol {
   ///
   /// - Parameter body: A closure with a pointer parameter that points to a
   ///   null-terminated sequence of UTF-8 code units. If `body` has a return
-  ///   value, it is used as the return value for the `withCString(_:)`
-  ///   method. The pointer argument is valid only for the duration of the
-  ///   method's execution.
-  /// - Returns: The return value of the `body` closure parameter, if any.
+  ///   value, that value is also used as the return value for the
+  ///   `withCString(_:)` method. The pointer argument is valid only for the
+  ///   duration of the method's execution.
+  /// - Returns: The return value, if any, of the `body` closure parameter.
   public func withCString<Result>(
     _ body: (UnsafePointer<CChar>) throws -> Result) rethrows -> Result {
     return try _slice._base._core._withCSubstringAndLength(
-      in: startIndex._base._position..<endIndex._base._position,
+      in: startIndex.encodedOffset..<endIndex.encodedOffset,
       encoding: UTF8.self) {
       p, length in try p.withMemoryRebound(to: CChar.self, capacity: length) {
         try body($0)
@@ -242,17 +246,18 @@ public struct Substring : StringProtocol {
   /// - Parameters:
   ///   - body: A closure with a pointer parameter that points to a
   ///     null-terminated sequence of code units. If `body` has a return
-  ///     value, it is used as the return value for the
+  ///     value, that value is also used as the return value for the
   ///     `withCString(encodedAs:_:)` method. The pointer argument is valid
   ///     only for the duration of the method's execution.
-  ///   - targetEncoding: The encoding in which the code units should be interpreted.
-  /// - Returns: The return value of the `body` closure parameter, if any.
+  ///   - targetEncoding: The encoding in which the code units should be
+  ///     interpreted.
+  /// - Returns: The return value, if any, of the `body` closure parameter.
   public func withCString<Result, TargetEncoding: _UnicodeEncoding>(
     encodedAs targetEncoding: TargetEncoding.Type,
     _ body: (UnsafePointer<TargetEncoding.CodeUnit>) throws -> Result
   ) rethrows -> Result {
     return try _slice._base._core._withCSubstring(
-      in: startIndex._base._position..<endIndex._base._position,
+      in: startIndex.encodedOffset..<endIndex.encodedOffset,
       encoding: targetEncoding, body)
   }
 }
@@ -272,13 +277,17 @@ extension Substring : _SwiftStringView {
     _sanityCheck(r._core._owner !== _ephemeralContent._core._owner)
     return r
   }
-  
+
+  public // @testablw
   var _ephemeralContent : String {
     let wholeCore = _slice._base._core
     let subCore : _StringCore = wholeCore[
-      startIndex._base._position..<endIndex._base._position]
-    // check that we haven't allocated a new buffer for the result
-    _sanityCheck(subCore._owner === wholeCore._owner)
+      startIndex.encodedOffset..<endIndex.encodedOffset]
+    // Check that we haven't allocated a new buffer for the result, if we have
+    // contiguous storage.
+    _sanityCheck(
+      subCore._owner === wholeCore._owner || !wholeCore.hasContiguousStorage)
+
     return String(subCore)
   }
 }
@@ -313,42 +322,37 @@ extension Substring : LosslessStringConvertible {
   }
 }
 
-extension Substring : Equatable {
-  public static func ==(lhs: Substring, rhs: Substring) -> Bool {
-    return String(lhs) == String(rhs)
+extension StringProtocol {
+  public static func ==<R: StringProtocol>(lhs: Self, rhs: R) -> Bool {
+    return lhs._ephemeralString == rhs._ephemeralString
   }
 
-  // These are not Equatable requirements, but sufficiently similar to be in
-  // this extension.
-  // FIXME(strings): should be gone if/when an implicit conversion from/to
-  // String is available.
-  // FIXME(ABI):
-  public static func ==(lhs: String, rhs: Substring) -> Bool {
-    return lhs == String(rhs)
-  }
-
-  public static func ==(lhs: Substring, rhs: String) -> Bool {
-    return String(lhs) == rhs
-  }
-
-  public static func !=(lhs: String, rhs: Substring) -> Bool {
-    return lhs != String(rhs)
-  }
-
-  public static func !=(lhs: Substring, rhs: String) -> Bool {
-    return String(lhs) != rhs
+  public static func !=<R: StringProtocol>(lhs: Self, rhs: R) -> Bool {
+    return lhs._ephemeralString != rhs._ephemeralString
   }
 }
 
-extension Substring : Comparable {
-  public static func <(lhs: Substring, rhs: Substring) -> Bool {
-    return String(lhs) < String(rhs)
+extension StringProtocol {
+  public static func < <R: StringProtocol>(lhs: Self, rhs: R) -> Bool {
+    return lhs._ephemeralString < rhs._ephemeralString
+  }
+
+  public static func > <R: StringProtocol>(lhs: Self, rhs: R) -> Bool {
+    return rhs < lhs
+  }
+
+  public static func <= <R: StringProtocol>(lhs: Self, rhs: R) -> Bool {
+    return !(rhs < lhs)
+  }
+
+  public static func >= <R: StringProtocol>(lhs: Self, rhs: R) -> Bool {
+    return !(lhs < rhs)
   }
 }
 
-extension Substring : Hashable {
+extension StringProtocol {
   public var hashValue : Int {
-    return String(self).hashValue
+    return self._ephemeralString.hashValue
   }
 }
 
@@ -455,53 +459,21 @@ extension Substring : ExpressibleByStringLiteral {
   }
 }
 
-// The purpose of this protocol is backward compatibility with Swift 3 code,
-// where String subscripts returned String.
-// Since the Substring returning subscripts are introduced by the protocol
-// extension, they will be less specific than the String-returning ones
-// declared on the String type itself, thus avoiding ambiguity.
-public protocol _RangeSubscriptableString {
-  associatedtype Index : Comparable
-  func _subscript(_ bounds: Range<Index>) -> Substring
-  func _subscript(_ bounds: ClosedRange<Index>) -> Substring
-}
-
-// Without the `where` subscripts will be ambiguous
-extension _RangeSubscriptableString where Self : RangeReplaceableCollection {
-% for Range in ['Range', 'ClosedRange']:
-  public subscript(bounds: ${Range}<Index>) -> Substring {
-    return _subscript(bounds)
-  }
-% end
-}
-
-extension String : _RangeSubscriptableString {
-% for Range in ['Range', 'ClosedRange']:
-  /// Accesses the text in the given range.
-  ///
-  /// - Complexity: O(*n*) if the underlying string is bridged from
-  ///   Objective-C, where *n* is the length of the string; otherwise, O(1).
-  public func _subscript(_ bounds: ${Range}<Index>) -> Substring {
-    return Substring(_base: String(self._core), bounds)
-  }
-% end
-}
-
-extension Substring : _RangeSubscriptableString {
-% for Range in ['Range', 'ClosedRange']:
-  public func _subscript(_ bounds: ${Range}<Index>) -> Substring {
-    let subSlice = _slice[bounds]
-    let bounds = (lower: subSlice.startIndex, upper: subSlice.endIndex)
-%   if Range == 'ClosedRange':
-    // Creating Substring using the half-open range, since subSlice already
-    // handled the ClosedRange case.
-%   end
-    return Substring(_base: _slice._base, Range(uncheckedBounds: bounds))
-  }
-% end
-}
-
+//===--- String/Substring Slicing Support ---------------------------------===//
+/// In Swift 3.2, in the absence of type context,
+///
+///     someString[someString.startIndex..<someString.endIndex]
+///
+/// was deduced to be of type `String`.  Therefore have a more-specific
+/// Swift-3-only `subscript` overload on `String` (and `Substring`) that
+/// continues to produce `String`.
 extension String {
+  @available(swift, introduced: 4)
+  public subscript(r: Range<Index>) -> Substring {
+    return Substring(
+      _slice: RangeReplaceableBidirectionalSlice(base: self, bounds: r))
+  }
+
   @available(swift, obsoleted: 4)
   public subscript(bounds: Range<Index>) -> String {
     return String(characters[bounds])
@@ -514,6 +486,11 @@ extension String {
 }
 
 extension Substring {
+  @available(swift, introduced: 4)
+  public subscript(r: Range<Index>) -> Substring {
+    return Substring(_slice: _slice[r])
+  }
+
   @available(swift, obsoleted: 4)
   public subscript(bounds: Range<Index>) -> String {
     return String(characters[bounds])
@@ -524,3 +501,4 @@ extension Substring {
     return String(characters[bounds])
   }
 }
+//===----------------------------------------------------------------------===//

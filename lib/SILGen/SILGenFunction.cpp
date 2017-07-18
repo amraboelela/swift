@@ -31,8 +31,9 @@ using namespace Lowering;
 
 SILGenFunction::SILGenFunction(SILGenModule &SGM, SILFunction &F)
     : SGM(SGM), F(F), silConv(SGM.M), StartOfPostmatter(F.end()),
-      B(*this, createBasicBlock()), OpenedArchetypesTracker(F),
+      B(*this), OpenedArchetypesTracker(F),
       CurrentSILLoc(F.getLocation()), Cleanups(*this) {
+  B.setInsertionPoint(createBasicBlock());
   B.setCurrentDebugScope(F.getDebugScope());
   B.setOpenedArchetypesTracker(&OpenedArchetypesTracker);
 }
@@ -506,7 +507,8 @@ void SILGenFunction::emitArtificialTopLevel(ClassDecl *mainClass) {
       managedName = emitOptionalToOptional(
           mainClass, managedName,
           SILType::getPrimitiveObjectType(IUOptNSStringTy),
-          [](SILGenFunction &, SILLocation, ManagedValue input, SILType) {
+          [](SILGenFunction &, SILLocation, ManagedValue input, SILType,
+             SGFContext) {
         return input;
       });
     }

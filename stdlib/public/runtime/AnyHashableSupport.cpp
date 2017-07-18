@@ -75,32 +75,34 @@ HashableConformances;
 template<bool KnownToConformToHashable>
 LLVM_ATTRIBUTE_ALWAYS_INLINE
 static const Metadata *findHashableBaseTypeImpl(const Metadata *type) {
-  // Check the cache first.
-  if (HashableConformanceEntry *entry =
-          HashableConformances.find(HashableConformanceKey{type})) {
-    return entry->baseTypeThatConformsToHashable;
-  }
-  if (!KnownToConformToHashable &&
-      !swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
-    // Don't cache the negative response because we don't invalidate
-    // this cache when a new conformance is loaded dynamically.
-    return nullptr;
-  }
-  // By this point, `type` is known to conform to `Hashable`.
-
-  const Metadata *baseTypeThatConformsToHashable = type;
-  while (true) {
-    const Metadata *superclass =
+    fprintf(stderr, "findHashableBaseTypeImpl 1\n");
+    // Check the cache first.
+    if (HashableConformanceEntry *entry =
+        HashableConformances.find(HashableConformanceKey{type})) {
+        return entry->baseTypeThatConformsToHashable;
+    }
+    fprintf(stderr, "findHashableBaseTypeImpl 2\n");
+    if (!KnownToConformToHashable &&
+        !swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
+        // Don't cache the negative response because we don't invalidate
+        // this cache when a new conformance is loaded dynamically.
+        return nullptr;
+    }
+    // By this point, `type` is known to conform to `Hashable`.
+    
+    const Metadata *baseTypeThatConformsToHashable = type;
+    while (true) {
+        const Metadata *superclass =
         _swift_class_getSuperclass(baseTypeThatConformsToHashable);
-    if (!superclass)
-      break;
-    if (!swift_conformsToProtocol(superclass, &HashableProtocolDescriptor))
-      break;
-    baseTypeThatConformsToHashable = superclass;
-  }
-  HashableConformances.getOrInsert(HashableConformanceKey{type},
-                                   baseTypeThatConformsToHashable);
-  return baseTypeThatConformsToHashable;
+        if (!superclass)
+            break;
+        if (!swift_conformsToProtocol(superclass, &HashableProtocolDescriptor))
+            break;
+        baseTypeThatConformsToHashable = superclass;
+    }
+    HashableConformances.getOrInsert(HashableConformanceKey{type},
+                                     baseTypeThatConformsToHashable);
+    return baseTypeThatConformsToHashable;
 }
 
 /// Find the base type that introduces the `Hashable` conformance.
@@ -137,87 +139,77 @@ void _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
   const void *anyHashableResultPointer,
   const Metadata *type,
   const WitnessTable *hashableWT
-) {
-  switch (type->getKind()) {
-  case MetadataKind::Class:
-  case MetadataKind::ObjCClassWrapper:
-  case MetadataKind::ForeignClass: {
+                                                              ) {
+    fprintf(stderr, "_swift_stdlib_makeAnyHashableUpcastingToHashableBaseType type->getKind(): %d\n", type->getKind());
+    switch (type->getKind()) {
+        case MetadataKind::Class:
+        case MetadataKind::ObjCClassWrapper:
+        case MetadataKind::ForeignClass: {
 #if SWIFT_OBJC_INTEROP
-    id srcObject;
-    memcpy(&srcObject, value, sizeof(id));
-    // Do we have a _SwiftValue?
-    if (_SwiftValue *srcSwiftValue = getAsSwiftValue(srcObject)) {
-      // If so, extract the boxed value and try to cast it.
-      const Metadata *unboxedType;
-      const OpaqueValue *unboxedValue;
-      std::tie(unboxedType, unboxedValue) =
-          getValueFromSwiftValue(srcSwiftValue);
-
-      if (auto unboxedHashableWT =
-              swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
-        ValueBuffer unboxedCopyBuf;
-        // Allocate buffer.
-        OpaqueValue *unboxedValueCopy =
-            unboxedType->allocateBufferIn(&unboxedCopyBuf);
-        // initWithCopy.
-        unboxedType->vw_initializeWithCopy(
-            unboxedValueCopy, const_cast<OpaqueValue *>(unboxedValue));
-
-        _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
-            unboxedValueCopy, anyHashableResultPointer, unboxedType,
-            unboxedHashableWT);
-        // Deallocate buffer.
-        unboxedType->deallocateBufferIn(&unboxedCopyBuf);
-        type->vw_destroy(value);
-#else
-        ValueBuffer unboxedCopyBuf;
-        auto unboxedValueCopy = unboxedType->vw_initializeBufferWithCopy(
-            &unboxedCopyBuf, const_cast<OpaqueValue *>(unboxedValue));
-        _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
-            unboxedValueCopy, anyHashableResultPointer, unboxedType,
-            unboxedHashableWT);
-        unboxedType->vw_deallocateBuffer(&unboxedCopyBuf);
-        type->vw_destroy(value);
+            id srcObject;
+            memcpy(&srcObject, value, sizeof(id));
+            // Do we have a _SwiftValue?
+            if (_SwiftValue *srcSwiftValue = getAsSwiftValue(srcObject)) {
+                // If so, extract the boxed value and try to cast it.
+                const Metadata *unboxedType;
+                const OpaqueValue *unboxedValue;
+                std::tie(unboxedType, unboxedValue) =
+                getValueFromSwiftValue(srcSwiftValue);
+                
+                if (auto unboxedHashableWT =
+                    swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
+                    ValueBuffer unboxedCopyBuf;
+                    // Allocate buffer.
+                    OpaqueValue *unboxedValueCopy =
+                    unboxedType->allocateBufferIn(&unboxedCopyBuf);
+                    // initWithCopy.
+                    unboxedType->vw_initializeWithCopy(
+                                                       unboxedValueCopy, const_cast<OpaqueValue *>(unboxedValue));
+                    
+                    _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
+                                                                             unboxedValueCopy, anyHashableResultPointer, unboxedType,
+                                                                             unboxedHashableWT);
+                    // Deallocate buffer.
+                    unboxedType->deallocateBufferIn(&unboxedCopyBuf);
+                    type->vw_destroy(value);
+                    return;
+                }
+            }
 #endif
-        return;
-      }
+            
+            _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
+                                                                    value, anyHashableResultPointer,
+                                                                    findHashableBaseTypeOfHashableType(type),
+                                                                    hashableWT);
+            return;
+        }
+            
+        case MetadataKind::Struct:
+        case MetadataKind::Enum:
+        case MetadataKind::Optional:
+            _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
+                                                                    value, anyHashableResultPointer, type, hashableWT);
+            return;
+            
+        case MetadataKind::ErrorObject:
+            // ErrorObject metadata is not used for any Swift-level values, so
+            // this case is unreachable.
+            _failCorruptType(type);
+            
+        case MetadataKind::Opaque:
+        case MetadataKind::Tuple:
+        case MetadataKind::Function:
+        case MetadataKind::Existential:
+        case MetadataKind::Metatype:
+        case MetadataKind::ExistentialMetatype:
+        case MetadataKind::HeapLocalVariable:
+        case MetadataKind::HeapGenericLocalVariable:
+            // We assume that the value can not be an existential,
+            // because existentials can't conform to Hashable today.
+            //
+            // FIXME: handle generalized existentials when Swift has them.
+            _failCorruptType(type);
     }
-#endif
-
-    _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
-        value, anyHashableResultPointer,
-        findHashableBaseTypeOfHashableType(type),
-        hashableWT);
-    return;
-  }
-
-  case MetadataKind::Struct:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-    _swift_stdlib_makeAnyHashableUsingDefaultRepresentation(
-        value, anyHashableResultPointer, type, hashableWT);
-    return;
-
-  case MetadataKind::ErrorObject:
-    // ErrorObject metadata is not used for any Swift-level values, so
-    // this case is unreachable.
     _failCorruptType(type);
-
-  case MetadataKind::Opaque:
-  case MetadataKind::Tuple:
-  case MetadataKind::Function:
-  case MetadataKind::Existential:
-  case MetadataKind::Metatype:
-  case MetadataKind::ExistentialMetatype:
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-    // We assume that the value can not be an existential,
-    // because existentials can't conform to Hashable today.
-    //
-    // FIXME: handle generalized existentials when Swift has them.
-    _failCorruptType(type);
-  }
-  _failCorruptType(type);
 }
 

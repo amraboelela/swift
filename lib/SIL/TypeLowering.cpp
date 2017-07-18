@@ -122,8 +122,18 @@ CaptureKind TypeConverter::getDeclCaptureKind(CapturedValue capture) {
                            !getTypeLowering(var->getType()).isAddressOnly()))
         return CaptureKind::Constant;
 
+      // In-out parameters are captured by address.
       if (var->getType()->is<InOutType>()) {
         return CaptureKind::StorageAddress;
+      }
+
+      // Reference storage types can appear in a capture list, which means
+      // we might allocate boxes to store the captures. However, those boxes
+      // have the same lifetime as the closure itself, so we must capture
+      // the box itself and not the payload, even if the closure is noescape,
+      // otherwise they will be destroyed when the closure is formed.
+      if (var->getType()->is<ReferenceStorageType>()) {
+        return CaptureKind::Box;
       }
 
       // If we're capturing into a non-escaping closure, we can generally just
@@ -1431,20 +1441,14 @@ static CanTupleType getLoweredTupleType(TypeConverter &tc,
 
     assert(!isa<LValueType>(substEltType) &&
            "lvalue types cannot exist in function signatures");
-
-    CanType loweredSubstEltType;
-    if (auto substLV = dyn_cast<InOutType>(substEltType)) {
-      SILType silType = tc.getLoweredType(origType.getLValueOrInOutObjectType(),
-                                          substLV.getObjectType());
-      loweredSubstEltType = CanInOutType::get(silType.getSwiftRValueType());
-
-    } else {
-      // If the original type was an archetype, use that archetype as
-      // the original type of the element --- the actual archetype
-      // doesn't matter, just the abstraction pattern.
-      SILType silType = tc.getLoweredType(origEltType, substEltType);
-      loweredSubstEltType = silType.getSwiftRValueType();
-    }
+    assert(!isa<InOutType>(substEltType) &&
+           "inout cannot appear in tuple element type here");
+    
+    // If the original type was an archetype, use that archetype as
+    // the original type of the element --- the actual archetype
+    // doesn't matter, just the abstraction pattern.
+    SILType silType = tc.getLoweredType(origEltType, substEltType);
+    CanType loweredSubstEltType = silType.getSwiftRValueType();
 
     changed = (changed || substEltType != loweredSubstEltType);
 
@@ -1517,8 +1521,8 @@ TypeConverter::getTypeLowering(AbstractionPattern origType,
   // completely removed and represented as 'address' SILTypes.
   if (isa<InOutType>(substType)) {
     // Derive SILType for InOutType from the object type.
-    CanType substObjectType = substType.getLValueOrInOutObjectType();
-    AbstractionPattern origObjectType = origType.getLValueOrInOutObjectType();
+    CanType substObjectType = substType.getWithoutSpecifierType();
+    AbstractionPattern origObjectType = origType.getWithoutSpecifierType();
 
     SILType loweredType = getLoweredType(origObjectType, substObjectType)
       .getAddressType();
@@ -1881,12 +1885,11 @@ TypeConverter::getFunctionInterfaceTypeWithCaptures(CanAnyFunctionType funcType,
                                                funcType->throws());
 
   if (!genericSig)
-    return CanFunctionType::get(funcType.getInput(),
-                                funcType.getResult(),
+    return CanFunctionType::get(funcType->getParams(), funcType.getResult(),
                                 innerExtInfo);
-    
+
   return CanGenericFunctionType::get(genericSig,
-                                     funcType.getInput(),
+                                     funcType->getParams(),
                                      funcType.getResult(),
                                      innerExtInfo);
 }

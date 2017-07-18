@@ -300,7 +300,7 @@ static bool shouldHideDeclFromCompletionResults(const ValueDecl *D) {
   }
 
   // Hide editor placeholders.
-  if (D->getName().isEditorPlaceholder())
+  if (D->getBaseName().isEditorPlaceholder())
     return true;
 
   if (!D->isUserAccessible())
@@ -1548,20 +1548,18 @@ protocolForLiteralKind(CodeCompletionLiteralKind kind) {
 /// that is of type () -> ().
 static bool hasTrivialTrailingClosure(const FuncDecl *FD,
                                       AnyFunctionType *funcType) {
-  unsigned level = FD->isInstanceMember() ? 1 : 0;
-  auto Args = decomposeParamType(funcType->getInput(), FD, level);
-  bool OneArg = Args.size() == 1;
-  if (Args.size() > 1) {
-    unsigned NonDefault =
-        std::count_if(Args.begin(), Args.end() - 1, [](const CallArgParam &P) {
-          return !P.HasDefaultArgument;
-        });
-
-    OneArg = NonDefault == 0;
+  SmallVector<bool, 4> defaultMap;
+  computeDefaultMap(funcType->getInput(), FD,
+                    /*level*/ FD->isInstanceMember() ? 1 : 0, defaultMap);
+  
+  bool OneArg = defaultMap.size() == 1;
+  if (defaultMap.size() > 1) {
+    auto NonDefault = std::count(defaultMap.begin(), defaultMap.end() - 1, false);
+    OneArg = (NonDefault == 0);
   }
 
   if (OneArg)
-    if (auto Fn = Args.back().Ty->getAs<AnyFunctionType>())
+    if (auto Fn = funcType->getParams().back().getType()->getAs<AnyFunctionType>())
       return Fn->getInput()->isVoid() && Fn->getResult()->isVoid();
 
   return false;
@@ -2791,7 +2789,7 @@ public:
 
     // Base name
     addLeadingDot(Builder);
-    Builder.addTextChunk(AFD->getFullName().getBaseName().str());
+    Builder.addTextChunk(AFD->getBaseName().getIdentifier().str());
 
     // Add the argument labels.
     auto ArgLabels = AFD->getFullName().getArgumentNames();
@@ -3465,7 +3463,7 @@ public:
     }
 
     if (leadingSequence.empty() && LHS->getType() &&
-        LHS->getType()->isLValueType()) {
+        LHS->getType()->hasLValueType()) {
       addAssignmentOperator(LHS->getType()->getRValueType(),
                             CurrDeclContext->getASTContext().TheEmptyTupleType);
     }
@@ -3729,7 +3727,8 @@ public:
         for (auto Ex : NTD->getExtensions()) {
           handleDeclRange(Ex->getMembers(), Reason);
         }
-      } else if (isNameHit(VD->getNameStr())) {
+      } else if (!VD->getBaseName().isSpecial() &&
+                 isNameHit(VD->getBaseName().getIdentifier().str())) {
         if (VD->hasInterfaceType())
           unboxType(VD->getInterfaceType());
       }
@@ -4268,17 +4267,10 @@ public:
     Builder.addBraceStmtWithCursor();
   }
 
-  llvm::StringSet<> SatisfiedAssociatedTypes;
-
   // Implement swift::VisibleDeclConsumer.
   void foundDecl(ValueDecl *D, DeclVisibilityKind Reason) override {
-    if (Reason == DeclVisibilityKind::MemberOfCurrentNominal) {
-      if (isa<TypeAliasDecl>(D)) {
-        auto *VD = dyn_cast<ValueDecl>(D);
-        SatisfiedAssociatedTypes.insert(VD->getName().str());
-      }
+    if (Reason == DeclVisibilityKind::MemberOfCurrentNominal)
       return;
-    }
 
     if (shouldHideDeclFromCompletionResults(D))
       return;
@@ -5118,7 +5110,7 @@ void CodeCompletionCallbacksImpl::doneParsing() {
     Lookup.setIsStaticMetatype(ParsedExpr->isStaticallyDerivedMetatype());
   }
   if (auto *DRE = dyn_cast_or_null<DeclRefExpr>(ParsedExpr)) {
-    Lookup.setIsSelfRefExpr(DRE->getDecl()->getName() == Context.Id_self);
+    Lookup.setIsSelfRefExpr(DRE->getDecl()->getFullName() == Context.Id_self);
   }
 
   if (isInsideObjCSelector())

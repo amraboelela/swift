@@ -650,7 +650,6 @@ void Lexer::lexHash() {
 
   // Map the character sequence onto
   tok Kind = llvm::StringSwitch<tok>(StringRef(CurPtr, tmpPtr-CurPtr))
-#define KEYWORD(kw)
 #define POUND_KEYWORD(id) \
   .Case(#id, tok::pound_##id)
 #include "swift/Syntax/TokenKinds.def"
@@ -738,12 +737,12 @@ static bool rangeContainsPlaceholderEnd(const char *CurPtr,
   return false;
 }
 
-RC<syntax::TokenSyntax> Lexer::fullLex() {
+RC<syntax::RawTokenSyntax> Lexer::fullLex() {
   if (NextToken.isEscapedIdentifier()) {
     LeadingTrivia.push_back(syntax::TriviaPiece::backtick());
     TrailingTrivia.push_front(syntax::TriviaPiece::backtick());
   }
-  auto Result = syntax::TokenSyntax::make(NextToken.getKind(),
+  auto Result = syntax::RawTokenSyntax::make(NextToken.getKind(),
                                         OwnedString(NextToken.getText()).copy(),
                                         syntax::SourcePresence::Present,
                                         {LeadingTrivia}, {TrailingTrivia});
@@ -1245,6 +1244,9 @@ static const char *skipToEndOfInterpolatedExpression(const char *CurPtr,
                                                      DiagnosticEngine *Diags,
                                                      bool MultilineString) {
   llvm::SmallVector<char, 4> OpenDelimiters;
+  llvm::SmallVector<bool, 4> AllowNewline;
+  AllowNewline.push_back(MultilineString);
+
   auto inStringLiteral = [&]() {
     return !OpenDelimiters.empty() &&
            (OpenDelimiters.back() == '"' || OpenDelimiters.back() == '\'');
@@ -1263,27 +1265,46 @@ static const char *skipToEndOfInterpolatedExpression(const char *CurPtr,
     // interpolated ones are no exception - unless multiline literals.
     case '\n':
     case '\r':
-      if (MultilineString)
+      if (AllowNewline.back())
         continue;
       // Will be diagnosed as an unterminated string literal.
       return CurPtr-1;
 
     case '"':
-    case '\'':
-      if (inStringLiteral()) {
-        // Is it the closing quote?
+    case '\'': {
+      if (!AllowNewline.back() && inStringLiteral()) {
         if (OpenDelimiters.back() == CurPtr[-1]) {
+          // Closing single line string literal.
           OpenDelimiters.pop_back();
+          AllowNewline.pop_back();
         }
-        // Otherwise it's an ordinary character; treat it normally.
-      } else {
-        OpenDelimiters.push_back(CurPtr[-1]);
+        // Otherwise, it's just a quote in string literal. e.g. "foo's".
+        continue;
       }
-      if (*CurPtr == '"' && *(CurPtr + 1) == '"' && *(CurPtr - 1) == '"') {
-        MultilineString = true;
+
+      bool isMultilineQuote = (
+          *CurPtr == '"' && *(CurPtr + 1) == '"' && *(CurPtr - 1) == '"');
+      if (isMultilineQuote)
         CurPtr += 2;
+
+      if (!inStringLiteral()) {
+        // Open string literal
+        OpenDelimiters.push_back(CurPtr[-1]);
+        AllowNewline.push_back(isMultilineQuote);
+        continue;
       }
+
+      // We are in multiline string literal.
+      assert(AllowNewline.back() && "other cases must be handled above");
+      if (isMultilineQuote) {
+        // Close multiline string literal.
+        OpenDelimiters.pop_back();
+        AllowNewline.pop_back();
+      }
+
+      // Otherwise, it's just a normal character in multiline string.
       continue;
+    }
     case '\\':
       if (inStringLiteral()) {
         char escapedChar = *CurPtr++;

@@ -31,6 +31,10 @@ extension P {
   var z: String {
     return y
   }
+  var w: String {
+    get { return "" }
+    nonmutating set { }
+  }
 }
 
 // CHECK-LABEL: sil hidden @{{.*}}storedProperties
@@ -160,4 +164,48 @@ func keyPathsWithSpecificGenericInstance() {
   // CHECK-SAME:   getter @_T08keypaths1PPAAE1zSSvAA8ConcreteVTK : $@convention(thin) (@in Concrete) -> @out String
   _ = \Concrete.z
   _ = \S<Concrete>.computed
+}
+
+class AA<T> {
+  var a: Int { get { return 0 } set { } }
+}
+class BB<U, V>: AA<V> {
+}
+
+func keyPathForInheritedMember() {
+  _ = \BB<Int, String>.a
+}
+
+func keyPathForExistentialMember() {
+  _ = \P.x
+  _ = \P.y
+  _ = \P.z
+  _ = \P.w
+}
+
+struct OptionalFields {
+  var x: S<Int>?
+}
+struct OptionalFields2 {
+  var y: OptionalFields?
+}
+
+// CHECK-LABEL: sil hidden @_T08keypaths18keyPathForOptionalyyF
+func keyPathForOptional() {
+  // CHECK: keypath $WritableKeyPath<OptionalFields, S<Int>>, (
+  // CHECK-SAME:   stored_property #OptionalFields.x : $Optional<S<Int>>;
+  // CHECK-SAME:   optional_force : $S<Int>)
+  _ = \OptionalFields.x!
+  // CHECK: keypath $KeyPath<OptionalFields, Optional<String>>, (
+  // CHECK-SAME:   stored_property #OptionalFields.x : $Optional<S<Int>>;
+  // CHECK-SAME:   optional_chain : $S<Int>;
+  // CHECK-SAME:   stored_property #S.y : $String;
+  // CHECK-SAME:   optional_wrap : $Optional<String>)
+  _ = \OptionalFields.x?.y
+  // CHECK: keypath $KeyPath<OptionalFields2, Optional<S<Int>>>, (
+  // CHECK-SAME:   root $OptionalFields2;
+  // CHECK-SAME:   stored_property #OptionalFields2.y : $Optional<OptionalFields>;
+  // CHECK-SAME:   optional_chain : $OptionalFields;
+  // CHECK-SAME:   stored_property #OptionalFields.x : $Optional<S<Int>>)
+  _ = \OptionalFields2.y?.x
 }

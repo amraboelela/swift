@@ -27,6 +27,10 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, Identifier I) {
   return OS << I.get();
 }
 
+raw_ostream &llvm::operator<<(raw_ostream &OS, DeclBaseName D) {
+  return OS << D.userFacingName();
+}
+
 raw_ostream &llvm::operator<<(raw_ostream &OS, DeclName I) {
   if (I.isSimpleName())
     return OS << I.getBaseName();

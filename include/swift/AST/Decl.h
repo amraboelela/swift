@@ -44,6 +44,7 @@ namespace swift {
   class GenericEnvironment;
   class ArchetypeType;
   class ASTContext;
+  struct ASTNode;
   class ASTPrinter;
   class ASTWalker;
   class ConstructorDecl;
@@ -317,9 +318,9 @@ class alignas(1 << DeclAlignInBits) Decl {
     /// called 'static').
     unsigned IsStatic : 1;
 
-    /// \brief Whether this is a 'let' property, which can only be initialized
-    /// once (either in its declaration, or once later), making it immutable.
-    unsigned IsLet : 1;
+    /// \brief The specifier associated with this variable or parameter.  This
+    /// determines the storage semantics of the value e.g. mutability.
+    unsigned Specifier : 2;
 
     /// \brief Whether this declaration was an element of a capture list.
     unsigned IsCaptureList : 1;
@@ -334,7 +335,7 @@ class alignas(1 << DeclAlignInBits) Decl {
     unsigned IsDebuggerVar : 1;
 
   };
-  enum { NumVarDeclBits = NumAbstractStorageDeclBits + 5 };
+  enum { NumVarDeclBits = NumAbstractStorageDeclBits + 6 };
   static_assert(NumVarDeclBits <= 32, "fits in an unsigned");
 
   class EnumElementDeclBitfields {
@@ -2027,34 +2028,33 @@ public:
   }
 };
 
-/// IfConfigDecl - This class represents the declaration-side representation of
-/// #if/#else/#endif blocks. Active and inactive block members are stored
-/// separately, with the intention being that active members will be handed
-/// back to the enclosing declaration.
+/// IfConfigDecl - This class represents #if/#else/#endif blocks.
+/// Active and inactive block members are stored separately, with the intention
+/// being that active members will be handed back to the enclosing context.
 class IfConfigDecl : public Decl {
   /// An array of clauses controlling each of the #if/#elseif/#else conditions.
   /// The array is ASTContext allocated.
-  ArrayRef<IfConfigClause<Decl *>> Clauses;
+  ArrayRef<IfConfigClause> Clauses;
   SourceLoc EndLoc;
 public:
   
-  IfConfigDecl(DeclContext *Parent, ArrayRef<IfConfigClause<Decl *>> Clauses,
+  IfConfigDecl(DeclContext *Parent, ArrayRef<IfConfigClause> Clauses,
                SourceLoc EndLoc, bool HadMissingEnd)
     : Decl(DeclKind::IfConfig, Parent), Clauses(Clauses), EndLoc(EndLoc)
   {
     IfConfigDeclBits.HadMissingEnd = HadMissingEnd;
   }
 
-  ArrayRef<IfConfigClause<Decl *>> getClauses() const { return Clauses; }
+  ArrayRef<IfConfigClause> getClauses() const { return Clauses; }
 
   /// Return the active clause, or null if there is no active one.
-  const IfConfigClause<Decl *> *getActiveClause() const {
+  const IfConfigClause *getActiveClause() const {
     for (auto &Clause : Clauses)
       if (Clause.isActive) return &Clause;
     return nullptr;
   }
 
-  const ArrayRef<Decl*> getActiveMembers() const {
+  const ArrayRef<ASTNode> getActiveClauseElements() const {
     if (auto *Clause = getActiveClause())
       return Clause->Elements;
     return {};
@@ -2121,14 +2121,7 @@ public:
   }
 
   bool hasName() const { return bool(Name); }
-  /// TODO: Rename to getSimpleName?
-  Identifier getName() const { return Name.getBaseName(); }
   bool isOperator() const { return Name.isOperator(); }
-
-  /// Returns the string for the base name, or "_" if this is unnamed.
-  StringRef getNameStr() const {
-    return hasName() ? getName().str() : "_";
-  }
 
   /// Retrieve the full name of the declaration.
   /// TODO: Rename to getName?
@@ -2137,7 +2130,7 @@ public:
 
   /// Retrieve the base name of the declaration, ignoring any argument
   /// names.
-  DeclName getBaseName() const { return Name.getBaseName(); }
+  DeclBaseName getBaseName() const { return Name.getBaseName(); }
 
   /// Retrieve the name to use for this declaration when interoperating
   /// with the Objective-C runtime.
@@ -2162,6 +2155,8 @@ public:
   /// \see getFormalAccess
   Accessibility getFormalAccessImpl(const DeclContext *useDC) const;
 
+  bool isVersionedInternalDecl() const;
+
   /// Returns the access level specified explicitly by the user, or provided by
   /// default according to language rules.
   ///
@@ -2171,9 +2166,16 @@ public:
   /// taken into account.
   ///
   /// \sa getFormalAccessScope
-  Accessibility getFormalAccess(const DeclContext *useDC = nullptr) const {
+  Accessibility getFormalAccess(const DeclContext *useDC = nullptr,
+                                bool respectVersionedAttr = false) const {
     assert(hasAccessibility() && "accessibility not computed yet");
     Accessibility result = TypeAndAccess.getInt().getValue();
+    if (respectVersionedAttr &&
+        result == Accessibility::Internal &&
+        isVersionedInternalDecl()) {
+      assert(!useDC);
+      return Accessibility::Public;
+    }
     if (useDC && (result == Accessibility::Internal ||
                   result == Accessibility::Public))
       return getFormalAccessImpl(useDC);
@@ -2194,7 +2196,8 @@ public:
   /// \sa getFormalAccess
   /// \sa isAccessibleFrom
   AccessScope
-  getFormalAccessScope(const DeclContext *useDC = nullptr) const;
+  getFormalAccessScope(const DeclContext *useDC = nullptr,
+                       bool respectVersionedAttr = false) const;
 
   /// Returns the access level that actually controls how a declaration should
   /// be emitted and may be used.
@@ -2346,6 +2349,14 @@ protected:
   }
 
 public:
+  Identifier getName() const { return getFullName().getBaseIdentifier(); }
+
+  /// Returns the string for the base name, or "_" if this is unnamed.
+  StringRef getNameStr() const {
+    assert(!getFullName().isSpecial() && "Cannot get string for special names");
+    return hasName() ? getBaseName().getIdentifier().str() : "_";
+  }
+
   /// The type of this declaration's values. For the type of the
   /// declaration itself, use getInterfaceType(), which returns a
   /// metatype.
@@ -2372,6 +2383,9 @@ public:
     return D->getKind() >= DeclKind::First_TypeDecl &&
            D->getKind() <= DeclKind::Last_TypeDecl;
   }
+
+  /// Compute an ordering between two type declarations that is ABI-stable.
+  static int compare(const TypeDecl *type1, const TypeDecl *type2);
 };
 
 /// A type declaration that can have generic parameters attached to it.  Because
@@ -3487,7 +3501,7 @@ class ProtocolDecl : public NominalTypeDecl {
 
   /// The generic signature representing exactly the new requirements introduced
   /// by this protocol.
-  GenericSignature *RequirementSignature = nullptr;
+  const Requirement *RequirementSignature = nullptr;
 
   /// True if the protocol has requirements that cannot be satisfied (e.g.
   /// because they could not be imported from Objective-C).
@@ -3496,6 +3510,9 @@ class ProtocolDecl : public NominalTypeDecl {
   /// If this is a compiler-known protocol, this will be a KnownProtocolKind
   /// value, plus one. Otherwise, it will be 0.
   unsigned KnownProtocol : 6;
+
+  /// The number of requirements in the requirement signature.
+  unsigned NumRequirementsInSignature : 16;
 
   bool requiresClassSlow();
 
@@ -3673,8 +3690,6 @@ public:
 
   /// Create the implicit generic parameter list for a protocol or
   /// extension thereof.
-  ///
-  /// FIXME: protocol extensions will introduce a where clause here as well.
   GenericParamList *createGenericParams(DeclContext *dc);
 
   /// Create the generic parameters of this protocol if the haven't been
@@ -3686,17 +3701,17 @@ public:
     return TrailingWhere;
   }
 
-  /// Retrieve the generic signature representing the requirements introduced by
-  /// this protocol.
+  /// Retrieve the requirements that describe this protocol.
   ///
-  /// These are the requirements like any inherited protocols and conformances
-  /// for associated types that are mentioned literally in this
-  /// decl. Requirements implied via inheritance are not mentioned, nor is the
-  /// conformance of Self to this protocol.
-  GenericSignature *getRequirementSignature() const {
-    assert(RequirementSignature &&
+  /// These are the requirements including any inherited protocols
+  /// and conformances for associated types that are introduced in this
+  /// protocol. Requirements implied via any other protocol (e.g., inherited
+  /// protocols of the inherited protocols) are not mentioned. The conformance
+  /// requirements listed here become entries in the witness table.
+  ArrayRef<Requirement> getRequirementSignature() const {
+    assert(isRequirementSignatureComputed() &&
            "getting requirement signature before computing it");
-    return RequirementSignature;
+    return llvm::makeArrayRef(RequirementSignature, NumRequirementsInSignature);
   }
 
   /// Has the requirement signature been computed yet?
@@ -3706,9 +3721,7 @@ public:
 
   void computeRequirementSignature();
 
-  void setRequirementSignature(GenericSignature *sig) {
-    RequirementSignature = sig;
-  }
+  void setRequirementSignature(ArrayRef<Requirement> requirements);
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) {
@@ -4084,6 +4097,10 @@ public:
 
   FuncDecl *getAccessorFunction(AccessorKind accessor) const;
 
+  /// \brief Push all of the accessor functions associated with this VarDecl
+  /// onto `decls`.
+  void getAllAccessorFunctions(SmallVectorImpl<Decl *> &decls) const;
+
   /// \brief Turn this into a computed variable, providing a getter and setter.
   void makeComputed(SourceLoc LBraceLoc, FuncDecl *Get, FuncDecl *Set,
                     FuncDecl *MaterializeForSet, SourceLoc RBraceLoc);
@@ -4307,15 +4324,28 @@ public:
 
 /// VarDecl - 'var' and 'let' declarations.
 class VarDecl : public AbstractStorageDecl {
+public:
+  enum class Specifier : uint8_t {
+    // For Var Decls
+    
+    Let  = 0,
+    Var  = 1,
+    
+    // For Param Decls
+    
+    Owned  = Let,
+    InOut = 2,
+  };
+  
 protected:
   llvm::PointerUnion<PatternBindingDecl*, Stmt*> ParentPattern;
 
-  VarDecl(DeclKind Kind, bool IsStatic, bool IsLet, bool IsCaptureList,
+  VarDecl(DeclKind Kind, bool IsStatic, Specifier Sp, bool IsCaptureList,
           SourceLoc NameLoc, Identifier Name, Type Ty, DeclContext *DC)
     : AbstractStorageDecl(Kind, DC, Name, NameLoc)
   {
     VarDeclBits.IsStatic = IsStatic;
-    VarDeclBits.IsLet = IsLet;
+    VarDeclBits.Specifier = static_cast<unsigned>(Sp);
     VarDeclBits.IsCaptureList = IsCaptureList;
     VarDeclBits.IsDebuggerVar = false;
     VarDeclBits.HasNonPatternBindingInit = false;
@@ -4328,12 +4358,20 @@ protected:
   Type typeInContext;
 
 public:
-  VarDecl(bool IsStatic, bool IsLet, bool IsCaptureList, SourceLoc NameLoc,
+  VarDecl(bool IsStatic, Specifier Sp, bool IsCaptureList, SourceLoc NameLoc,
           Identifier Name, Type Ty, DeclContext *DC)
-    : VarDecl(DeclKind::Var, IsStatic, IsLet, IsCaptureList, NameLoc, Name, Ty,
+    : VarDecl(DeclKind::Var, IsStatic, Sp, IsCaptureList, NameLoc, Name, Ty,
               DC) {}
 
   SourceRange getSourceRange() const;
+
+  Identifier getName() const { return getFullName().getBaseIdentifier(); }
+
+  /// Returns the string for the base name, or "_" if this is unnamed.
+  StringRef getNameStr() const {
+    assert(!getFullName().isSpecial() && "Cannot get string for special names");
+    return hasName() ? getBaseName().getIdentifier().str() : "_";
+  }
 
   TypeLoc &getTypeLoc() { return typeLoc; }
   TypeLoc getTypeLoc() const { return typeLoc; }
@@ -4422,6 +4460,14 @@ public:
   /// Determine whether this declaration is an anonymous closure parameter.
   bool isAnonClosureParam() const;
 
+  /// Return the raw specifier value for this property or parameter.
+  Specifier getSpecifier() const {
+    return static_cast<Specifier>(VarDeclBits.Specifier);
+  }
+  void setSpecifier(Specifier Spec) {
+    VarDeclBits.Specifier = static_cast<unsigned>(Spec);
+  }
+  
   /// Is this a type ('static') variable?
   bool isStatic() const { return VarDeclBits.IsStatic; }
   void setStatic(bool IsStatic) { VarDeclBits.IsStatic = IsStatic; }
@@ -4430,9 +4476,8 @@ public:
   StaticSpellingKind getCorrectStaticSpelling() const;
 
   /// Is this an immutable 'let' property?
-  bool isLet() const { return VarDeclBits.IsLet; }
-  void setLet(bool IsLet) { VarDeclBits.IsLet = IsLet; }
-
+  bool isLet() const { return getSpecifier() == Specifier::Let; }
+  
   /// Is this an element in a capture list?
   bool isCaptureList() const { return VarDeclBits.IsCaptureList; }
 
@@ -4483,7 +4528,7 @@ public:
 class ParamDecl : public VarDecl {
   Identifier ArgumentName;
   SourceLoc ArgumentNameLoc;
-  SourceLoc LetVarInOutLoc;
+  SourceLoc SpecifierLoc;
 
   struct StoredDefaultArgument {
     Expr *DefaultArg = nullptr;
@@ -4504,7 +4549,8 @@ class ParamDecl : public VarDecl {
   DefaultArgumentKind defaultArgumentKind = DefaultArgumentKind::None;
   
 public:
-  ParamDecl(bool isLet, SourceLoc letVarInOutLoc, SourceLoc argumentNameLoc,
+  ParamDecl(VarDecl::Specifier specifier,
+            SourceLoc specifierLoc, SourceLoc argumentNameLoc,
             Identifier argumentName, SourceLoc parameterNameLoc,
             Identifier parameterName, Type ty, DeclContext *dc);
 
@@ -4522,7 +4568,7 @@ public:
   /// was specified separately from the parameter name.
   SourceLoc getArgumentNameLoc() const { return ArgumentNameLoc; }
 
-  SourceLoc getLetVarInOutLoc() const { return LetVarInOutLoc; }
+  SourceLoc getSpecifierLoc() const { return SpecifierLoc; }
 
   bool isTypeLocImplicit() const { return IsTypeLocImplicit; }
   void setIsTypeLocImplicit(bool val) { IsTypeLocImplicit = val; }
@@ -4804,6 +4850,14 @@ protected:
   }
 
 public:
+  Identifier getName() const { return getFullName().getBaseIdentifier(); }
+
+  /// Returns the string for the base name, or "_" if this is unnamed.
+  StringRef getNameStr() const {
+    assert(!getFullName().isSpecial() && "Cannot get string for special names");
+    return hasName() ? getBaseName().getIdentifier().str() : "_";
+  }
+
   /// \brief Should this declaration be treated as if annotated with transparent
   /// attribute.
   bool isTransparent() const;
@@ -5431,6 +5485,14 @@ public:
     EnumElementDeclBits.Recursiveness =
         static_cast<unsigned>(ElementRecursiveness::NotRecursive);
     EnumElementDeclBits.HasArgumentType = HasArgumentType;
+  }
+
+  Identifier getName() const { return getFullName().getBaseIdentifier(); }
+
+  /// Returns the string for the base name, or "_" if this is unnamed.
+  StringRef getNameStr() const {
+    assert(!getFullName().isSpecial() && "Cannot get string for special names");
+    return hasName() ? getBaseName().getIdentifier().str() : "_";
   }
 
   /// \returns false if there was an error during the computation rendering the

@@ -102,8 +102,7 @@ static void addReturnValueImpl(SILBasicBlock *RetBB, SILBasicBlock *NewRetBB,
       // expects.
       auto *TupleI = cast<SILInstruction>(RetInst->getOperand(0));
       if (TupleI->hasOneUse()) {
-        TupleI->removeFromParent();
-        RetBB->insert(RetInst, TupleI);
+        TupleI->moveBefore(RetInst);
       } else {
         TupleI = TupleI->clone(RetInst);
         RetInst->setOperand(0, TupleI);
@@ -704,9 +703,13 @@ static SILFunction *eagerSpecialize(SILFunction *GenericFunc,
         dbgs() << "  Specialize Attr:";
         SA.print(dbgs()); dbgs() << "\n");
 
+  IsSerialized_t Serialized = IsNotSerialized;
+  if (GenericFunc->isSerialized())
+    Serialized = IsSerializable;
+
   GenericFuncSpecializer
         FuncSpecializer(GenericFunc, ReInfo.getClonerParamSubstitutions(),
-                        GenericFunc->isSerialized(), ReInfo);
+                        Serialized, ReInfo);
 
   SILFunction *NewFunc = FuncSpecializer.trySpecialization();
   if (!NewFunc)

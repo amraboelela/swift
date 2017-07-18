@@ -19,6 +19,7 @@
 #include "swift/AST/CanTypeVisitor.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/Attr.h"
 #include "swift/AST/IRGenOptions.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/Types.h"
@@ -1691,8 +1692,9 @@ namespace {
       case SILFunctionType::Representation::Thick:
         // All function types look like () -> ().
         // FIXME: It'd be nice not to have to call through the runtime here.
-        return IGF.emitTypeMetadataRef(CanFunctionType::get(C.TheEmptyTupleType,
-                                                          C.TheEmptyTupleType));
+        return IGF.emitTypeMetadataRef(
+                 CanFunctionType::get({ }, C.TheEmptyTupleType,
+                                      AnyFunctionType::ExtInfo()));
       case SILFunctionType::Representation::Block:
         // All block types look like Builtin.UnknownObject.
         return emitDirectMetadataRef(C.TheUnknownObjectType);
@@ -1875,7 +1877,8 @@ namespace {
       case SILFunctionType::Representation::Thick:
         // All function types look like () -> ().
         return emitFromValueWitnessTable(
-                CanFunctionType::get(C.TheEmptyTupleType, C.TheEmptyTupleType));
+                 CanFunctionType::get({ }, C.TheEmptyTupleType,
+                                      AnyFunctionType::ExtInfo()));
       case SILFunctionType::Representation::Block:
         // All block types look like Builtin.UnknownObject.
         return emitFromValueWitnessTable(C.TheUnknownObjectType);
@@ -2377,7 +2380,7 @@ namespace {
       llvm::raw_svector_ostream os(out);
       
       for (ValueDecl *prop : fields) {
-        os << prop->getName().str() << '\0';
+        os << prop->getBaseName() << '\0';
         ++numFields;
       }
       // The final null terminator is provided by getAddrOfGlobalString.
@@ -3348,6 +3351,14 @@ namespace {
             == ReferenceCounting::Native) {
         flags |= ClassFlags::UsesSwift1Refcounting;
       }
+
+      DeclAttributes attrs = Target->getAttrs();
+      if (auto objc = attrs.getAttribute<ObjCAttr>()) {
+        if (objc->getName())
+          flags |= ClassFlags::HasCustomObjCName;
+      }
+      if (attrs.hasAttribute<ObjCRuntimeNameAttr>())
+        flags |= ClassFlags::HasCustomObjCName;
 
       B.addInt32((uint32_t) flags);
     }
@@ -5525,6 +5536,7 @@ SpecialProtocol irgen::getSpecialProtocolID(ProtocolDecl *P) {
   case KnownProtocolKind::ExpressibleByImageLiteral:
   case KnownProtocolKind::ExpressibleByFileReferenceLiteral:
   case KnownProtocolKind::ExpressibleByBuiltinBooleanLiteral:
+  case KnownProtocolKind::ExpressibleByBuiltinUTF16ExtendedGraphemeClusterLiteral:
   case KnownProtocolKind::ExpressibleByBuiltinExtendedGraphemeClusterLiteral:
   case KnownProtocolKind::ExpressibleByBuiltinFloatLiteral:
   case KnownProtocolKind::ExpressibleByBuiltinIntegerLiteral:

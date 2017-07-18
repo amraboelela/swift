@@ -891,6 +891,13 @@ static bool useDoesNotKeepClosureAlive(const SILInstruction *I) {
   }
 }
 
+// *HEY YOU, YES YOU, PLEASE READ*. Even though a textual partial apply is
+// printed with the convention of the closed over function upon it, all
+// non-inout arguments to a partial_apply are passed at +1. This includes
+// arguments that will eventually be passed as guaranteed or in_guaranteed to
+// the closed over function. This is because the partial apply is building up a
+// boxed aggregate to send off to the closed over function. Of course when you
+// call the function, the proper conventions will be used.
 void swift::releasePartialApplyCapturedArg(SILBuilder &Builder, SILLocation Loc,
                                            SILValue Arg, SILParameterInfo PInfo,
                                            InstModCallbacks Callbacks) {
@@ -901,51 +908,51 @@ void swift::releasePartialApplyCapturedArg(SILBuilder &Builder, SILLocation Loc,
   if (PInfo.isIndirectMutating())
     return;
 
-  if (isa<AllocStackInst>(Arg)) {
-    return;
-  }
-
   // If we have a trivial type, we do not need to put in any extra releases.
   if (Arg->getType().isTrivial(Builder.getModule()))
     return;
 
-  // Otherwise, we need to destroy the argument.
-  if (Arg->getType().isObject()) {
-    // If we have qualified ownership, we should just emit a destroy value.
-    if (Arg->getFunction()->hasQualifiedOwnership()) {
-      Callbacks.CreatedNewInst(Builder.createDestroyValue(Loc, Arg));
-      return;
-    }
-
-    if (Arg->getType().hasReferenceSemantics()) {
-      auto U = Builder.emitStrongRelease(Loc, Arg);
-      if (U.isNull())
-        return;
-
-      if (auto *SRI = U.dyn_cast<StrongRetainInst *>()) {
-        Callbacks.DeleteInst(SRI);
-        return;
-      }
-
-      Callbacks.CreatedNewInst(U.get<StrongReleaseInst *>());
-      return;
-    }
-
-    auto U = Builder.emitReleaseValue(Loc, Arg);
-    if (U.isNull())
-      return;
-
-    if (auto *RVI = U.dyn_cast<RetainValueInst *>()) {
-      Callbacks.DeleteInst(RVI);
-      return;
-    }
-
-    Callbacks.CreatedNewInst(U.get<ReleaseValueInst *>());
+  // Otherwise, we need to destroy the argument. If we have an address, just
+  // emit a destroy_addr.
+  if (Arg->getType().isAddress()) {
+    SILInstruction *NewInst = Builder.emitDestroyAddrAndFold(Loc, Arg);
+    Callbacks.CreatedNewInst(NewInst);
     return;
   }
 
-  SILInstruction *NewInst = Builder.emitDestroyAddrAndFold(Loc, Arg);
-  Callbacks.CreatedNewInst(NewInst);
+  // Otherwise, we have an object. We emit the most optimized form of release
+  // possible for that value.
+
+  // If we have qualified ownership, we should just emit a destroy value.
+  if (Arg->getFunction()->hasQualifiedOwnership()) {
+    Callbacks.CreatedNewInst(Builder.createDestroyValue(Loc, Arg));
+    return;
+  }
+
+  if (Arg->getType().hasReferenceSemantics()) {
+    auto U = Builder.emitStrongRelease(Loc, Arg);
+    if (U.isNull())
+      return;
+
+    if (auto *SRI = U.dyn_cast<StrongRetainInst *>()) {
+      Callbacks.DeleteInst(SRI);
+      return;
+    }
+
+    Callbacks.CreatedNewInst(U.get<StrongReleaseInst *>());
+    return;
+  }
+
+  auto U = Builder.emitReleaseValue(Loc, Arg);
+  if (U.isNull())
+    return;
+
+  if (auto *RVI = U.dyn_cast<RetainValueInst *>()) {
+    Callbacks.DeleteInst(RVI);
+    return;
+  }
+
+  Callbacks.CreatedNewInst(U.get<ReleaseValueInst *>());
 }
 
 /// For each captured argument of PAI, decrement the ref count of the captured
@@ -2458,6 +2465,104 @@ void CastOptimizer::deleteInstructionsAfterUnreachable(
   }
 }
 
+/// TODO: Move to emitSuccessfulIndirectUnconditionalCast?
+///
+/// Peephole to avoid runtime calls:
+/// unconditional_checked_cast_addr T in %0 : $*T to P in %1 : $*P
+/// ->
+/// %addr = init_existential_addr %1 : $*P, T
+/// copy_addr %0 to %addr
+///
+/// where T is a type statically known to conform to P.
+///
+/// In caase P is a class existential type, it generates:
+/// %val = load %0 : $*T
+/// %existential = init_existential_ref %val : $T, $T, P
+/// store %existential to %1 : $*P
+///
+/// Returns true if the optimization was possible and false otherwise.
+static bool optimizeStaticallyKnownProtocolConformance(
+    UnconditionalCheckedCastAddrInst *Inst) {
+  auto Loc = Inst->getLoc();
+  auto Src = Inst->getSrc();
+  auto Dest = Inst->getDest();
+  auto SourceType = Inst->getSourceType();
+  auto TargetType = Inst->getTargetType();
+  auto &Mod = Inst->getModule();
+
+  if (TargetType->isAnyExistentialType() &&
+      !SourceType->isAnyExistentialType()) {
+    auto &Ctx = Mod.getASTContext();
+    auto *SM = Mod.getSwiftModule();
+
+    auto Proto = dyn_cast<ProtocolDecl>(TargetType->getAnyNominal());
+    if (Proto) {
+      auto Conformance = SM->lookupConformance(SourceType, Proto, nullptr);
+      if (Conformance.hasValue()) {
+        // SourceType is a non-existential type conforming to a
+        // protocol represented by the TargetType.
+        SILBuilder B(Inst);
+        SmallVector<ProtocolConformanceRef, 1> NewConformances;
+        NewConformances.push_back(Conformance.getValue());
+        ArrayRef<ProtocolConformanceRef> Conformances =
+            Ctx.AllocateCopy(NewConformances);
+
+        auto ExistentialRepr =
+            Dest->getType().getPreferredExistentialRepresentation(Mod,
+                                                                  SourceType);
+
+        switch (ExistentialRepr) {
+        default:
+          return false;
+        case ExistentialRepresentation::Opaque: {
+          auto ExistentialAddr = B.createInitExistentialAddr(
+              Loc, Dest, SourceType, Src->getType().getObjectType(),
+              Conformances);
+          B.createCopyAddr(
+              Loc, Src, ExistentialAddr,
+              (Inst->getConsumptionKind() != CastConsumptionKind::CopyOnSuccess)
+                  ? IsTake_t::IsTake
+                  : IsTake_t::IsNotTake,
+              IsInitialization_t::IsInitialization);
+          break;
+        }
+        case ExistentialRepresentation::Class: {
+          auto Value = B.createLoad(Loc, Src,
+                                    swift::LoadOwnershipQualifier::Unqualified);
+          if (Inst->getConsumptionKind() == CastConsumptionKind::CopyOnSuccess)
+            B.createRetainValue(Loc, Value, B.getDefaultAtomicity());
+          auto Existential =
+              B.createInitExistentialRef(Loc, Dest->getType().getObjectType(),
+                                         SourceType, Value, Conformances);
+          B.createStore(Loc, Existential, Dest,
+                        swift::StoreOwnershipQualifier::Unqualified);
+          break;
+        }
+        case ExistentialRepresentation::Boxed: {
+          auto AllocBox = B.createAllocExistentialBox(Loc, Dest->getType(),
+                                                      SourceType, Conformances);
+          auto Projection =
+              B.createProjectExistentialBox(Loc, Src->getType(), AllocBox);
+          auto Value = B.createLoad(Loc, Src,
+                                    swift::LoadOwnershipQualifier::Unqualified);
+          if (Inst->getConsumptionKind() == CastConsumptionKind::CopyOnSuccess)
+            B.createRetainValue(Loc, Value, B.getDefaultAtomicity());
+          B.createStore(Loc, Value, Projection,
+                        swift::StoreOwnershipQualifier::Unqualified);
+          B.createStore(Loc, AllocBox, Dest,
+                        swift::StoreOwnershipQualifier::Unqualified);
+          break;
+        }
+        };
+
+        Inst->replaceAllUsesWithUndef();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 SILInstruction *
 CastOptimizer::
 optimizeUnconditionalCheckedCastAddrInst(UnconditionalCheckedCastAddrInst *Inst) {
@@ -2512,18 +2617,24 @@ optimizeUnconditionalCheckedCastAddrInst(UnconditionalCheckedCastAddrInst *Inst)
   if (Feasibility == DynamicCastFeasibility::WillSucceed ||
       Feasibility == DynamicCastFeasibility::MaySucceed) {
 
+    // Check if a result of a cast is unused. If this is the case, the cast can
+    // be removed even if the cast may fail at runtime.
+    // Swift optimizer does not claim to be crash-preserving.
     bool ResultNotUsed = isa<AllocStackInst>(Dest);
     DestroyAddrInst *DestroyDestInst = nullptr;
-    for (auto Use : Dest->getUses()) {
-      auto *User = Use->getUser();
-      if (isa<DeallocStackInst>(User) || User == Inst)
-        continue;
-      if (isa<DestroyAddrInst>(User) && !DestroyDestInst) {
-        DestroyDestInst = cast<DestroyAddrInst>(User);
-        continue;
+    if (ResultNotUsed) {
+      for (auto Use : Dest->getUses()) {
+        auto *User = Use->getUser();
+        if (isa<DeallocStackInst>(User) || User == Inst)
+          continue;
+        if (isa<DestroyAddrInst>(User) && !DestroyDestInst) {
+          DestroyDestInst = cast<DestroyAddrInst>(User);
+          continue;
+        }
+        ResultNotUsed = false;
+        DestroyDestInst = nullptr;
+        break;
       }
-      ResultNotUsed = false;
-      break;
     }
 
     if (ResultNotUsed) {
@@ -2544,23 +2655,33 @@ optimizeUnconditionalCheckedCastAddrInst(UnconditionalCheckedCastAddrInst *Inst)
       return nullptr;
     }
 
-    // Try to apply the bridged casts optimizations
+    // Try to apply the bridged casts optimizations.
     auto NewI = optimizeBridgedCasts(Inst, Inst->getConsumptionKind(),
                                      false, Src, Dest, SourceType,
                                      TargetType, nullptr, nullptr);
     if (NewI) {
-        WillSucceedAction();
-        return nullptr;
+      WillSucceedAction();
+      return nullptr;
+    }
+
+    if (Feasibility == DynamicCastFeasibility::MaySucceed)
+      return nullptr;
+
+    assert(Feasibility == DynamicCastFeasibility::WillSucceed);
+
+    if (optimizeStaticallyKnownProtocolConformance(Inst)) {
+      EraseInstAction(Inst);
+      WillSucceedAction();
+      return nullptr;
     }
 
     if (isBridgingCast(SourceType, TargetType))
       return nullptr;
 
     SILBuilderWithScope Builder(Inst);
-    if (!emitSuccessfulIndirectUnconditionalCast(Builder, Mod.getSwiftModule(),
-                                            Loc, Inst->getConsumptionKind(),
-                                            Src, SourceType,
-                                            Dest, TargetType, Inst)) {
+    if (!emitSuccessfulIndirectUnconditionalCast(
+            Builder, Mod.getSwiftModule(), Loc, Inst->getConsumptionKind(), Src,
+            SourceType, Dest, TargetType, Inst)) {
       // No optimization was possible.
       return nullptr;
     }

@@ -215,20 +215,10 @@ protected:
   enum { NumAccessibilityAttrBits = NumDeclAttrBits + 3 };
   static_assert(NumAccessibilityAttrBits <= 32, "fits in an unsigned");
 
-  class AutoClosureAttrBitFields {
-    friend class AutoClosureAttr;
-    unsigned : NumDeclAttrBits;
-
-    unsigned Escaping : 1;
-  };
-  enum { NumAutoClosureAttrBits = NumDeclAttrBits + 1 };
-  static_assert(NumAutoClosureAttrBits <= 32, "fits in an unsigned");
-
   union {
     DeclAttrBitFields DeclAttrBits;
     ObjCAttrBitFields ObjCAttrBits;
     AccessibilityAttrBitFields AccessibilityAttrBits;
-    AutoClosureAttrBitFields AutoClosureAttrBits;
   };
 
   DeclAttribute *Next = nullptr;
@@ -916,24 +906,6 @@ public:
   }
 };
 
-/// Represents the autoclosure attribute.
-class AutoClosureAttr : public DeclAttribute {
-public:
-  AutoClosureAttr(SourceLoc atLoc, SourceRange range, bool escaping,
-                  bool implicit = false)
-    : DeclAttribute(DAK_AutoClosure, atLoc, range, implicit)
-  {
-    AutoClosureAttrBits.Escaping = escaping;
-  }
-
-  /// Determine whether this autoclosure is escaping.
-  bool isEscaping() const { return AutoClosureAttrBits.Escaping; }
-
-  static bool classof(const DeclAttribute *DA) {
-    return DA->getKind() == DAK_AutoClosure;
-  }
-};
-
 /// Represents an inline attribute.
 class InlineAttr : public DeclAttribute {
   InlineKind Kind;
@@ -1161,21 +1133,26 @@ public:
   }
 };
 
-/// Defines the @NSKeyedArchiverClassNameAttr attribute.
-class NSKeyedArchiverClassNameAttr : public DeclAttribute {
+/// A limited variant of \c @objc that's used for classes with generic ancestry.
+class ObjCRuntimeNameAttr : public DeclAttribute {
+  static StringRef getSimpleName(const ObjCAttr &Original) {
+    assert(Original.hasName());
+    return Original.getName()->getSimpleName().str();
+  }
 public:
-  NSKeyedArchiverClassNameAttr(StringRef Name, SourceLoc AtLoc, SourceRange Range, bool Implicit)
-    : DeclAttribute(DAK_NSKeyedArchiverClassName, AtLoc, Range, Implicit),
+  ObjCRuntimeNameAttr(StringRef Name, SourceLoc AtLoc, SourceRange Range,
+                      bool Implicit)
+    : DeclAttribute(DAK_ObjCRuntimeName, AtLoc, Range, Implicit),
       Name(Name) {}
 
-  NSKeyedArchiverClassNameAttr(StringRef Name, bool Implicit)
-    : NSKeyedArchiverClassNameAttr(Name, SourceLoc(), SourceRange(), /*Implicit=*/true) {}
+  explicit ObjCRuntimeNameAttr(const ObjCAttr &Original)
+    : ObjCRuntimeNameAttr(getSimpleName(Original), Original.AtLoc,
+                          Original.Range, Original.isImplicit()) {}
 
-  /// The legacy mangled name.
   const StringRef Name;
 
   static bool classof(const DeclAttribute *DA) {
-    return DA->getKind() == DAK_NSKeyedArchiverClassName;
+    return DA->getKind() == DAK_ObjCRuntimeName;
   }
 };
 

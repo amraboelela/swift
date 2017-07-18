@@ -29,12 +29,8 @@ using namespace swift;
 /// GenericTypeResolver implementations
 ///
 
-Type DependentGenericTypeResolver::resolveGenericTypeParamType(
-                                     GenericTypeParamType *gp) {
-  assert(gp->getDecl() && "Missing generic parameter declaration");
-
-  // Don't resolve generic parameters.
-  return gp;
+Type DependentGenericTypeResolver::mapTypeIntoContext(Type type) {
+  return type;
 }
 
 Type DependentGenericTypeResolver::resolveDependentMemberType(
@@ -42,55 +38,23 @@ Type DependentGenericTypeResolver::resolveDependentMemberType(
                                      DeclContext *DC,
                                      SourceRange baseRange,
                                      ComponentIdentTypeRepr *ref) {
-  auto archetype =
-    Builder.resolveArchetype(baseTy, ArchetypeResolutionKind::AlwaysPartial);
-  assert(archetype && "Bad generic context nesting?");
-
-  return archetype
-           ->getNestedType(ref->getIdentifier(), Builder)
-           ->getDependentType(GenericParams, /*allowUnresolved=*/true);
-}
-
-Type DependentGenericTypeResolver::resolveSelfAssociatedType(
-       Type selfTy, AssociatedTypeDecl *assocType) {
-  auto archetype =
-    Builder.resolveArchetype(selfTy, ArchetypeResolutionKind::AlwaysPartial);
-  assert(archetype && "Bad generic context nesting?");
-  
-  return archetype
-           ->getNestedType(assocType, Builder)
-           ->getDependentType(GenericParams, /*allowUnresolved=*/true);
-}
-
-Type DependentGenericTypeResolver::resolveTypeOfContext(DeclContext *dc) {
-  return dc->getSelfInterfaceType();
-}
-
-Type DependentGenericTypeResolver::resolveTypeOfDecl(TypeDecl *decl) {
-  return decl->getDeclaredInterfaceType();
+  return DependentMemberType::get(baseTy, ref->getIdentifier());
 }
 
 bool DependentGenericTypeResolver::areSameType(Type type1, Type type2) {
   if (!type1->hasTypeParameter() && !type2->hasTypeParameter())
     return type1->isEqual(type2);
 
-  auto pa1 =
-    Builder.resolveArchetype(type1, ArchetypeResolutionKind::AlwaysPartial);
-  auto pa2 =
-    Builder.resolveArchetype(type2, ArchetypeResolutionKind::AlwaysPartial);
-  if (pa1 && pa2)
-    return pa1->isInSameEquivalenceClassAs(pa2);
-
-  return type1->isEqual(type2);
+  // Conservative answer: they could be the same.
+  return true;
 }
 
 void DependentGenericTypeResolver::recordParamType(ParamDecl *decl, Type type) {
   // Do nothing
 }
 
-Type GenericTypeToArchetypeResolver::resolveGenericTypeParamType(
-                                       GenericTypeParamType *gp) {
-  return GenericEnv->mapTypeIntoContext(gp);
+Type GenericTypeToArchetypeResolver::mapTypeIntoContext(Type type) {
+  return GenericEnvironment::mapTypeIntoContext(GenericEnv, type);
 }
 
 Type GenericTypeToArchetypeResolver::resolveDependentMemberType(
@@ -99,21 +63,6 @@ Type GenericTypeToArchetypeResolver::resolveDependentMemberType(
                                   SourceRange baseRange,
                                   ComponentIdentTypeRepr *ref) {
   llvm_unreachable("Dependent type after archetype substitution");
-}
-
-Type GenericTypeToArchetypeResolver::resolveSelfAssociatedType(
-       Type selfTy, AssociatedTypeDecl *assocType) {
-  llvm_unreachable("Dependent type after archetype substitution");  
-}
-
-Type GenericTypeToArchetypeResolver::resolveTypeOfContext(DeclContext *dc) {
-  return GenericEnvironment::mapTypeIntoContext(
-      GenericEnv, dc->getSelfInterfaceType());
-}
-
-Type GenericTypeToArchetypeResolver::resolveTypeOfDecl(TypeDecl *decl) {
-  return GenericEnvironment::mapTypeIntoContext(
-      GenericEnv, decl->getDeclaredInterfaceType());
 }
 
 bool GenericTypeToArchetypeResolver::areSameType(Type type1, Type type2) {
@@ -134,32 +83,14 @@ void GenericTypeToArchetypeResolver::recordParamType(ParamDecl *decl, Type type)
         GenericEnv, type));
 }
 
-Type ProtocolRequirementTypeResolver::resolveGenericTypeParamType(
-    GenericTypeParamType *gp) {
-  assert(gp->isEqual(Proto->getSelfInterfaceType()) &&
-         "found non-Self-shaped GTPT when resolving protocol requirement");
-  return gp;
+Type ProtocolRequirementTypeResolver::mapTypeIntoContext(Type type) {
+  return type;
 }
 
 Type ProtocolRequirementTypeResolver::resolveDependentMemberType(
     Type baseTy, DeclContext *DC, SourceRange baseRange,
     ComponentIdentTypeRepr *ref) {
   return DependentMemberType::get(baseTy, ref->getIdentifier());
-}
-
-Type ProtocolRequirementTypeResolver::resolveSelfAssociatedType(
-    Type selfTy, AssociatedTypeDecl *assocType) {
-  assert(selfTy->isEqual(Proto->getSelfInterfaceType()));
-  (void)Proto;
-  return assocType->getDeclaredInterfaceType();
-}
-
-Type ProtocolRequirementTypeResolver::resolveTypeOfContext(DeclContext *dc) {
-  return dc->getSelfInterfaceType();
-}
-
-Type ProtocolRequirementTypeResolver::resolveTypeOfDecl(TypeDecl *decl) {
-  return decl->getDeclaredInterfaceType();
 }
 
 bool ProtocolRequirementTypeResolver::areSameType(Type type1, Type type2) {
@@ -185,12 +116,9 @@ void ProtocolRequirementTypeResolver::recordParamType(ParamDecl *decl,
       "recording a param type of a protocol requirement doesn't make sense");
 }
 
-Type CompleteGenericTypeResolver::resolveGenericTypeParamType(
-                                              GenericTypeParamType *gp) {
-  assert(gp->getDecl() && "Missing generic parameter declaration");
-  return gp;
+Type CompleteGenericTypeResolver::mapTypeIntoContext(Type type) {
+  return type;
 }
-
 
 Type CompleteGenericTypeResolver::resolveDependentMemberType(
                                     Type baseTy,
@@ -204,88 +132,101 @@ Type CompleteGenericTypeResolver::resolveDependentMemberType(
   assert(basePA && "Missing potential archetype for base");
 
   // Retrieve the potential archetype for the nested type.
-  auto nestedPA = basePA->getNestedType(ref->getIdentifier(), Builder);
+  auto nestedPA =
+    basePA->getNestedType(ref->getIdentifier(),
+                          ArchetypeResolutionKind::CompleteWellFormed,
+                          Builder);
 
-  // If this potential archetype was renamed due to typo correction,
-  // complain and fix it.
-  if (nestedPA->wasRenamed()) {
-    auto newName = nestedPA->getNestedName();
+  // If there was no such nested type, produce an error.
+  if (!nestedPA) {
+    // Perform typo correction.
+    LookupResult corrections;
+    TC.performTypoCorrection(DC, DeclRefKind::Ordinary,
+                             MetatypeType::get(baseTy),
+                             ref->getIdentifier(), ref->getIdLoc(),
+                             NameLookupFlags::ProtocolMembers,
+                             corrections, &Builder);
+
+    // Filter out non-types.
+    corrections.filter([](const LookupResult::Result &result) {
+      return isa<TypeDecl>(result.Decl);
+    });
+
+    // Check whether we have a single type result.
+    auto singleType = corrections.getSingleTypeResult();
+
+    // If we don't have a single result, complain and fail.
+    if (!singleType) {
+      Identifier name = ref->getIdentifier();
+      SourceLoc nameLoc = ref->getIdLoc();
+      TC.diagnose(nameLoc, diag::invalid_member_type, name, baseTy)
+        .highlight(baseRange);
+      for (const auto &suggestion : corrections)
+        TC.noteTypoCorrection(name, DeclNameLoc(nameLoc), suggestion);
+
+      return ErrorType::get(TC.Context);
+    }
+
+    // We have a single type result. Suggest it.
     TC.diagnose(ref->getIdLoc(), diag::invalid_member_type_suggest,
-                baseTy, ref->getIdentifier(), newName)
-      .fixItReplace(ref->getIdLoc(), newName.str());
-    ref->overwriteIdentifier(newName);
-    nestedPA->setAlreadyDiagnosedRename();
-    
-    // Go get the actual nested type.
-    nestedPA = basePA->getNestedType(newName, Builder);
-    assert(!nestedPA->wasRenamed());
+                baseTy, ref->getIdentifier(),
+                singleType->getBaseName().getIdentifier())
+      .fixItReplace(ref->getIdLoc(),
+                    singleType->getBaseName().userFacingName());
+
+    // Correct to the single type result.
+    ref->overwriteIdentifier(singleType->getBaseName().getIdentifier());
+    ref->setValue(singleType);
+  } else if (auto assocType = nestedPA->getResolvedAssociatedType()) {
+    ref->setValue(assocType);
+  } else {
+    assert(nestedPA->getConcreteTypeDecl());
+    ref->setValue(nestedPA->getConcreteTypeDecl());
   }
 
   // If the nested type has been resolved to an associated type, use it.
-  if (auto assocType = nestedPA->getResolvedAssociatedType()) {
-    ref->setValue(assocType);
+  if (auto assocType = dyn_cast<AssociatedTypeDecl>(ref->getBoundDecl())) {
     return DependentMemberType::get(baseTy, assocType);
   }
 
-  // If the nested type comes from a type alias, use either the alias's
-  // concrete type, or resolve its components down to another dependent member.
-  if (auto alias = nestedPA->getTypeAliasDecl()) {
-    assert(!alias->getGenericParams() && "Generic typealias in protocol");
-    ref->setValue(alias);
-    return TC.substMemberTypeWithBase(DC->getParentModule(), alias, baseTy);
-  }
-  
-  Identifier name = ref->getIdentifier();
-  SourceLoc nameLoc = ref->getIdLoc();
-
-  // Check whether the name can be found in the superclass.
-  // FIXME: The generic signature builder should be doing this and mapping down to a
-  // concrete type.
-  if (auto superclassTy = basePA->getSuperclass()) {
-    if (auto lookup = TC.lookupMemberType(DC, superclassTy, name)) {
-      if (lookup.isAmbiguous()) {
-        TC.diagnoseAmbiguousMemberType(baseTy, baseRange, name, nameLoc,
-                                       lookup);
-        return ErrorType::get(TC.Context);
-      }
-
-      ref->setValue(lookup.front().first);
-      // FIXME: Record (via type sugar) that this was referenced via baseTy.
-      return lookup.front().second;
+  // Otherwise, the nested type comes from a concrete tpye. Substitute the
+  // base type into it.
+  auto concrete = ref->getBoundDecl();
+  TC.validateDeclForNameLookup(concrete);
+  if (!concrete->hasInterfaceType())
+    return ErrorType::get(TC.Context);
+  if (baseTy->isTypeParameter()) {
+    if (auto proto =
+          concrete->getDeclContext()
+            ->getAsProtocolOrProtocolExtensionContext()) {
+      TC.validateDecl(proto);
+      auto subMap = SubstitutionMap::getProtocolSubstitutions(
+                      proto, baseTy, ProtocolConformanceRef(proto));
+      return concrete->getDeclaredInterfaceType().subst(subMap);
     }
+
+    if (auto superclass = basePA->getSuperclass()) {
+      return superclass->getTypeOfMember(
+                                       DC->getParentModule(), concrete,
+                                       concrete->getDeclaredInterfaceType());
+    }
+
+    llvm_unreachable("shouldn't have a concrete decl here");
   }
 
-  // Complain that there is no suitable type.
-  TC.diagnose(nameLoc, diag::invalid_member_type, name, baseTy)
-    .highlight(baseRange);
-  return ErrorType::get(TC.Context);
-}
-
-Type CompleteGenericTypeResolver::resolveSelfAssociatedType(
-       Type selfTy, AssociatedTypeDecl *assocType) {
-  return Builder.resolveArchetype(selfTy,
-                                  ArchetypeResolutionKind::CompleteWellFormed)
-           ->getNestedType(assocType, Builder)
-           ->getDependentType(GenericParams, /*allowUnresolved=*/false);
-}
-
-Type CompleteGenericTypeResolver::resolveTypeOfContext(DeclContext *dc) {
-  return dc->getSelfInterfaceType();
-}
-
-Type CompleteGenericTypeResolver::resolveTypeOfDecl(TypeDecl *decl) {
-  return decl->getDeclaredInterfaceType();
+  return TC.substMemberTypeWithBase(DC->getParentModule(), concrete, baseTy);
 }
 
 bool CompleteGenericTypeResolver::areSameType(Type type1, Type type2) {
   if (!type1->hasTypeParameter() && !type2->hasTypeParameter())
     return type1->isEqual(type2);
 
-  // FIXME: Want CompleteWellFormed here?
   auto pa1 =
-    Builder.resolveArchetype(type1, ArchetypeResolutionKind::AlwaysPartial);
+    Builder.resolveArchetype(type1,
+                             ArchetypeResolutionKind::CompleteWellFormed);
   auto pa2 =
-    Builder.resolveArchetype(type2, ArchetypeResolutionKind::AlwaysPartial);
+    Builder.resolveArchetype(type2,
+                             ArchetypeResolutionKind::CompleteWellFormed);
   if (pa1 && pa2)
     return pa1->isInSameEquivalenceClassAs(pa2);
 
@@ -538,7 +479,8 @@ static bool checkGenericFuncSignature(TypeChecker &tc,
           fn->getBodyResultTypeLoc().getTypeRepr()) {
         auto source =
           GenericSignatureBuilder::FloatingRequirementSource::forInferred(
-                                      fn->getBodyResultTypeLoc().getTypeRepr());
+              fn->getBodyResultTypeLoc().getTypeRepr(),
+              /*quietly=*/true);
         builder->inferRequirements(*func->getParentModule(),
                                    fn->getBodyResultTypeLoc(),
                                    source);
@@ -801,7 +743,7 @@ TypeChecker::validateGenericFuncSignature(AbstractFunctionDecl *func) {
 
   // Type check the function declaration, treating all generic type
   // parameters as dependent, unresolved.
-  DependentGenericTypeResolver dependentResolver(builder, allGenericParams);
+  DependentGenericTypeResolver dependentResolver;
   if (checkGenericFuncSignature(*this, &builder, func, dependentResolver))
     invalid = true;
 
@@ -818,8 +760,6 @@ TypeChecker::validateGenericFuncSignature(AbstractFunctionDecl *func) {
   CompleteGenericTypeResolver completeResolver(*this, builder,
                                                allGenericParams);
   if (checkGenericFuncSignature(*this, nullptr, func, completeResolver))
-    invalid = true;
-  if (builder.diagnoseRemainingRenames(func->getLoc(), allGenericParams))
     invalid = true;
 
   // The generic function signature is complete and well-formed. Determine
@@ -980,7 +920,8 @@ static bool checkGenericSubscriptSignature(TypeChecker &tc,
   if (genericParams && builder) {
     auto source =
       GenericSignatureBuilder::FloatingRequirementSource::forInferred(
-                                  subscript->getElementTypeLoc().getTypeRepr());
+          subscript->getElementTypeLoc().getTypeRepr(),
+          /*quietly=*/true);
 
     builder->inferRequirements(*subscript->getParentModule(),
                                subscript->getElementTypeLoc(),
@@ -995,9 +936,10 @@ static bool checkGenericSubscriptSignature(TypeChecker &tc,
                                        resolver);
 
   // Infer requirements from the pattern.
-  if (builder)
+  if (builder) {
     builder->inferRequirements(*subscript->getParentModule(), params,
                                genericParams);
+  }
 
   return badType;
 }
@@ -1032,7 +974,7 @@ TypeChecker::validateGenericSubscriptSignature(SubscriptDecl *subscript) {
 
   // Type check the function declaration, treating all generic type
   // parameters as dependent, unresolved.
-  DependentGenericTypeResolver dependentResolver(builder, allGenericParams);
+  DependentGenericTypeResolver dependentResolver;
   if (checkGenericSubscriptSignature(*this, &builder, subscript,
                                      dependentResolver))
     invalid = true;
@@ -1050,8 +992,6 @@ TypeChecker::validateGenericSubscriptSignature(SubscriptDecl *subscript) {
   CompleteGenericTypeResolver completeResolver(*this, builder,
                                                allGenericParams);
   if (checkGenericSubscriptSignature(*this, nullptr, subscript, completeResolver))
-    invalid = true;
-  if (builder.diagnoseRemainingRenames(subscript->getLoc(), allGenericParams))
     invalid = true;
 
   // The generic subscript signature is complete and well-formed. Determine
@@ -1151,7 +1091,7 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
 
   // Type check the generic parameters, treating all generic type
   // parameters as dependent, unresolved.
-  DependentGenericTypeResolver dependentResolver(builder, allGenericParams);
+  DependentGenericTypeResolver dependentResolver;
   if (recursivelyVisitGenericParams) {
     visitOuterToInner(genericParams,
                       [&](GenericParamList *gpList) {
@@ -1194,10 +1134,6 @@ GenericEnvironment *TypeChecker::checkGenericEnvironment(
                           &completeResolver);
   }
 
-  // Complain about any other renamed references.
-  (void)builder.diagnoseRemainingRenames(genericParams->getSourceRange().Start,
-                                         allGenericParams);
-
   // Record the generic type parameter types and the requirements.
   auto sig = builder.getGenericSignature();
 
@@ -1231,6 +1167,13 @@ void TypeChecker::validateGenericTypeSignature(GenericTypeDecl *typeDecl) {
   gp->setOuterParameters(dc->getGenericParamsOfContext());
 
   prepareGenericParamList(gp, typeDecl);
+
+  // For a protocol, compute the requirement signature first. It will be used
+  // by clients of the protocol.
+  if (auto proto = dyn_cast<ProtocolDecl>(typeDecl)) {
+    if (!proto->isRequirementSignatureComputed())
+      proto->computeRequirementSignature();
+  }
 
   auto *env = checkGenericEnvironment(gp, dc, dc->getGenericSignatureOfContext(),
                                       /*allowConcreteGenericParams=*/false);

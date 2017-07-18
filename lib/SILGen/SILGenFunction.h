@@ -470,12 +470,6 @@ public:
   /// function is valid.
   bool allowsVoidReturn() const { return ReturnDest.getBlock()->args_empty(); }
 
-  /// This location, when set, is used as an override location for magic
-  /// identifier expansion (e.g. #file).  This allows default argument
-  /// expansion to report the location of the call, instead of the location
-  /// of the original expr.
-  Optional<SourceLoc> overrideLocationForMagicIdentifiers;
-
   /// Emit code to increment a counter for profiling.
   void emitProfilerIncrement(ASTNode N) {
     if (SGM.Profiler && SGM.Profiler->hasRegionCounters())
@@ -915,13 +909,15 @@ public:
   typedef llvm::function_ref<ManagedValue(SILGenFunction &gen,
                                     SILLocation loc,
                                     ManagedValue input,
-                                    SILType loweredResultTy)> ValueTransformRef;
+                                    SILType loweredResultTy,
+                                    SGFContext context)> ValueTransformRef;
 
   /// Emit a transformation on the value of an optional type.
   ManagedValue emitOptionalToOptional(SILLocation loc,
                                       ManagedValue input,
                                       SILType loweredResultTy,
-                                      ValueTransformRef transform);
+                                      ValueTransformRef transform,
+                                      SGFContext C = SGFContext());
 
   /// Emit a reinterpret-cast from one pointer type to another, using a library
   /// intrinsic.
@@ -942,21 +938,6 @@ public:
   ManagedValue emitProtocolMetatypeToObject(SILLocation loc,
                                             CanType inputTy,
                                             SILType resultTy);
-
-  /// OpenedArchetypes - Mappings of opened archetypes back to the
-  /// instruction which opened them.
-  llvm::DenseMap<ArchetypeType *, SILValue> ArchetypeOpenings;
-
-  SILValue getArchetypeOpeningSite(ArchetypeType *archetype) const {
-    auto it = ArchetypeOpenings.find(archetype);
-    assert(it != ArchetypeOpenings.end() &&
-           "opened archetype was not registered with SILGenFunction");
-    return it->second;
-  }
-
-  void setArchetypeOpeningSite(ArchetypeType *archetype, SILValue site) {
-    ArchetypeOpenings.insert({archetype, site});
-  }
 
   struct OpaqueValueState {
     ManagedValue Value;
@@ -1237,7 +1218,7 @@ public:
                                                     SILValue borrowedValue);
   ManagedValue emitManagedBorrowedRValueWithCleanup(
       SILValue original, SILValue borrowedValue, const TypeLowering &lowering);
-
+  ManagedValue emitManagedBorrowedArgumentWithCleanup(SILPHIArgument *arg);
   ManagedValue emitFormalEvaluationManagedBorrowedRValueWithCleanup(
       SILLocation loc, SILValue original, SILValue borrowedValue);
   ManagedValue emitFormalEvaluationManagedBorrowedRValueWithCleanup(
@@ -1372,10 +1353,15 @@ public:
                     Optional<SILFunctionTypeRepresentation> overrideRep,
                     const Optional<ForeignErrorConvention> &foreignError);
 
-
   RValue emitApplyOfLibraryIntrinsic(SILLocation loc,
                                      FuncDecl *fn,
                                      const SubstitutionMap &subMap,
+                                     ArrayRef<ManagedValue> args,
+                                     SGFContext ctx);
+
+  RValue emitApplyOfLibraryIntrinsic(SILLocation loc,
+                                     FuncDecl *fn,
+                                     const SubstitutionList &subs,
                                      ArrayRef<ManagedValue> args,
                                      SGFContext ctx);
 
@@ -1555,13 +1541,15 @@ public:
   /// convention.
   ManagedValue emitNativeToBridgedValue(SILLocation loc, ManagedValue v,
                                         SILFunctionTypeRepresentation destRep,
-                                        CanType bridgedTy);
+                                        CanType bridgedTy,
+                                        SGFContext C = SGFContext());
   
   /// Convert a value received as the result or argument of a function with
   /// the given calling convention to a native Swift value of the given type.
   ManagedValue emitBridgedToNativeValue(SILLocation loc, ManagedValue v,
                                         SILFunctionTypeRepresentation srcRep,
-                                        CanType nativeTy);
+                                        CanType nativeTy,
+                                        SGFContext C = SGFContext());
 
   /// Convert a bridged error type to the native Swift Error
   /// representation.  The value may be optional.
@@ -1690,7 +1678,8 @@ public:
   void visitVarDecl(VarDecl *D);
 
   /// Emit an Initialization for a 'var' or 'let' decl in a pattern.
-  std::unique_ptr<Initialization> emitInitializationForVarDecl(VarDecl *vd);
+  std::unique_ptr<Initialization> emitInitializationForVarDecl(VarDecl *vd,
+                                                               bool immutable);
   
   /// Emit the allocation for a local variable, provides an Initialization
   /// that can be used to initialize it, and registers cleanups in the active

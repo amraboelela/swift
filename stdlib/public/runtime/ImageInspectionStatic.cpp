@@ -38,9 +38,11 @@ getSectionInfo(const Section *section) {
 
 void
 swift::initializeProtocolConformanceLookup() {
-  auto protocolConformances = getSectionInfo(&protocolConformancesStart);
-  addImageProtocolConformanceBlockCallback(protocolConformances.data,
-                                           protocolConformances.size);
+    auto protocolConformances = getSectionInfo(&protocolConformancesStart);
+    fprintf(stderr, "initializeProtocolConformanceLookup 1\n");
+    addImageProtocolConformanceBlockCallback(protocolConformances.data,
+                                             protocolConformances.size);
+    fprintf(stderr, "initializeProtocolConformanceLookup 2\n");
 }
 
 void

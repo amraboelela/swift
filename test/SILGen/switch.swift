@@ -680,7 +680,9 @@ func test_union_1(u: MaybePair) {
 
   // CHECK: [[IS_BOTH]]([[TUP:%.*]] : $(Int, String)):
   case .Both:
-  // CHECK:   destroy_value [[TUP]] : $(Int, String)
+  // CHECK:   tuple_extract [[TUP]] : $(Int, String), 0
+  // CHECK:   [[TUP_STR:%.*]] = tuple_extract [[TUP]] : $(Int, String), 1
+  // CHECK:   destroy_value [[TUP_STR]] : $String
   // CHECK:   function_ref @_T06switch1dyyF
   // CHECK:   br [[CONT]]
     d()
@@ -1069,8 +1071,8 @@ func testMultiPatternsWithOuterScopeSameNamedVar(base: Int?, filter: Int?) {
     
   case (.some(let base), .some(let filter)):
     // CHECK: bb2(%10 : $Int):
-    // CHECK-NEXT: debug_value %10 : $Int, let, name "base"
-    // CHECK-NEXT: debug_value %8 : $Int, let, name "filter"
+    // CHECK-NEXT: debug_value %8 : $Int, let, name "base"
+    // CHECK-NEXT: debug_value %10 : $Int, let, name "filter"
     print("both: \(base), \(filter)")
   case (.some(let base), .none), (.none, .some(let base)):
     // CHECK: bb3:

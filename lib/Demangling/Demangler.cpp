@@ -100,6 +100,7 @@ static bool isFunctionAttr(Node::Kind kind) {
     case Node::Kind::VTableAttribute:
     case Node::Kind::PartialApplyForwarder:
     case Node::Kind::PartialApplyObjCForwarder:
+    case Node::Kind::MergedFunction:
       return true;
     default:
       return false;
@@ -107,6 +108,31 @@ static bool isFunctionAttr(Node::Kind kind) {
 }
 
 } // anonymous namespace
+
+//////////////////////////////////
+// Public utility functions    //
+//////////////////////////////////
+
+int swift::Demangle::getManglingPrefixLength(const char *mangledName) {
+  // Check for the swift-4 prefix
+  if (mangledName[0] == '_' && mangledName[1] == 'T' && mangledName[2] == '0')
+    return 3;
+
+  // Check for the swift > 4 prefix
+  unsigned Offset = (mangledName[0] == '_' ? 1 : 0);
+  if (mangledName[Offset] == '$' && mangledName[Offset + 1] == 'S')
+    return Offset + 2;
+
+  return 0;
+}
+
+bool swift::Demangle::isSwiftSymbol(const char *mangledName) {
+  // The old mangling.
+  if (mangledName[0] == '_' && mangledName[1] == 'T')
+    return true;
+
+  return getManglingPrefixLength(mangledName) != 0;
+}
 
 namespace swift {
 namespace Demangle {
@@ -225,22 +251,18 @@ NodePointer Demangler::demangleSymbol(StringRef MangledName) {
   if (nextIf("_Tt"))
     return demangleObjCTypeName();
 
-  if (!nextIf(MANGLING_PREFIX_STR)
-      // Also accept the future mangling prefix.
-      // TODO: remove this line as soon as MANGLING_PREFIX_STR gets "_S".
-      && !nextIf("_S"))
+  unsigned PrefixLength = getManglingPrefixLength(MangledName.data());
+  if (PrefixLength == 0)
     return nullptr;
+
+  Pos += PrefixLength;
 
   // If any other prefixes are accepted, please update Mangler::verify.
 
+  if (!parseAndPushNodes())
+    return nullptr;
+
   NodePointer topLevel = createNode(Node::Kind::Global);
-
-  parseAndPushNodes();
-
-  // Let a trailing '_' be part of the not demangled suffix.
-  popNode(Node::Kind::FirstElementMarker);
-
-  size_t EndPos = (NodeStack.empty() ? 0 : NodeStack.back().Pos);
 
   NodePointer Parent = topLevel;
   while (NodePointer FuncAttr = popNode(isFunctionAttr)) {
@@ -249,8 +271,7 @@ NodePointer Demangler::demangleSymbol(StringRef MangledName) {
         FuncAttr->getKind() == Node::Kind::PartialApplyObjCForwarder)
       Parent = FuncAttr;
   }
-  for (const NodeWithPos &NWP : NodeStack) {
-    NodePointer Nd = NWP.Node;
+  for (Node *Nd : NodeStack) {
     switch (Nd->getKind()) {
       case Node::Kind::Type:
         Parent->addChild(Nd->getFirstChild(), *this);
@@ -262,10 +283,6 @@ NodePointer Demangler::demangleSymbol(StringRef MangledName) {
   }
   if (topLevel->getNumChildren() == 0)
     return nullptr;
-
-  if (EndPos < Text.size()) {
-    topLevel->addChild(createNode(Node::Kind::Suffix, Text.substr(EndPos)), *this);
-  }
 
   return topLevel;
 }
@@ -281,15 +298,16 @@ NodePointer Demangler::demangleType(StringRef MangledName) {
   return createNode(Node::Kind::Suffix, Text);
 }
 
-void Demangler::parseAndPushNodes() {
+bool Demangler::parseAndPushNodes() {
   int Idx = 0;
-  while (!Text.empty()) {
+  while (Pos < Text.size()) {
     NodePointer Node = demangleOperator();
     if (!Node)
-      break;
+      return false;
     pushNode(Node);
     Idx++;
   }
+  return true;
 }
 
 NodePointer Demangler::addChild(NodePointer Parent, NodePointer Child) {
@@ -400,6 +418,11 @@ NodePointer Demangler::demangleOperator() {
     case 'z': return createType(createWithChild(Node::Kind::InOut,
                                                 popTypeAndGetChild()));
     case '_': return createNode(Node::Kind::FirstElementMarker);
+    case '.':
+      // IRGen still uses '.<n>' to disambiguate partial apply thunks and
+      // outlined copy functions. We treat such a suffix as "unmangled suffix".
+      pushBack();
+      return createNode(Node::Kind::Suffix, consumeAll());
     default:
       pushBack();
       return demangleIdentifier();
@@ -647,6 +670,10 @@ NodePointer Demangler::demangleLocalIdentifier() {
     NodePointer discriminator = popNode(Node::Kind::Identifier);
     NodePointer name = popNode(isDeclName);
     return createWithChildren(Node::Kind::PrivateDeclName, discriminator, name);
+  }
+  if (nextIf('l')) {
+    NodePointer discriminator = popNode(Node::Kind::Identifier);
+    return createWithChild(Node::Kind::PrivateDeclName, discriminator);
   }
   NodePointer discriminator = demangleIndexAsNode();
   NodePointer name = popNode(isDeclName);
@@ -1219,6 +1246,7 @@ NodePointer Demangler::demangleThunkOrSpecialization() {
     case 'd': return createNode(Node::Kind::DirectMethodReferenceAttribute);
     case 'a': return createNode(Node::Kind::PartialApplyObjCForwarder);
     case 'A': return createNode(Node::Kind::PartialApplyForwarder);
+    case 'm': return createNode(Node::Kind::MergedFunction);
     case 'V': {
       NodePointer Base = popNode(isEntity);
       NodePointer Derived = popNode(isEntity);
@@ -1678,7 +1706,14 @@ NodePointer Demangler::demangleMetatypeRepresentation() {
 }
 
 NodePointer Demangler::demangleFunctionEntity() {
-  enum { None, Type, TypeAndName, TypeAndIndex, Index } Args;
+  enum {
+    None,
+    Type,
+    TypeAndName,
+    TypeAndMaybePrivateName,
+    TypeAndIndex,
+    Index
+  } Args;
 
   Node::Kind Kind = Node::Kind::EmptyList;
   switch (nextChar()) {
@@ -1687,8 +1722,10 @@ NodePointer Demangler::demangleFunctionEntity() {
     case 'E': Args = None; Kind = Node::Kind::IVarDestroyer; break;
     case 'e': Args = None; Kind = Node::Kind::IVarInitializer; break;
     case 'i': Args = None; Kind = Node::Kind::Initializer; break;
-    case 'C': Args = Type; Kind = Node::Kind::Allocator; break;
-    case 'c': Args = Type; Kind = Node::Kind::Constructor; break;
+    case 'C':
+      Args = TypeAndMaybePrivateName; Kind = Node::Kind::Allocator; break;
+    case 'c':
+      Args = TypeAndMaybePrivateName; Kind = Node::Kind::Constructor; break;
     case 'g': Args = TypeAndName; Kind = Node::Kind::Getter; break;
     case 'G': Args = TypeAndName; Kind = Node::Kind::GlobalGetter; break;
     case 's': Args = TypeAndName; Kind = Node::Kind::Setter; break;
@@ -1733,6 +1770,10 @@ NodePointer Demangler::demangleFunctionEntity() {
       Child2 = popNode(Node::Kind::Type);
       Child1 = popNode(isDeclName);
       break;
+    case TypeAndMaybePrivateName:
+      Child1 = popNode(Node::Kind::PrivateDeclName);
+      Child2 = popNode(Node::Kind::Type);
+      break;
     case TypeAndIndex:
       Child1 = demangleIndexAsNode();
       Child2 = popNode(Node::Kind::Type);
@@ -1748,6 +1789,11 @@ NodePointer Demangler::demangleFunctionEntity() {
     case Type:
     case Index:
       Entity = addChild(Entity, Child1);
+      break;
+    case TypeAndMaybePrivateName:
+      if (Child1)
+        Entity = addChild(Entity, Child1);
+      Entity = addChild(Entity, Child2);
       break;
     case TypeAndName:
     case TypeAndIndex:

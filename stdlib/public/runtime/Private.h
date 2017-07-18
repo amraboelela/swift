@@ -125,21 +125,24 @@ namespace swift {
   bool usesNativeSwiftReferenceCounting(const ClassMetadata *theClass);
 
   static inline
-  bool objectUsesNativeSwiftReferenceCounting(const void *object) {
-    assert(!isObjCTaggedPointerOrNull(object));
+    bool objectUsesNativeSwiftReferenceCounting(const void *object) {
+        fprintf(stderr, "objectUsesNativeSwiftReferenceCounting 1\n");
+        assert(!isObjCTaggedPointerOrNull(object));
 #if SWIFT_HAS_OPAQUE_ISAS
-    // Fast path for opaque ISAs.  We don't want to call
-    // _swift_getClassOfAllocated as that will call object_getClass.
-    // Instead we can look at the bits in the ISA and tell if its a
-    // non-pointer opaque ISA which means it is definitely an ObjC
-    // object and doesn't use native swift reference counting.
-    if (_swift_isNonPointerIsaObjCClass(object))
-      return false;
-    return usesNativeSwiftReferenceCounting(_swift_getClassOfAllocatedFromPointer(object));
+        fprintf(stderr, "objectUsesNativeSwiftReferenceCounting SWIFT_HAS_OPAQUE_ISAS\n");
+        // Fast path for opaque ISAs.  We don't want to call
+        // _swift_getClassOfAllocated as that will call object_getClass.
+        // Instead we can look at the bits in the ISA and tell if its a
+        // non-pointer opaque ISA which means it is definitely an ObjC
+        // object and doesn't use native swift reference counting.
+        if (_swift_isNonPointerIsaObjCClass(object))
+            return false;
+        return usesNativeSwiftReferenceCounting(_swift_getClassOfAllocatedFromPointer(object));
 #else
-    return usesNativeSwiftReferenceCounting(_swift_getClassOfAllocated(object));
+        fprintf(stderr, "objectUsesNativeSwiftReferenceCounting SWIFT_HAS_OPAQUE_ISAS else\n");
+        return usesNativeSwiftReferenceCounting(_swift_getClassOfAllocated(object));
 #endif
-  }
+    }
 
   /// Get the superclass pointer value used for Swift root classes.
   /// Note that this function may return a nullptr on non-objc platforms,
@@ -148,9 +151,10 @@ namespace swift {
 
   /// Check if a class has a formal superclass in the AST.
   static inline
-  bool classHasSuperclass(const ClassMetadata *c) {
-    return (c->SuperClass && c->SuperClass != getRootSuperclass());
-  }
+    bool classHasSuperclass(const ClassMetadata *c) {
+        fprintf(stderr, "classHasSuperclass\n");
+        return (c->SuperClass && c->SuperClass != getRootSuperclass());
+    }
 
   /// Replace entries of a freshly-instantiated value witness table with more
   /// efficient common implementations where applicable.

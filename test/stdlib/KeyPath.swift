@@ -1,4 +1,4 @@
-// RUN: rm -rf %t && mkdir -p %t
+// RUN: %empty-directory(%t)
 // RUN: %target-build-swift %s -Xfrontend -enable-experimental-keypath-components -o %t/a.out
 // RUN: %target-run %t/a.out
 // REQUIRES: executable_test
@@ -11,6 +11,15 @@ final class C<T> {
   var x: Int
   var y: LifetimeTracked?
   var z: T
+
+  var computed: T {
+    get {
+      return z
+    }
+    set {
+      z = newValue
+    }
+  }
 
   init(x: Int, y: LifetimeTracked?, z: T) {
     self.x = x
@@ -275,6 +284,169 @@ keyPath.test("computed properties") {
     expectTrue(oldTest.canary !== test.canary)
     expectTrue(test.canary === test[keyPath: tc_mutatingProtoExt].canary)
   }
+}
+
+class AB {
+}
+class ABC: AB, ABCProtocol {
+  var a = LifetimeTracked(1)
+  var b = LifetimeTracked(2)
+  var c = LifetimeTracked(3)
+}
+
+protocol ABCProtocol {
+  var a: LifetimeTracked { get }
+  var b: LifetimeTracked { get set }
+  var c: LifetimeTracked { get nonmutating set }
+}
+
+keyPath.test("dynamically-typed application") {
+  let cPaths = [\ABC.a, \ABC.b, \ABC.c]
+
+  let subject = ABC()
+
+  do {
+    let fields = cPaths.map { subject[keyPath: $0] }
+    expectTrue(fields[0] as! AnyObject === subject.a)
+    expectTrue(fields[1] as! AnyObject === subject.b)
+    expectTrue(fields[2] as! AnyObject === subject.c)
+  }
+
+  let erasedSubject: AB = subject
+  let erasedPaths: [AnyKeyPath] = cPaths
+  let wrongSubject = AB()
+
+  do {
+    let fields = erasedPaths.map { erasedSubject[keyPath: $0] }
+    expectTrue(fields[0]! as! AnyObject === subject.a)
+    expectTrue(fields[1]! as! AnyObject === subject.b)
+    expectTrue(fields[2]! as! AnyObject === subject.c)
+
+    let wrongFields = erasedPaths.map { wrongSubject[keyPath: $0] }
+    expectTrue(wrongFields[0] == nil)
+    expectTrue(wrongFields[1] == nil)
+    expectTrue(wrongFields[2] == nil)
+  }
+
+  var protoErasedSubject: ABCProtocol = subject
+  let protoErasedPathA = \ABCProtocol.a
+  let protoErasedPathB = \ABCProtocol.b
+  let protoErasedPathC = \ABCProtocol.c
+
+  do {
+    expectTrue(protoErasedSubject.a ===
+                  protoErasedSubject[keyPath: protoErasedPathA])
+
+    let newB = LifetimeTracked(4)
+    expectTrue(protoErasedSubject.b ===
+                  protoErasedSubject[keyPath: protoErasedPathB])
+    protoErasedSubject[keyPath: protoErasedPathB] = newB
+    expectTrue(protoErasedSubject.b ===
+                  protoErasedSubject[keyPath: protoErasedPathB])
+    expectTrue(protoErasedSubject.b === newB)
+
+    let newC = LifetimeTracked(5)
+    expectTrue(protoErasedSubject.c ===
+                  protoErasedSubject[keyPath: protoErasedPathC])
+    protoErasedSubject[keyPath: protoErasedPathC] = newC
+    expectTrue(protoErasedSubject.c ===
+                  protoErasedSubject[keyPath: protoErasedPathC])
+    expectTrue(protoErasedSubject.c === newC)
+  }
+}
+
+struct TestOptional {
+  var origin: Point?
+  var questionableCanary: LifetimeTracked? = LifetimeTracked(123)
+
+  init(origin: Point?) {
+    self.origin = origin
+  }
+}
+
+keyPath.test("optional force-unwrapping") {
+  let origin_x = \TestOptional.origin!.x
+  let canary = \TestOptional.questionableCanary!
+
+  var value = TestOptional(origin: Point(x: 3, y: 4))
+
+  expectEqual(value[keyPath: origin_x], 3)
+  expectEqual(value.origin!.x, 3)
+
+  value[keyPath: origin_x] = 5
+
+  expectEqual(value[keyPath: origin_x], 5)
+  expectEqual(value.origin!.x, 5)
+
+  expectTrue(value[keyPath: canary] === value.questionableCanary)
+  let newCanary = LifetimeTracked(456)
+  value[keyPath: canary] = newCanary
+  expectTrue(value[keyPath: canary] === newCanary)
+  expectTrue(value.questionableCanary === newCanary)
+}
+
+keyPath.test("optional force-unwrapping trap") {
+  let origin_x = \TestOptional.origin!.x
+  var value = TestOptional(origin: nil)
+
+  expectCrashLater()
+  _ = value[keyPath: origin_x]
+}
+
+struct TestOptional2 {
+  var optional: TestOptional?
+}
+
+keyPath.test("optional chaining") {
+  let origin_x = \TestOptional.origin?.x
+  let canary = \TestOptional.questionableCanary?.value
+  
+  let withPoint = TestOptional(origin: Point(x: 3, y: 4))
+  expectEqual(withPoint[keyPath: origin_x]!, 3)
+  expectEqual(withPoint[keyPath: canary]!, 123)
+
+  let withoutPoint = TestOptional(origin: nil)
+  expectNil(withoutPoint[keyPath: origin_x])
+
+  let optional2: TestOptional2? = TestOptional2(optional: withPoint)
+  let optional2_optional = \TestOptional2?.?.optional
+  expectEqual(optional2[keyPath: optional2_optional]!.origin!.x, 3)
+  expectEqual(optional2[keyPath: optional2_optional]!.origin!.y, 4)
+}
+
+func makeKeyPathInGenericContext<T>(of: T.Type)
+    -> ReferenceWritableKeyPath<C<T>, T> {
+  return \C<T>.computed
+}
+
+keyPath.test("computed generic key paths") {
+  let path = makeKeyPathInGenericContext(of: LifetimeTracked.self)
+  let z = LifetimeTracked(456)
+  let c = C(x: 42, y: LifetimeTracked(123), z: z)
+
+  expectTrue(c[keyPath: path] === z)
+
+  let z2 = LifetimeTracked(789)
+  c[keyPath: path] = z2
+  expectTrue(c[keyPath: path] === z2)
+  expectTrue(c.z === z2)
+
+  let path2 = makeKeyPathInGenericContext(of: LifetimeTracked.self)
+
+  expectEqual(path, path2)
+  expectEqual(path.hashValue, path2.hashValue)
+
+  let pathNonGeneric = \C<LifetimeTracked>.computed
+  expectEqual(path, pathNonGeneric)
+  expectEqual(path.hashValue, pathNonGeneric.hashValue)
+
+  let valuePath = path.appending(path: \LifetimeTracked.value)
+
+  expectEqual(c[keyPath: valuePath], 789)
+
+  let valuePathNonGeneric = pathNonGeneric.appending(path: \LifetimeTracked.value)
+  expectEqual(valuePath, valuePathNonGeneric)
+  expectEqual(valuePath.hashValue, valuePathNonGeneric.hashValue)
 }
 
 runAllTests()

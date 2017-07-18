@@ -35,6 +35,10 @@
 STATISTIC(NumDeclsLoaded, "# of decls deserialized");
 STATISTIC(NumMemberListsLoaded,
           "# of nominals/extensions whose members were loaded");
+STATISTIC(NumNormalProtocolConformancesLoaded,
+          "# of normal protocol conformances deserialized");
+STATISTIC(NumNormalProtocolConformancesCompleted,
+          "# of normal protocol conformances completed");
 STATISTIC(NumNestedTypeShortcuts,
           "# of same-module nested types resolved without lookup");
 
@@ -86,7 +90,7 @@ namespace {
         os << "While deserializing ";
 
         if (auto VD = dyn_cast<ValueDecl>(DeclOrOffset.get())) {
-          os << "'" << VD->getName() << "' (" << IDAndKind{VD, ID} << ")";
+          os << "'" << VD->getBaseName() << "' (" << IDAndKind{VD, ID} << ")";
         } else if (auto ED = dyn_cast<ExtensionDecl>(DeclOrOffset.get())) {
           os << "extension of '" << ED->getExtendedType() << "' ("
              << IDAndKind{ED, ID} << ")";
@@ -106,18 +110,6 @@ namespace {
 
     void print(raw_ostream &os) const override {
       XRefTracePath::print(os, "\t");
-    }
-  };
-
-  class PrettyStackTraceModuleFile : public llvm::PrettyStackTraceEntry {
-    const char *Action;
-    const ModuleFile *MF;
-  public:
-    explicit PrettyStackTraceModuleFile(const char *action, ModuleFile *module)
-        : Action(action), MF(module) {}
-
-    void print(raw_ostream &os) const override {
-      os << Action << " \'" << getNameOfModule(MF) << "'\n";
     }
   };
 } // end anonymous namespace
@@ -583,7 +575,7 @@ ProtocolConformanceRef ModuleFile::readConformance(
     nominal->lookupConformance(module, proto, conformances);
     PrettyStackTraceModuleFile traceMsg(
         "If you're seeing a crash here, check that your SDK and dependencies "
-        "are at least as new as the versions used to build", this);
+        "are at least as new as the versions used to build", *this);
     // This would normally be an assertion but it's more useful to print the
     // PrettyStackTrace here even in no-asserts builds.
     if (conformances.empty())
@@ -640,6 +632,7 @@ NormalProtocolConformance *ModuleFile::readNormalConformance(
 
   auto proto = cast<ProtocolDecl>(getDecl(protoID));
   PrettyStackTraceDecl traceTo("... to", proto);
+  ++NumNormalProtocolConformancesLoaded;
 
   auto conformance = ctx.getConformance(conformingType, proto, SourceLoc(), dc,
                                         ProtocolConformanceState::Incomplete);
@@ -653,16 +646,6 @@ NormalProtocolConformance *ModuleFile::readNormalConformance(
 
   dc->getAsNominalTypeOrNominalTypeExtensionContext()
     ->registerProtocolConformance(conformance);
-
-  // Read requirement signature conformances.
-  SmallVector<ProtocolConformanceRef, 4> reqConformances;
-  for (auto req : proto->getRequirementSignature()->getRequirements()) {
-    if (req.getKind() == RequirementKind::Conformance) {
-      auto reqConformance = readConformance(DeclTypeCursor);
-      reqConformances.push_back(reqConformance);
-    }
-  }
-  conformance->setSignatureConformances(reqConformances);
 
   // If the conformance is complete, we're done.
   if (conformance->isComplete())
@@ -1598,7 +1581,7 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
     if (M != getAssociatedModule()) {
       traceMsg.emplace("If you're seeing a crash here, check that your SDK "
                          "and dependencies match the versions used to build",
-                       this);
+                       *this);
     }
 
     if (values.empty()) {
@@ -2284,16 +2267,6 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
 #undef DECODE_VER_TUPLE
       }
 
-      case decls_block::AutoClosure_DECL_ATTR: {
-        bool isImplicit;
-        bool isEscaping;
-        serialization::decls_block::AutoClosureDeclAttrLayout::readRecord(
-          scratch, isImplicit, isEscaping);
-        Attr = new (ctx) AutoClosureAttr(SourceLoc(), SourceRange(),
-                                         isEscaping, isImplicit);
-        break;
-      }
-
       case decls_block::ObjC_DECL_ATTR: {
         bool isImplicit;
         bool isImplicitName;
@@ -2692,7 +2665,8 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
   case decls_block::VAR_DECL: {
     IdentifierID nameID;
     DeclContextID contextID;
-    bool isImplicit, isObjC, isStatic, isLet, hasNonPatternBindingInit;
+    bool isImplicit, isObjC, isStatic, hasNonPatternBindingInit;
+    unsigned specifier;
     uint8_t storageKind, rawAccessLevel, rawSetterAccessLevel;
     TypeID interfaceTypeID;
     DeclID getterID, setterID, materializeForSetID, willSetID, didSetID;
@@ -2700,7 +2674,7 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
     ArrayRef<uint64_t> dependencyIDs;
 
     decls_block::VarLayout::readRecord(scratch, nameID, contextID,
-                                       isImplicit, isObjC, isStatic, isLet,
+                                       isImplicit, isObjC, isStatic, specifier,
                                        hasNonPatternBindingInit, storageKind,
                                        interfaceTypeID,
                                        getterID, setterID, materializeForSetID,
@@ -2729,7 +2703,8 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
     if (declOrOffset.isComplete())
       return declOrOffset;
 
-    auto var = createDecl<VarDecl>(/*IsStatic*/isStatic, /*IsLet*/isLet,
+    auto var = createDecl<VarDecl>(/*IsStatic*/isStatic,
+                                   (VarDecl::Specifier)specifier,
                                    /*IsCaptureList*/false, SourceLoc(), name,
                                    Type(), DC);
     var->setHasNonPatternBindingInit(hasNonPatternBindingInit);
@@ -2774,17 +2749,18 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
   case decls_block::PARAM_DECL: {
     IdentifierID argNameID, paramNameID;
     DeclContextID contextID;
-    bool isLet;
+    unsigned specifier;
     TypeID interfaceTypeID;
 
     decls_block::ParamLayout::readRecord(scratch, argNameID, paramNameID,
-                                         contextID, isLet, interfaceTypeID);
+                                         contextID, specifier, interfaceTypeID);
 
     auto DC = ForcedContext ? *ForcedContext : getDeclContext(contextID);
     if (declOrOffset.isComplete())
       return declOrOffset;
 
-    auto param = createDecl<ParamDecl>(isLet, SourceLoc(), SourceLoc(),
+    auto param = createDecl<ParamDecl>((VarDecl::Specifier)specifier,
+                                       SourceLoc(), SourceLoc(),
                                        getIdentifier(argNameID), SourceLoc(),
                                        getIdentifier(paramNameID), Type(), DC);
 
@@ -3066,9 +3042,7 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
       proto->setImplicit();
     proto->computeType();
 
-    auto signature = GenericSignature::get(
-                               { proto->getProtocolSelfType() }, requirements);
-    proto->setRequirementSignature(signature);
+    proto->setRequirementSignature(requirements);
 
     proto->setMemberLoader(this, DeclTypeCursor.GetCurrentBitNo());
     proto->setCircularityCheck(CircularityCheck::Checked);
@@ -3793,7 +3767,7 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
     if (!nominal) {
       XRefTracePath tinyTrace{*nominalOrError.get()->getModuleContext()};
       DeclName fullName = cast<ValueDecl>(nominalOrError.get())->getFullName();
-      tinyTrace.addValue(fullName.getBaseName());
+      tinyTrace.addValue(fullName.getBaseIdentifier());
       return llvm::make_error<XRefError>("declaration is not a nominal type",
                                          tinyTrace, fullName);
     }
@@ -3805,17 +3779,17 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
 
   case decls_block::PAREN_TYPE: {
     TypeID underlyingID;
-    bool isVariadic, isAutoClosure, isEscaping;
+    bool isVariadic, isAutoClosure, isEscaping, isInOut;
     decls_block::ParenTypeLayout::readRecord(scratch, underlyingID, isVariadic,
-                                             isAutoClosure, isEscaping);
+                                             isAutoClosure, isEscaping, isInOut);
 
     auto underlyingTy = getTypeChecked(underlyingID);
     if (!underlyingTy)
       return underlyingTy.takeError();
-
+    
     typeOrOffset = ParenType::get(
         ctx, underlyingTy.get(),
-        ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping));
+        ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping, isInOut));
     break;
   }
 
@@ -3835,17 +3809,17 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
 
       IdentifierID nameID;
       TypeID typeID;
-      bool isVariadic, isAutoClosure, isEscaping;
+      bool isVariadic, isAutoClosure, isEscaping, isInOut;
       decls_block::TupleTypeEltLayout::readRecord(
-          scratch, nameID, typeID, isVariadic, isAutoClosure, isEscaping);
+          scratch, nameID, typeID, isVariadic, isAutoClosure, isEscaping, isInOut);
 
       auto elementTy = getTypeChecked(typeID);
       if (!elementTy)
         return elementTy.takeError();
-
+      
       elements.emplace_back(
           elementTy.get(), getIdentifier(nameID),
-          ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping));
+          ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping, isInOut));
     }
 
     typeOrOffset = TupleType::get(elements, ctx);
@@ -4574,6 +4548,13 @@ void ModuleFile::finishNormalConformance(NormalProtocolConformance *conformance,
                                          uint64_t contextData) {
   using namespace decls_block;
 
+  PrettyStackTraceModuleFile traceModule("While reading from", *this);
+  PrettyStackTraceType trace(getAssociatedModule()->getASTContext(),
+                             "finishing conformance for",
+                             conformance->getType());
+  PrettyStackTraceDecl traceTo("... to", conformance->getProtocol());
+  ++NumNormalProtocolConformancesCompleted;
+
   // Find the conformance record.
   BCOffsetRAII restoreOffset(DeclTypeCursor);
   DeclTypeCursor.JumpToBit(contextData);
@@ -4596,13 +4577,16 @@ void ModuleFile::finishNormalConformance(NormalProtocolConformance *conformance,
                                               typeCount,
                                               rawIDs);
 
-  // Skip requirement signature conformances.
-  auto proto = conformance->getProtocol();
-  for (auto req : proto->getRequirementSignature()->getRequirements()) {
+  // Read requirement signature conformances.
+  const ProtocolDecl *proto = conformance->getProtocol();
+  SmallVector<ProtocolConformanceRef, 4> reqConformances;
+  for (const auto &req : proto->getRequirementSignature()) {
     if (req.getKind() == RequirementKind::Conformance) {
-      (void)readConformance(DeclTypeCursor);
+      auto reqConformance = readConformance(DeclTypeCursor);
+      reqConformances.push_back(reqConformance);
     }
   }
+  conformance->setSignatureConformances(reqConformances);
 
   ArrayRef<uint64_t>::iterator rawIDIter = rawIDs.begin();
 

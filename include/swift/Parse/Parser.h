@@ -716,7 +716,11 @@ public:
   ParserResult<TypeDecl> parseDeclAssociatedType(ParseDeclOptions Flags,
                                                  DeclAttributes &Attributes);
   
-  ParserResult<IfConfigDecl> parseDeclIfConfig(ParseDeclOptions Flags);
+  /// Parse a #if ... #endif directive.
+  /// Delegate callback function to parse elements in the blocks.
+  ParserResult<IfConfigDecl> parseIfConfig(
+    llvm::function_ref<void(SmallVectorImpl<ASTNode> &, bool)> parseElements);
+
   /// Parse a #line/#sourceLocation directive.
   /// 'isLine = true' indicates parsing #line instead of #sourcelocation
   ParserStatus parseLineDirective(bool isLine = false);
@@ -973,15 +977,11 @@ public:
     /// Any declaration attributes attached to the parameter.
     DeclAttributes Attrs;
 
-    /// The location of the 'let', 'var', or 'inout' keyword, if present.
-    SourceLoc LetVarInOutLoc;
-
-    enum SpecifierKindTy {
-      Let,
-      Var,
-      InOut
-    };
-    SpecifierKindTy SpecifierKind = Let; // Defaults to let.
+    /// The location of the 'inout' keyword, if present.
+    SourceLoc SpecifierLoc;
+    
+    /// The parsed specifier kind, if present.
+    VarDecl::Specifier SpecifierKind = VarDecl::Specifier::Owned;
 
     /// The location of the first name.
     ///
@@ -1093,7 +1093,8 @@ public:
                                                        bool isExprBasic);
   
 
-  Pattern *createBindingFromPattern(SourceLoc loc, Identifier name, bool isLet);
+  Pattern *createBindingFromPattern(SourceLoc loc, Identifier name,
+                                    VarDecl::Specifier specifier);
   
 
   /// \brief Determine whether this token can only start a matching pattern
@@ -1265,6 +1266,8 @@ public:
   // Statement Parsing
 
   bool isStartOfStmt();
+  bool isTerminatorForBraceItemListKind(BraceItemListKind Kind,
+                                        ArrayRef<ASTNode> ParsedDecls);
   ParserResult<Stmt> parseStmt();
   ParserStatus parseExprOrStmt(ASTNode &Result);
   ParserResult<Stmt> parseStmtBreak();
@@ -1277,8 +1280,6 @@ public:
   ParserResult<PoundAvailableInfo> parseStmtConditionPoundAvailable();
   ParserResult<Stmt> parseStmtIf(LabeledStmtInfo LabelInfo);
   ParserResult<Stmt> parseStmtGuard();
-  ParserResult<Stmt> parseStmtIfConfig(BraceItemListKind Kind
-                                        = BraceItemListKind::Brace);
   ParserResult<Stmt> parseStmtWhile(LabeledStmtInfo LabelInfo);
   ParserResult<Stmt> parseStmtRepeat(LabeledStmtInfo LabelInfo);
   ParserResult<Stmt> parseStmtDo(LabeledStmtInfo LabelInfo);
@@ -1289,7 +1290,8 @@ public:
   ParserResult<Stmt> parseStmtForEach(SourceLoc ForLoc,
                                       LabeledStmtInfo LabelInfo);
   ParserResult<Stmt> parseStmtSwitch(LabeledStmtInfo LabelInfo);
-  ParserResult<CaseStmt> parseStmtCase();
+  ParserStatus parseStmtCases(SmallVectorImpl<ASTNode> &cases, bool IsActive);
+  ParserResult<CaseStmt> parseStmtCase(bool IsActive);
 
   //===--------------------------------------------------------------------===//
   // Generics Parsing

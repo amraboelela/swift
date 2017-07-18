@@ -61,17 +61,10 @@ DeclContext::getAsTypeOrTypeExtensionContext() const {
     auto ED = cast<ExtensionDecl>(this);
     auto type = ED->getExtendedType();
 
-    if (type.isNull() || type->hasError())
+    if (!type)
       return nullptr;
 
-    if (auto ND = type->getNominalOrBoundGenericNominal())
-      return ND;
-
-    if (auto unbound = dyn_cast<UnboundGenericType>(type.getPointer())) {
-      return unbound->getDecl();
-    }
-
-    return nullptr;
+    return type->getAnyNominal();
   }
 
   case DeclContextKind::GenericTypeDecl:
@@ -111,14 +104,6 @@ ProtocolDecl *DeclContext::getAsProtocolExtensionContext() const {
 
 GenericTypeParamType *DeclContext::getProtocolSelfType() const {
   assert(getAsProtocolOrProtocolExtensionContext() && "not a protocol");
-
-  // FIXME: This comes up when the extension didn't resolve,
-  // and we have a protocol nested inside that extension
-  // (which is not allowed in the first place).
-  //
-  // Handle this more systematically elsewhere.
-  if (!isInnermostContextGeneric())
-    return nullptr;
 
   return getGenericParamsOfContext()->getParams().front()
       ->getDeclaredInterfaceType()
@@ -445,6 +430,12 @@ DeclContext *DeclContext::getParentForLookup() const {
     // outer types.
     return getModuleScopeContext();
   }
+  if (isa<NominalTypeDecl>(this)) {
+    // If we are inside a nominal type that is inside a protocol,
+    // skip the protocol.
+    if (isa<ProtocolDecl>(getParent()))
+      return getModuleScopeContext();
+  }
   return getParent();
 }
 
@@ -544,7 +535,8 @@ ResilienceExpansion DeclContext::getResilienceExpansion() const {
 
       // If the function is not externally visible, we will not be serializing
       // its body.
-      if (AFD->getEffectiveAccess() < Accessibility::Public)
+      if (!AFD->getFormalAccessScope(/*useDC=*/nullptr,
+                                     /*respectVersionedAttr=*/true).isPublic())
         break;
 
       // Bodies of public transparent and always-inline functions are
@@ -654,6 +646,30 @@ DeclContext::isCascadingContextForLookup(bool functionsAreNonCascading) const {
   }
 
   return getParent()->isCascadingContextForLookup(true);
+}
+
+unsigned DeclContext::getSyntacticDepth() const {
+  // Module scope == depth 0.
+  if (isModuleScopeContext())
+    return 0;
+
+  return 1 + getParent()->getSyntacticDepth();
+}
+
+unsigned DeclContext::getSemanticDepth() const {
+  // For extensions, count the depth of the nominal type being extended.
+  if (auto ext = dyn_cast<ExtensionDecl>(this)) {
+    if (auto nominal = getAsNominalTypeOrNominalTypeExtensionContext())
+      return nominal->getSemanticDepth();
+
+    return 1;
+  }
+
+  // Module scope == depth 0.
+  if (isModuleScopeContext())
+    return 0;
+
+  return 1 + getParent()->getSemanticDepth();
 }
 
 bool DeclContext::walkContext(ASTWalker &Walker) {
@@ -799,7 +815,7 @@ unsigned DeclContext::printContext(raw_ostream &OS, unsigned indent) const {
   }
   case DeclContextKind::SubscriptDecl: {
     auto *SD = cast<SubscriptDecl>(this);
-    OS << " name=" << SD->getName();
+    OS << " name=" << SD->getBaseName();
     if (SD->hasInterfaceType())
       OS << " : " << SD->getInterfaceType();
     else

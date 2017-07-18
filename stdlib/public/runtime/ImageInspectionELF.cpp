@@ -26,6 +26,7 @@
 #include <elf.h>
 #include <link.h>
 #include <string.h>
+#include <stdio.h>
 
 using namespace swift;
 
@@ -65,81 +66,99 @@ static InspectArgs TypeMetadataRecordArgs = {
 // can be nullptr to specify the main executable.
 static SectionInfo getSectionInfo(const char *imageName,
                                   const char *sectionName) {
-  SectionInfo sectionInfo = { 0, nullptr };
-  void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
-  if (!handle) {
-    fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
-               dlerror());
-  }
-  void *symbol = dlsym(handle, sectionName);
-  if (symbol) {
-    // Extract the size of the section data from the head of the section.
-    const char *section = reinterpret_cast<const char *>(symbol);
-    memcpy(&sectionInfo.size, section, sizeof(uint64_t));
-    sectionInfo.data = section + sizeof(uint64_t);
-  }
-  dlclose(handle);
-  return sectionInfo;
+    SectionInfo sectionInfo = { 0, nullptr };
+    void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
+    if (!handle) {
+#ifdef __ANDROID__
+        fprintf(stderr, "dlopen failed. imageName: %s, sectionName: %s, dlerror: %s\n", imageName, sectionName, dlerror());
+        return sectionInfo;
+#else
+        fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
+                   dlerror());
+#endif
+    }
+    fprintf(stderr, "dlopen succeeded. imageName: %s\n", imageName);
+    void *symbol = dlsym(handle, sectionName);
+    if (symbol) {
+        // Extract the size of the section data from the head of the section.
+        const char *section = reinterpret_cast<const char *>(symbol);
+        memcpy(&sectionInfo.size, section, sizeof(uint64_t));
+        sectionInfo.data = section + sizeof(uint64_t);
+    }
+    dlclose(handle);
+    return sectionInfo;
 }
 
 static int iteratePHDRCallback(struct dl_phdr_info *info,
                                size_t size, void *data) {
-  InspectArgs *inspectArgs = reinterpret_cast<InspectArgs *>(data);
-  const char *fname = info->dlpi_name;
-
-  // While dl_iterate_phdr() is in progress it holds a lock to prevent other
-  // images being loaded. The initialize flag is set here inside the callback so
-  // that addNewDSOImage() sees a consistent state. If it was set outside the
-  // dl_iterate_phdr() call then it could result in images being missed or
-  // added twice.
-  inspectArgs->didInitializeLookup = true;
-
-  if (fname == nullptr || fname[0] == '\0') {
-    // The filename may be null for both the dynamic loader and main executable.
-    // So ignore null image name here and explicitly add the main executable
-    // in initialize*Lookup() to avoid adding the data twice.
+    InspectArgs *inspectArgs = reinterpret_cast<InspectArgs *>(data);
+    const char *fname = info->dlpi_name;
+    
+    // While dl_iterate_phdr() is in progress it holds a lock to prevent other
+    // images being loaded. The initialize flag is set here inside the callback so
+    // that addNewDSOImage() sees a consistent state. If it was set outside the
+    // dl_iterate_phdr() call then it could result in images being missed or
+    // added twice.
+    inspectArgs->didInitializeLookup = true;
+    
+    if (fname == nullptr || fname[0] == '\0') {
+        // The filename may be null for both the dynamic loader and main executable.
+        // So ignore null image name here and explicitly add the main executable
+        // in initialize*Lookup() to avoid adding the data twice.
+        return 0;
+    }
+    
+    //fprintf(stderr, "iteratePHDRCallback 1\n");
+    SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
+    //fprintf(stderr, "iteratePHDRCallback 2\n");
+    if (block.size > 0) {
+        fprintf(stderr, "iteratePHDRCallback block.size: %d\n", block.size);
+        inspectArgs->addBlock(block.data, block.size);
+    }
     return 0;
-  }
-
-  SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-  if (block.size > 0) {
-    inspectArgs->addBlock(block.data, block.size);
-  }
-  return 0;
 }
 
 // Add the section information in an image specified by an address in that
 // image.
 static void addBlockInImage(const InspectArgs *inspectArgs, const void *addr) {
-  const char *fname = nullptr;
-  if (addr) {
-    Dl_info info;
-    if (dladdr(addr, &info) == 0 || info.dli_fname == nullptr) {
-      return;
+    const char *fname = nullptr;
+    if (addr) {
+        Dl_info info;
+        if (dladdr(addr, &info) == 0 || info.dli_fname == nullptr) {
+            return;
+        }
+        fname = info.dli_fname;
     }
-    fname = info.dli_fname;
-  }
-  SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
-  if (block.size > 0) {
-    inspectArgs->addBlock(block.data, block.size);
-  }
+    fprintf(stderr, "addBlockInImage addr: %p\n", addr);
+    SectionInfo block = getSectionInfo(fname, inspectArgs->symbolName);
+    fprintf(stderr, "addBlockInImage block.size: %d\n", block.size);
+    if (block.size > 0) {
+        inspectArgs->addBlock(block.data, block.size);
+    }
 }
 
 static void initializeSectionLookup(InspectArgs *inspectArgs) {
-  // Add section data in the main executable.
-  addBlockInImage(inspectArgs, nullptr);
-  // Search the loaded dls. This only searches the already
-  // loaded ones. Any images loaded after this are processed by
-  // addNewDSOImage() below.
-  dl_iterate_phdr(iteratePHDRCallback, reinterpret_cast<void *>(inspectArgs));
+    // Add section data in the main executable.
+    fprintf(stderr, "initializeSectionLookup 1\n");
+    addBlockInImage(inspectArgs, nullptr);
+    fprintf(stderr, "initializeSectionLookup 2\n");
+    // Search the loaded dls. This only searches the already
+    // loaded ones. Any images loaded after this are processed by
+    // addNewDSOImage() below.
+    dl_iterate_phdr(iteratePHDRCallback, reinterpret_cast<void *>(inspectArgs));
+    fprintf(stderr, "initializeSectionLookup 3\n");
 }
 
 void swift::initializeProtocolConformanceLookup() {
-  initializeSectionLookup(&ProtocolConformanceArgs);
+    fprintf(stderr, "initializeProtocolConformanceLookup 1\n");
+    initializeSectionLookup(&ProtocolConformanceArgs);
+    fprintf(stderr, "initializeProtocolConformanceLookup 2\n");
 }
 
 void swift::initializeTypeMetadataRecordLookup() {
-  initializeSectionLookup(&TypeMetadataRecordArgs);
+    fprintf(stderr, "initializeTypeMetadataRecordLookup 1\n");
+    initializeSectionLookup(&TypeMetadataRecordArgs);
+    fprintf(stderr, "initializeTypeMetadataRecordLookup 2\n");
 }
 
 // As ELF images are loaded, ImageInspectionInit:sectionDataInit() will call
@@ -148,13 +167,15 @@ void swift::initializeTypeMetadataRecordLookup() {
 // function has been called.
 SWIFT_RUNTIME_EXPORT
 void swift_addNewDSOImage(const void *addr) {
-  if (ProtocolConformanceArgs.didInitializeLookup) {
-    addBlockInImage(&ProtocolConformanceArgs, addr);
-  }
-
-  if (TypeMetadataRecordArgs.didInitializeLookup) {
-    addBlockInImage(&TypeMetadataRecordArgs, addr);
-  }
+    fprintf(stderr, "swift_addNewDSOImage addr: %p\n", addr);
+    if (ProtocolConformanceArgs.didInitializeLookup) {
+        fprintf(stderr, "ProtocolConformanceArgs.didInitializeLookup\n");
+        addBlockInImage(&ProtocolConformanceArgs, addr);
+    }
+    if (TypeMetadataRecordArgs.didInitializeLookup) {
+        fprintf(stderr, "TypeMetadataRecordArgs.didInitializeLookup\n");
+        addBlockInImage(&TypeMetadataRecordArgs, addr);
+    }
 }
 
 int swift::lookupSymbol(const void *address, SymbolInfo *info) {

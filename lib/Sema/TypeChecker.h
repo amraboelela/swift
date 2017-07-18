@@ -55,6 +55,12 @@ namespace constraints {
 typedef llvm::DenseMap<SubstitutableType *,
                        SmallVector<ProtocolConformance *, 2>> ConformanceMap;
 
+/// \brief Used for recursive lookups into an expr that is already
+/// being type-checked and the constraint system in which its type is
+/// stored.
+typedef std::pair<Expr *,
+                  constraints::ConstraintSystem *> ExprAndConstraintSystem;
+
 /// Special-case type checking semantics for certain declarations.
 enum class DeclTypeCheckingSemantics {
   /// A normal declaration.
@@ -224,6 +230,9 @@ enum class TypeCheckExprFlags {
   /// Set if the client prefers fixits to be in the form of force unwrapping
   /// or optional chaining to return an optional.
   PreferForceUnwrapToOptional = 0x80,
+
+  /// If set, don't apply a solution.
+  SkipApplyingSolution = 0x100,
 };
 
 typedef OptionSet<TypeCheckExprFlags> TypeCheckExprOptions;
@@ -302,8 +311,6 @@ enum class FreeTypeVariableBinding {
   Disallow,
   /// Allow the free type variables to persist in the solution.
   Allow,
-  /// Bind the type variables to fresh generic parameters.
-  GenericParameters,
   /// Bind the type variables to UnresolvedType to represent the ambiguity.
   UnresolvedType
 };
@@ -324,6 +331,13 @@ public:
   /// \returns true if an error occurred that is not itself part of the
   /// constraint system, or false otherwise.
   virtual bool builtConstraints(constraints::ConstraintSystem &cs, Expr *expr);
+
+  /// Callback invoked once a solution has been found.
+  ///
+  /// The callback may further alter the expression, returning either a
+  /// new expression (to replace the result) or a null pointer to indicate
+  /// failure.
+  virtual Expr *foundSolution(constraints::Solution &solution, Expr *expr);
 
   /// Callback invokes once the chosen solution has been applied to the
   /// expression.
@@ -808,7 +822,7 @@ private:
   llvm::DenseSet<CanType> CIntegerTypes;
 
   /// The set of expressions currently being analyzed for failures.
-  llvm::DenseMap<Expr*, Expr*> DiagnosedExprs;
+  llvm::DenseMap<Expr*, ExprAndConstraintSystem> DiagnosedExprs;
 
   ModuleDecl *StdlibModule = nullptr;
 
@@ -820,6 +834,16 @@ private:
   ///
   /// Intended for debugging purposes only.
   unsigned WarnLongFunctionBodies = 0;
+
+  /// If non-zero, warn when type-chcking an expression takes longer
+  /// than this many milliseconds.
+  ///
+  /// Intended for debugging purposes only.
+  unsigned WarnLongExpressionTypeChecking = 0;
+
+  /// If non-zero, abort the expression type checker if it takes more
+  /// than this many seconds.
+  unsigned ExpressionTimeoutThreshold = 600;
 
   /// If true, the time it takes to type-check each function will be dumped
   /// to llvm::errs().
@@ -856,12 +880,46 @@ public:
     DebugTimeExpressions = true;
   }
 
+  bool getDebugTimeExpressions() {
+    return DebugTimeExpressions;
+  }
+
   /// If \p timeInMS is non-zero, warn when a function body takes longer than
   /// this many milliseconds to type-check.
   ///
   /// Intended for debugging purposes only.
   void setWarnLongFunctionBodies(unsigned timeInMS) {
     WarnLongFunctionBodies = timeInMS;
+  }
+
+  /// If \p timeInMS is non-zero, warn when type-checking an expression
+  /// takes longer than this many milliseconds.
+  ///
+  /// Intended for debugging purposes only.
+  void setWarnLongExpressionTypeChecking(unsigned timeInMS) {
+    WarnLongExpressionTypeChecking = timeInMS;
+  }
+
+  /// Return the current setting for the number of milliseconds
+  /// threshold we use to determine whether to warn about an
+  /// expression taking a long time.
+  unsigned getWarnLongExpressionTypeChecking() {
+    return WarnLongExpressionTypeChecking;
+  }
+
+  /// Set the threshold that determines the upper bound for the number
+  /// of seconds we'll let the expression type checker run before
+  /// considering an expression "too complex".
+  void setExpressionTimeoutThreshold(unsigned timeInSeconds) {
+    ExpressionTimeoutThreshold = timeInSeconds;
+  }
+
+  /// Return the current settting for the threshold that determines
+  /// the upper bound for the number of seconds we'll let the
+  /// expression type checker run before considering an expression
+  /// "too complex".
+  unsigned getExpressionTimeoutThresholdInSeconds() {
+    return ExpressionTimeoutThreshold;
   }
 
   bool getInImmediateMode() {
@@ -987,7 +1045,7 @@ public:
   ///
   /// \param typeDecl The type declaration found by name lookup.
   /// \param fromDC The declaration context in which the name lookup occurred.
-  /// \param isSpecialized Whether this type is immediately specialized.
+  /// \param isSpecialized Whether the type will have generic arguments applied.
   /// \param resolver The resolver for generic types.
   ///
   /// \returns the resolved type.
@@ -1188,8 +1246,6 @@ public:
   void checkDeclAttributes(Decl *D);
   void checkTypeModifyingDeclAttributes(VarDecl *var);
 
-  void checkAutoClosureAttr(ParamDecl *D, AutoClosureAttr *attr);
-  void checkNoEscapeAttr(ParamDecl *D, NoEscapeAttr *attr);
   void checkOwnershipAttr(VarDecl *D, OwnershipAttr *attr);
 
   void computeAccessibility(ValueDecl *D);
@@ -1218,9 +1274,6 @@ public:
   resolveExternalDeclImplicitMembers(NominalTypeDecl *nominal) override {
     handleExternalDecl(nominal);
   }
-
-  /// Introduce the accessors for a 'lazy' variable.
-  void introduceLazyVarAccessors(VarDecl *var) override;
 
   /// Infer default value witnesses for all requirements in the given protocol.
   void inferDefaultWitnesses(ProtocolDecl *proto);
@@ -1528,6 +1581,12 @@ public:
                               FreeTypeVariableBinding::Disallow,
       ExprTypeCheckListener *listener = nullptr);
 
+  void getPossibleTypesOfExpressionWithoutApplying(
+      Expr *&expr, DeclContext *dc, SmallVectorImpl<Type> &types,
+      FreeTypeVariableBinding allowFreeTypeVariables =
+          FreeTypeVariableBinding::Disallow,
+      ExprTypeCheckListener *listener = nullptr);
+
   bool typeCheckCompletionSequence(Expr *&expr, DeclContext *DC);
 
   /// \brief Type check the given expression assuming that its children
@@ -1667,9 +1726,9 @@ public:
   
   /// Type-check an initialized variable pattern declaration.
   bool typeCheckBinding(Pattern *&P, Expr *&Init, DeclContext *DC,
-                        bool skipClosures);
+                        bool skipApplyingSolution);
   bool typeCheckPatternBinding(PatternBindingDecl *PBD, unsigned patternNumber,
-                               bool skipClosures);
+                               bool skipApplyingSolution);
 
   /// Type-check a for-each loop's pattern binding and sequence together.
   bool typeCheckForEachBinding(DeclContext *dc, ForEachStmt *stmt);
@@ -1689,8 +1748,7 @@ public:
   static void contextualizeTopLevelCode(TopLevelContext &TLC,
                                         ArrayRef<Decl*> topLevelDecls);
 
-  /// Return the type-of-reference of the given value.  This does not
-  /// open values of polymorphic function type.
+  /// Return the type-of-reference of the given value.
   ///
   /// \param baseType if non-null, return the type of a member reference to
   ///   this value when the base has the given type
@@ -1701,13 +1759,10 @@ public:
   /// \param base The optional base expression of this value reference
   ///
   /// \param wantInterfaceType Whether we want the interface type, if available.
-  Type getUnopenedTypeOfReference(ValueDecl *value, Type baseType,
+  Type getUnopenedTypeOfReference(VarDecl *value, Type baseType,
                                   DeclContext *UseDC,
                                   const DeclRefExpr *base = nullptr,
                                   bool wantInterfaceType = false);
-
-  /// Return the non-lvalue type-of-reference of the given value.
-  Type getTypeOfRValue(ValueDecl *value, bool wantInterfaceType = false);
 
   /// \brief Retrieve the default type for the given protocol.
   ///
@@ -1732,7 +1787,13 @@ public:
 
   /// \brief Coerce the given expression to materializable type, if it
   /// isn't already.
-  Expr *coerceToMaterializable(Expr *expr);
+  Expr *coerceToRValue(Expr *expr,
+                       llvm::function_ref<Type(Expr *)> getType
+                         = [](Expr *expr) { return expr->getType(); },
+                       llvm::function_ref<void(Expr *, Type)> setType
+                         = [](Expr *expr, Type type) {
+                           expr->setType(type);
+                         });
 
   /// Require that the library intrinsics for working with Optional<T>
   /// exist.
@@ -1832,6 +1893,11 @@ public:
   conformsToProtocol(Type T, ProtocolDecl *Proto, DeclContext *DC,
                      ConformanceCheckOptions options, SourceLoc ComplainLoc,
                      UnsatisfiedDependency *unsatisfiedDependency);
+
+  /// Mark the given protocol conformance as "used" from the given declaration
+  /// context.
+  void markConformanceUsed(ProtocolConformanceRef conformance,
+                           DeclContext *dc);
 
   /// Functor class suitable for use as a \c LookupConformanceFn to look up a
   /// conformance through a particular declaration context using the given
@@ -2044,7 +2110,6 @@ public:
   /// the given set of declarations.
   Expr *buildRefExpr(ArrayRef<ValueDecl *> Decls, DeclContext *UseDC,
                      DeclNameLoc NameLoc, bool Implicit,
-                     bool isSpecialized,
                      FunctionRefKind functionRefKind);
   /// @}
 
@@ -2248,10 +2313,13 @@ public:
   void checkInitializerErrorHandling(Initializer *I, Expr *E);
   void checkEnumElementErrorHandling(EnumElementDecl *D);
 
-  void addExprForDiagnosis(Expr *E1, Expr *Result) {
+  void addExprForDiagnosis(Expr *E1, ExprAndConstraintSystem Result) {
     DiagnosedExprs[E1] = Result;
   }
-  Expr *isExprBeingDiagnosed(Expr *E) {
+  bool isExprBeingDiagnosed(Expr *E) {
+    return DiagnosedExprs.count(E);
+  }
+  ExprAndConstraintSystem getExprBeingDiagnosed(Expr *E) {
     return DiagnosedExprs[E];
   }
 
@@ -2304,6 +2372,7 @@ public:
                              SourceLoc lookupLoc,
                              NameLookupOptions lookupOptions,
                              LookupResult &result,
+                             GenericSignatureBuilder *gsb = nullptr,
                              unsigned maxResults = 4);
 
   void noteTypoCorrection(DeclName name, DeclNameLoc nameLoc,

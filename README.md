@@ -54,11 +54,15 @@ discussed below.
 macOS, Ubuntu Linux LTS, and the latest Ubuntu Linux release are the current
 supported host development operating systems.
 
-For macOS, you need [Xcode 8.3.2](https://developer.apple.com/xcode/downloads/).
+For macOS, you need [Xcode 9.0 beta 2](https://developer.apple.com/xcode/downloads/).
 
 For Ubuntu, you'll need the following development dependencies:
 
+<<<<<<< HEAD
     sudo apt-get install git cmake ninja-build clang python uuid-dev libicu-dev icu-devtools libbsd-dev libedit-dev libxml2-dev libsqlite3-dev swig libpython-dev libncurses5-dev pkg-config libblocksruntime-dev libcurl4-openssl-dev autoconf libtool systemtap-sdt-dev postfix dh-autoreconf libkqueue-dev
+=======
+    sudo apt-get install git cmake ninja-build clang python uuid-dev libicu-dev icu-devtools libbsd-dev libedit-dev libxml2-dev libsqlite3-dev swig libpython-dev libncurses5-dev pkg-config libblocksruntime-dev libcurl4-openssl-dev autoconf libtool systemtap-sdt-dev postfix dh-autoreconf libkqueue-dev tzdata
+>>>>>>> 42272d9e932bb262590d4396fee7dfb142b0501c
 
 **Note:** LLDB currently requires at least `swig-1.3.40` but will successfully build
 with version 2 shipped with Ubuntu.
@@ -180,7 +184,7 @@ work with other SDKs, you'll need to create a second build using Ninja.
 
 ## Testing Swift
 
-See [docs/Testing.rst](docs/Testing.rst).
+See [docs/Testing.md](docs/Testing.md).
 
 ## Contributing to Swift
 

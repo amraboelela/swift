@@ -286,21 +286,22 @@ static SimpleGlobalCache<ObjCClassCacheEntry> ObjCClassWrappers;
 
 const Metadata *
 swift::swift_getObjCClassMetadata(const ClassMetadata *theClass) {
-  // Make calls resilient against receiving a null Objective-C class. This can
-  // happen when classes are weakly linked and not available.
-  if (theClass == nullptr)
-    return nullptr;
-
-  // If the class pointer is valid as metadata, no translation is required.
-  if (theClass->isTypeMetadata()) {
-    return theClass;
-  }
-
+    fprintf(stderr, "swift_getObjCClassMetadata 1\n");
+    // Make calls resilient against receiving a null Objective-C class. This can
+    // happen when classes are weakly linked and not available.
+    if (theClass == nullptr)
+        return nullptr;
+    
+    // If the class pointer is valid as metadata, no translation is required.
+    if (theClass->isTypeMetadata()) {
+        return theClass;
+    }
+    fprintf(stderr, "swift_getObjCClassMetadata 2\n");
 #if SWIFT_OBJC_INTEROP
-  return &ObjCClassWrappers.getOrInsert(theClass).first->Data;
+    return &ObjCClassWrappers.getOrInsert(theClass).first->Data;
 #else
-  fatalError(/* flags = */ 0,
-             "swift_getObjCClassMetadata: no Objective-C interop");
+    fatalError(/* flags = */ 0,
+               "swift_getObjCClassMetadata: no Objective-C interop");
 #endif
 }
 
@@ -375,29 +376,31 @@ const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata1(FunctionTypeFlags flags,
                                       const void *arg0,
                                       const Metadata *result) {
-  assert(flags.getNumArguments() == 1
-         && "wrong number of arguments in function metadata flags?!");
-  const void *flagsArgsAndResult[] = {
-    reinterpret_cast<const void*>(flags.getIntValue()),
-    arg0,
-    static_cast<const void *>(result)                      
-  };                                                       
-  return swift_getFunctionTypeMetadata(flagsArgsAndResult);
+    assert(flags.getNumArguments() == 1
+           && "wrong number of arguments in function metadata flags?!");
+    fprintf(stderr, "swift_getFunctionTypeMetadata1 1\n");
+    const void *flagsArgsAndResult[] = {
+        reinterpret_cast<const void*>(flags.getIntValue()),
+        arg0,
+        static_cast<const void *>(result)
+    };
+    return swift_getFunctionTypeMetadata(flagsArgsAndResult);
 }                                                          
 const FunctionTypeMetadata *                               
 swift::swift_getFunctionTypeMetadata2(FunctionTypeFlags flags,
                                       const void *arg0,
                                       const void *arg1,
                                       const Metadata *result) {
-  assert(flags.getNumArguments() == 2
-         && "wrong number of arguments in function metadata flags?!");
-  const void *flagsArgsAndResult[] = {
-    reinterpret_cast<const void*>(flags.getIntValue()),
-    arg0,
-    arg1,                                                  
-    static_cast<const void *>(result)                      
-  };                                                       
-  return swift_getFunctionTypeMetadata(flagsArgsAndResult);
+    assert(flags.getNumArguments() == 2
+           && "wrong number of arguments in function metadata flags?!");
+    fprintf(stderr, "swift_getFunctionTypeMetadata2 1\n");
+    const void *flagsArgsAndResult[] = {
+        reinterpret_cast<const void*>(flags.getIntValue()),
+        arg0,
+        arg1,
+        static_cast<const void *>(result)
+    };
+    return swift_getFunctionTypeMetadata(flagsArgsAndResult);
 }                                                          
 const FunctionTypeMetadata *                               
 swift::swift_getFunctionTypeMetadata3(FunctionTypeFlags flags,
@@ -405,62 +408,64 @@ swift::swift_getFunctionTypeMetadata3(FunctionTypeFlags flags,
                                       const void *arg1,
                                       const void *arg2,
                                       const Metadata *result) {
-  assert(flags.getNumArguments() == 3
-         && "wrong number of arguments in function metadata flags?!");
-  const void *flagsArgsAndResult[] = {
-    reinterpret_cast<const void*>(flags.getIntValue()),
-    arg0,                                                  
-    arg1,                                                  
-    arg2,                                                  
-    static_cast<const void *>(result)                      
-  };                                                       
-  return swift_getFunctionTypeMetadata(flagsArgsAndResult);
+    assert(flags.getNumArguments() == 3
+           && "wrong number of arguments in function metadata flags?!");
+    fprintf(stderr, "swift_getFunctionTypeMetadata3 1\n");
+    const void *flagsArgsAndResult[] = {
+        reinterpret_cast<const void*>(flags.getIntValue()),
+        arg0,
+        arg1,
+        arg2,
+        static_cast<const void *>(result)
+    };
+    return swift_getFunctionTypeMetadata(flagsArgsAndResult);
 }
 
 const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata(const void *flagsArgsAndResult[]) {
-  FunctionCacheEntry::Key key = { flagsArgsAndResult };
-  return &FunctionTypes.getOrInsert(key).first->Data;
+    fprintf(stderr, "swift_getFunctionTypeMetadata 1\n");
+    FunctionCacheEntry::Key key = { flagsArgsAndResult };
+    return &FunctionTypes.getOrInsert(key).first->Data;
 }
 
 FunctionCacheEntry::FunctionCacheEntry(Key key) {
-  auto flags = key.getFlags();
-
-  // Pick a value witness table appropriate to the function convention.
-  // All function types of a given convention have the same value semantics,
-  // so they share a value witness table.
-  switch (flags.getConvention()) {
-  case FunctionMetadataConvention::Swift:
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
-    break;
-
-  case FunctionMetadataConvention::Thin:
-  case FunctionMetadataConvention::CFunctionPointer:
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(THIN_FUNCTION_MANGLING);
-    break;
-
-  case FunctionMetadataConvention::Block:
+    auto flags = key.getFlags();
+    fprintf(stderr, "FunctionCacheEntry 1\n");
+    // Pick a value witness table appropriate to the function convention.
+    // All function types of a given convention have the same value semantics,
+    // so they share a value witness table.
+    switch (flags.getConvention()) {
+        case FunctionMetadataConvention::Swift:
+            Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
+            break;
+            
+        case FunctionMetadataConvention::Thin:
+        case FunctionMetadataConvention::CFunctionPointer:
+            Data.ValueWitnesses = &VALUE_WITNESS_SYM(THIN_FUNCTION_MANGLING);
+            break;
+            
+        case FunctionMetadataConvention::Block:
 #if SWIFT_OBJC_INTEROP
-    // Blocks are ObjC objects, so can share the Builtin.UnknownObject value
-    // witnesses.
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(BO);
+            // Blocks are ObjC objects, so can share the Builtin.UnknownObject value
+            // witnesses.
+            Data.ValueWitnesses = &VALUE_WITNESS_SYM(BO);
 #else
-    assert(false && "objc block without objc interop?");
+            assert(false && "objc block without objc interop?");
 #endif
-    break;
-  }
-
-  unsigned numArguments = flags.getNumArguments();
-
-  Data.setKind(MetadataKind::Function);
-  Data.Flags = flags;
-  Data.ResultType = key.getResult();
-
-  for (size_t i = 0; i < numArguments; ++i) {
-    auto opaqueArg = key.getArguments()[i];
-    auto arg = FunctionTypeMetadata::Argument::getFromOpaqueValue(opaqueArg);
-    Data.getArguments()[i] = arg;
-  }
+            break;
+    }
+    
+    unsigned numArguments = flags.getNumArguments();
+    
+    Data.setKind(MetadataKind::Function);
+    Data.Flags = flags;
+    Data.ResultType = key.getResult();
+    
+    for (size_t i = 0; i < numArguments; ++i) {
+        auto opaqueArg = key.getArguments()[i];
+        auto arg = FunctionTypeMetadata::Argument::getFromOpaqueValue(opaqueArg);
+        Data.getArguments()[i] = arg;
+    }
 }
 
 /***************************************************************************/
@@ -552,7 +557,6 @@ static OpaqueValue *tuple_projectBuffer(ValueBuffer *buffer,
   if (IsInline)
     return reinterpret_cast<OpaqueValue*>(buffer);
 
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
   auto wtable = tuple_getValueWitnesses(metatype);
   unsigned alignMask = wtable->getAlignmentMask();
   // Compute the byte offset of the object in the box.
@@ -560,9 +564,6 @@ static OpaqueValue *tuple_projectBuffer(ValueBuffer *buffer,
   auto *bytePtr =
       reinterpret_cast<char *>(*reinterpret_cast<HeapObject **>(buffer));
   return reinterpret_cast<OpaqueValue *>(bytePtr + byteOffset);
-#else
-  return *reinterpret_cast<OpaqueValue**>(buffer);
-#endif
 }
 
 /// Generic tuple value witness for 'allocateBuffer'
@@ -574,33 +575,9 @@ static OpaqueValue *tuple_allocateBuffer(ValueBuffer *buffer,
 
   if (IsInline)
     return reinterpret_cast<OpaqueValue*>(buffer);
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
   BoxPair refAndValueAddr(swift_allocBox(metatype));
   *reinterpret_cast<HeapObject **>(buffer) = refAndValueAddr.first;
   return refAndValueAddr.second;
-#else
-  auto wtable = tuple_getValueWitnesses(metatype);
-  auto value = (OpaqueValue*) swift_slowAlloc(wtable->size,
-                                              wtable->getAlignmentMask());
-
-  *reinterpret_cast<OpaqueValue**>(buffer) = value;
-  return value;
-#endif
-}
-
-/// Generic tuple value witness for 'deallocateBuffer'.
-template <bool IsPOD, bool IsInline>
-static void tuple_deallocateBuffer(ValueBuffer *buffer,
-                                   const Metadata *metatype) {
-  assert(IsPOD == tuple_getValueWitnesses(metatype)->isPOD());
-  assert(IsInline == tuple_getValueWitnesses(metatype)->isValueInline());
-
-  if (IsInline)
-    return;
-
-  auto wtable = tuple_getValueWitnesses(metatype);
-  auto value = *reinterpret_cast<OpaqueValue**>(buffer);
-  swift_slowDealloc(value, wtable->size, wtable->getAlignmentMask());
 }
 
 /// Generic tuple value witness for 'destroy'.
@@ -637,17 +614,6 @@ static void tuple_destroyArray(OpaqueValue *array, size_t n,
     tuple_destroy<IsPOD, IsInline>((OpaqueValue*)bytes, _metadata);
     bytes += stride;
   }
-}
-
-/// Generic tuple value witness for 'destroyBuffer'.
-template <bool IsPOD, bool IsInline>
-static void tuple_destroyBuffer(ValueBuffer *buffer, const Metadata *metatype) {
-  assert(IsPOD == tuple_getValueWitnesses(metatype)->isPOD());
-  assert(IsInline == tuple_getValueWitnesses(metatype)->isValueInline());
-
-  auto tuple = tuple_projectBuffer<IsPOD, IsInline>(buffer, metatype);
-  tuple_destroy<IsPOD, IsInline>(tuple, metatype);
-  tuple_deallocateBuffer<IsPOD, IsInline>(buffer, metatype);
 }
 
 // The operation doesn't have to be initializeWithCopy, but they all
@@ -826,34 +792,6 @@ static OpaqueValue *tuple_assignWithTake(OpaqueValue *dest,
                             &ValueWitnessTable::assignWithTake);
 }
 
-/// Generic tuple value witness for 'initializeBufferWithCopy'.
-template <bool IsPOD, bool IsInline>
-static OpaqueValue *tuple_initializeBufferWithCopy(ValueBuffer *dest,
-                                                   OpaqueValue *src,
-                                                   const Metadata *metatype) {
-  assert(IsPOD == tuple_getValueWitnesses(metatype)->isPOD());
-  assert(IsInline == tuple_getValueWitnesses(metatype)->isValueInline());
-
-  return tuple_initializeWithCopy<IsPOD, IsInline>(
-                        tuple_allocateBuffer<IsPOD, IsInline>(dest, metatype),
-                        src,
-                        metatype);
-}
-
-/// Generic tuple value witness for 'initializeBufferWithTake'.
-template <bool IsPOD, bool IsInline>
-static OpaqueValue *tuple_initializeBufferWithTake(ValueBuffer *dest,
-                                                   OpaqueValue *src,
-                                                   const Metadata *metatype) {
-  assert(IsPOD == tuple_getValueWitnesses(metatype)->isPOD());
-  assert(IsInline == tuple_getValueWitnesses(metatype)->isValueInline());
-
-  return tuple_initializeWithTake<IsPOD, IsInline>(
-                        tuple_allocateBuffer<IsPOD, IsInline>(dest, metatype),
-                        src,
-                        metatype);
-}
-
 /// Generic tuple value witness for 'initializeBufferWithCopyOfBuffer'.
 template <bool IsPOD, bool IsInline>
 static OpaqueValue *tuple_initializeBufferWithCopyOfBuffer(ValueBuffer *dest,
@@ -861,7 +799,6 @@ static OpaqueValue *tuple_initializeBufferWithCopyOfBuffer(ValueBuffer *dest,
                                                      const Metadata *metatype) {
   assert(IsPOD == tuple_getValueWitnesses(metatype)->isPOD());
   assert(IsInline == tuple_getValueWitnesses(metatype)->isValueInline());
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
   if (IsInline) {
     return tuple_initializeWithCopy<IsPOD, IsInline>(
         tuple_projectBuffer<IsPOD, IsInline>(dest, metatype),
@@ -872,12 +809,6 @@ static OpaqueValue *tuple_initializeBufferWithCopyOfBuffer(ValueBuffer *dest,
   *reinterpret_cast<HeapObject**>(dest) = srcReference;
   swift_retain(srcReference);
   return tuple_projectBuffer<IsPOD, IsInline>(dest, metatype);
-#else
-  return tuple_initializeBufferWithCopy<IsPOD, IsInline>(
-                            dest,
-                            tuple_projectBuffer<IsPOD, IsInline>(src, metatype),
-                            metatype);
-#endif
 }
 
 /// Generic tuple value witness for 'initializeBufferWithTakeOfBuffer'.
@@ -887,7 +818,6 @@ static OpaqueValue *tuple_initializeBufferWithTakeOfBuffer(ValueBuffer *dest,
                                                      const Metadata *metatype) {
   assert(IsPOD == tuple_getValueWitnesses(metatype)->isPOD());
   assert(IsInline == tuple_getValueWitnesses(metatype)->isValueInline());
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
   if (IsInline) {
     return tuple_initializeWithTake<IsPOD, IsInline>(
         tuple_projectBuffer<IsPOD, IsInline>(dest, metatype),
@@ -896,17 +826,6 @@ static OpaqueValue *tuple_initializeBufferWithTakeOfBuffer(ValueBuffer *dest,
   auto *srcReference = *reinterpret_cast<HeapObject**>(src);
   *reinterpret_cast<HeapObject**>(dest) = srcReference;
   return tuple_projectBuffer<IsPOD, IsInline>(dest, metatype);
-#else
-  if (IsInline) {
-    return tuple_initializeWithTake<IsPOD, IsInline>(
-                      tuple_projectBuffer<IsPOD, IsInline>(dest, metatype),
-                      tuple_projectBuffer<IsPOD, IsInline>(src, metatype),
-                      metatype);
-  } else {
-    dest->PrivateData[0] = src->PrivateData[0];
-    return (OpaqueValue*) dest->PrivateData[0];
-  }
-#endif
 }
 
 static void tuple_storeExtraInhabitant(OpaqueValue *tuple,
@@ -1174,18 +1093,8 @@ static constexpr Out *pointer_function_cast(In *function) {
   return pointer_function_cast_impl<Out>::perform(function);
 }
 
-static void pod_indirect_deallocateBuffer(ValueBuffer *buffer,
-                                          const Metadata *self) {
-  auto value = *reinterpret_cast<OpaqueValue**>(buffer);
-  auto wtable = self->getValueWitnesses();
-  swift_slowDealloc(value, wtable->size, wtable->getAlignmentMask());
-}
-#define pod_indirect_destroyBuffer \
-  pointer_function_cast<value_witness_types::destroyBuffer>(pod_indirect_deallocateBuffer)
-
 static OpaqueValue *pod_indirect_initializeBufferWithCopyOfBuffer(
                     ValueBuffer *dest, ValueBuffer *src, const Metadata *self) {
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
   auto wtable = self->getValueWitnesses();
   auto *srcReference = *reinterpret_cast<HeapObject**>(src);
   *reinterpret_cast<HeapObject**>(dest) = srcReference;
@@ -1197,20 +1106,10 @@ static OpaqueValue *pod_indirect_initializeBufferWithCopyOfBuffer(
   unsigned byteOffset = (sizeof(HeapObject) + alignMask) & ~alignMask;
   auto *bytePtr = reinterpret_cast<char *>(srcReference);
   return reinterpret_cast<OpaqueValue *>(bytePtr + byteOffset);
-#else
-  auto wtable = self->getValueWitnesses();
-  auto destBuf = (OpaqueValue*)swift_slowAlloc(wtable->size,
-                                               wtable->getAlignmentMask());
-  *reinterpret_cast<OpaqueValue**>(dest) = destBuf;
-  OpaqueValue *srcBuf = *reinterpret_cast<OpaqueValue**>(src);
-  memcpy(destBuf, srcBuf, wtable->size);
-  return destBuf;
-#endif
 }
 
 static OpaqueValue *pod_indirect_initializeBufferWithTakeOfBuffer(
                     ValueBuffer *dest, ValueBuffer *src, const Metadata *self) {
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
   auto wtable = self->getValueWitnesses();
   auto *srcReference = *reinterpret_cast<HeapObject**>(src);
   *reinterpret_cast<HeapObject**>(dest) = srcReference;
@@ -1221,33 +1120,6 @@ static OpaqueValue *pod_indirect_initializeBufferWithTakeOfBuffer(
   unsigned byteOffset = (sizeof(HeapObject) + alignMask) & ~alignMask;
   auto *bytePtr = reinterpret_cast<char *>(srcReference);
   return reinterpret_cast<OpaqueValue *>(bytePtr + byteOffset);
-#else
-  memcpy(dest, src, sizeof(ValueBuffer));
-  return *reinterpret_cast<OpaqueValue**>(dest);
-#endif
-}
-
-static OpaqueValue *pod_indirect_projectBuffer(ValueBuffer *buffer,
-                                               const Metadata *self) {
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
-  unsigned alignMask = self->getValueWitnesses()->getAlignmentMask();
-  // Compute the byte offset of the object in the box.
-  unsigned byteOffset = (sizeof(HeapObject) + alignMask) & ~alignMask;
-  auto *bytePtr =
-      reinterpret_cast<char *>(*reinterpret_cast<HeapObject **>(buffer));
-  return reinterpret_cast<OpaqueValue *>(bytePtr + byteOffset);
-#else
-  return *reinterpret_cast<OpaqueValue**>(buffer);
-#endif
-}
-
-static OpaqueValue *pod_indirect_allocateBuffer(ValueBuffer *buffer,
-                                                const Metadata *self) {
-  auto wtable = self->getValueWitnesses();
-  auto destBuf = (OpaqueValue*)swift_slowAlloc(wtable->size,
-                                               wtable->getAlignmentMask());
-  *reinterpret_cast<OpaqueValue**>(buffer) = destBuf;
-  return destBuf;
 }
 
 static void pod_noop(void *object, const Metadata *self) {
@@ -1255,30 +1127,6 @@ static void pod_noop(void *object, const Metadata *self) {
 #define pod_direct_destroy \
   pointer_function_cast<value_witness_types::destroy>(pod_noop)
 #define pod_indirect_destroy pod_direct_destroy
-#define pod_direct_destroyBuffer \
-  pointer_function_cast<value_witness_types::destroyBuffer>(pod_noop)
-#define pod_direct_deallocateBuffer \
-  pointer_function_cast<value_witness_types::deallocateBuffer>(pod_noop)
-
-static void *pod_noop_return(void *object, const Metadata *self) {
-  return object;
-}
-#define pod_direct_projectBuffer \
-  pointer_function_cast<value_witness_types::projectBuffer>(pod_noop_return)
-#define pod_direct_allocateBuffer \
-  pointer_function_cast<value_witness_types::allocateBuffer>(pod_noop_return)
-
-static OpaqueValue *pod_indirect_initializeBufferWithCopy(ValueBuffer *dest,
-                                                          OpaqueValue *src,
-                                                          const Metadata *self){
-  auto wtable = self->getValueWitnesses();
-  auto destBuf = (OpaqueValue*)swift_slowAlloc(wtable->size,
-                                               wtable->getAlignmentMask());
-  *reinterpret_cast<OpaqueValue**>(dest) = destBuf;
-  memcpy(destBuf, src, wtable->size);
-  return destBuf;
-}
-#define pod_indirect_initializeBufferWithTake pod_indirect_initializeBufferWithCopy
 
 static OpaqueValue *pod_direct_initializeWithCopy(OpaqueValue *dest,
                                                   OpaqueValue *src,
@@ -1292,12 +1140,6 @@ static OpaqueValue *pod_direct_initializeWithCopy(OpaqueValue *dest,
     (pod_direct_initializeWithCopy)
 #define pod_direct_initializeBufferWithTakeOfBuffer \
   pointer_function_cast<value_witness_types::initializeBufferWithTakeOfBuffer> \
-    (pod_direct_initializeWithCopy)
-#define pod_direct_initializeBufferWithCopy \
-  pointer_function_cast<value_witness_types::initializeBufferWithCopy> \
-    (pod_direct_initializeWithCopy)
-#define pod_direct_initializeBufferWithTake \
-  pointer_function_cast<value_witness_types::initializeBufferWithTake> \
     (pod_direct_initializeWithCopy)
 #define pod_direct_assignWithCopy pod_direct_initializeWithCopy
 #define pod_indirect_assignWithCopy pod_direct_initializeWithCopy
@@ -1659,180 +1501,182 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
                                                  size_t numFields,
                                            const ClassFieldLayout *fieldLayouts,
                                                  size_t *fieldOffsets) {
-  self = _swift_initializeSuperclass(self, /*copyFieldOffsetVectors=*/true);
-
-  // Start layout by appending to a standard heap object header.
-  size_t size, alignMask;
-
+    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 1\n");
+    self = _swift_initializeSuperclass(self, /*copyFieldOffsetVectors=*/true);
+    
+    // Start layout by appending to a standard heap object header.
+    size_t size, alignMask;
+    
 #if SWIFT_OBJC_INTEROP
-  ClassROData *rodata = getROData(self);
+    ClassROData *rodata = getROData(self);
 #endif
-
-  // If we have a superclass, start from its size and alignment instead.
-  if (classHasSuperclass(self)) {
-    const ClassMetadata *super = self->SuperClass;
-
-    // This is straightforward if the superclass is Swift.
+    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 2\n");
+    // If we have a superclass, start from its size and alignment instead.
+    if (classHasSuperclass(self)) {
+        const ClassMetadata *super = self->SuperClass;
+        
+        // This is straightforward if the superclass is Swift.
 #if SWIFT_OBJC_INTEROP
-    if (super->isTypeMetadata()) {
+        if (super->isTypeMetadata()) {
 #endif
-      size = super->getInstanceSize();
-      alignMask = super->getInstanceAlignMask();
-
+            size = super->getInstanceSize();
+            alignMask = super->getInstanceAlignMask();
+            
 #if SWIFT_OBJC_INTEROP
-    // If it's Objective-C, start layout from our static notion of
-    // where the superclass starts.  Objective-C expects us to have
-    // generated a correct ivar layout, which it will simply slide if
-    // it needs to.
+            // If it's Objective-C, start layout from our static notion of
+            // where the superclass starts.  Objective-C expects us to have
+            // generated a correct ivar layout, which it will simply slide if
+            // it needs to.
+        } else {
+            size = rodata->InstanceStart;
+            alignMask = 0xF; // malloc alignment guarantee
+        }
+#endif
+        fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 3\n");
+        // If we don't have a formal superclass, start with the basic heap header.
     } else {
-      size = rodata->InstanceStart;
-      alignMask = 0xF; // malloc alignment guarantee
+        auto heapLayout = BasicLayout::initialForHeapObject();
+        size = heapLayout.size;
+        alignMask = heapLayout.flags.getAlignmentMask();
     }
-#endif
-
-  // If we don't have a formal superclass, start with the basic heap header.
-  } else {
-    auto heapLayout = BasicLayout::initialForHeapObject();
-    size = heapLayout.size;
-    alignMask = heapLayout.flags.getAlignmentMask();
-  }
-
+    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 4\n");
 #if SWIFT_OBJC_INTEROP
-  // In ObjC interop mode, we have up to two places we need each correct
-  // ivar offset to end up:
-  //
-  // - the global ivar offset in the RO-data; this should only exist
-  //   if the class layout (up to this ivar) is not actually dependent
-  //
-  // - the field offset vector (fieldOffsets)
-  //
-  // When we ask the ObjC runtime to lay out this class, we need the
-  // RO-data to point to the field offset vector, even if the layout
-  // is not dependent.  The RO-data is not shared between
-  // instantiations, but the global ivar offset is (by definition).
-  // If the compiler didn't have the correct static size for the
-  // superclass (i.e. if rodata->InstanceStart is wrong), a previous
-  // instantiation might have already slid the global offset to the
-  // correct place; we need the ObjC runtime to see a pre-slid value,
-  // and it's not safe to briefly unslide it and let the runtime slide
-  // it back because there might already be concurrent code relying on
-  // the global ivar offset.
-  //
-  // So we need to the remember the addresses of the global ivar offsets.
-  // We use this lazily-filled SmallVector to do so.
-  const unsigned NumInlineGlobalIvarOffsets = 8;
-  size_t *_inlineGlobalIvarOffsets[NumInlineGlobalIvarOffsets];
-  size_t **_globalIvarOffsets = nullptr;
-  auto getGlobalIvarOffsets = [&]() -> size_t** {
-    if (!_globalIvarOffsets) {
-      if (numFields <= NumInlineGlobalIvarOffsets) {
-        _globalIvarOffsets = _inlineGlobalIvarOffsets;
-      } else {
-        _globalIvarOffsets = new size_t*[numFields];
-      }
-
-      // Make sure all the entries start out null.
-      memset(_globalIvarOffsets, 0, sizeof(size_t*) * numFields);
-    }
-    return _globalIvarOffsets;
-  };
-
-  // Ensure that Objective-C does layout starting from the right
-  // offset.  This needs to exactly match the superclass rodata's
-  // InstanceSize in cases where the compiler decided that we didn't
-  // really have a resilient ObjC superclass, because the compiler
-  // might hardcode offsets in that case, so we can't slide ivars.
-  // Fortunately, the cases where that happens are exactly the
-  // situations where our entire superclass hierarchy is defined
-  // in Swift.  (But note that ObjC might think we have a superclass
-  // even if Swift doesn't, because of SwiftObject.)
-  rodata->InstanceStart = size;
-
-  auto genericPattern = self->getDescription()->getGenericMetadataPattern();
-  auto &allocator =
+    // In ObjC interop mode, we have up to two places we need each correct
+    // ivar offset to end up:
+    //
+    // - the global ivar offset in the RO-data; this should only exist
+    //   if the class layout (up to this ivar) is not actually dependent
+    //
+    // - the field offset vector (fieldOffsets)
+    //
+    // When we ask the ObjC runtime to lay out this class, we need the
+    // RO-data to point to the field offset vector, even if the layout
+    // is not dependent.  The RO-data is not shared between
+    // instantiations, but the global ivar offset is (by definition).
+    // If the compiler didn't have the correct static size for the
+    // superclass (i.e. if rodata->InstanceStart is wrong), a previous
+    // instantiation might have already slid the global offset to the
+    // correct place; we need the ObjC runtime to see a pre-slid value,
+    // and it's not safe to briefly unslide it and let the runtime slide
+    // it back because there might already be concurrent code relying on
+    // the global ivar offset.
+    //
+    // So we need to the remember the addresses of the global ivar offsets.
+    // We use this lazily-filled SmallVector to do so.
+    const unsigned NumInlineGlobalIvarOffsets = 8;
+    size_t *_inlineGlobalIvarOffsets[NumInlineGlobalIvarOffsets];
+    size_t **_globalIvarOffsets = nullptr;
+    auto getGlobalIvarOffsets = [&]() -> size_t** {
+        if (!_globalIvarOffsets) {
+            if (numFields <= NumInlineGlobalIvarOffsets) {
+                _globalIvarOffsets = _inlineGlobalIvarOffsets;
+            } else {
+                _globalIvarOffsets = new size_t*[numFields];
+            }
+            
+            // Make sure all the entries start out null.
+            memset(_globalIvarOffsets, 0, sizeof(size_t*) * numFields);
+        }
+        return _globalIvarOffsets;
+    };
+    
+    // Ensure that Objective-C does layout starting from the right
+    // offset.  This needs to exactly match the superclass rodata's
+    // InstanceSize in cases where the compiler decided that we didn't
+    // really have a resilient ObjC superclass, because the compiler
+    // might hardcode offsets in that case, so we can't slide ivars.
+    // Fortunately, the cases where that happens are exactly the
+    // situations where our entire superclass hierarchy is defined
+    // in Swift.  (But note that ObjC might think we have a superclass
+    // even if Swift doesn't, because of SwiftObject.)
+    rodata->InstanceStart = size;
+    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 5\n");
+    auto genericPattern = self->getDescription()->getGenericMetadataPattern();
+    auto &allocator =
     genericPattern ? unsafeGetInitializedCache(genericPattern).getAllocator()
-                   : getResilientMetadataAllocator();
-
-  // Always clone the ivar descriptors.
-  if (numFields) {
-    const ClassIvarList *dependentIvars = rodata->IvarList;
-    assert(dependentIvars->Count == numFields);
-    assert(dependentIvars->EntrySize == sizeof(ClassIvarEntry));
-
-    auto ivarListSize = sizeof(ClassIvarList) +
-                        numFields * sizeof(ClassIvarEntry);
-    auto ivars = (ClassIvarList*) allocator.Allocate(ivarListSize,
-                                                     alignof(ClassIvarList));
-    memcpy(ivars, dependentIvars, ivarListSize);
-    rodata->IvarList = ivars;
-
-    for (unsigned i = 0; i != numFields; ++i) {
-      ClassIvarEntry &ivar = ivars->getIvars()[i];
-
-      // Remember the global ivar offset if present.
-      if (ivar.Offset) {
-        getGlobalIvarOffsets()[i] = ivar.Offset;
-      }
-
-      // Change the ivar offset to point to the respective entry of
-      // the field-offset vector, as discussed above.
-      ivar.Offset = &fieldOffsets[i];
-
-      // If the ivar's size doesn't match the field layout we
-      // computed, overwrite it and give it better type information.
-      if (ivar.Size != fieldLayouts[i].Size) {
-        ivar.Size = fieldLayouts[i].Size;
-        ivar.Type = nullptr;
-        ivar.Log2Alignment =
-          getLog2AlignmentFromMask(fieldLayouts[i].AlignMask);
-      }
+    : getResilientMetadataAllocator();
+    
+    // Always clone the ivar descriptors.
+    if (numFields) {
+        const ClassIvarList *dependentIvars = rodata->IvarList;
+        assert(dependentIvars->Count == numFields);
+        assert(dependentIvars->EntrySize == sizeof(ClassIvarEntry));
+        
+        auto ivarListSize = sizeof(ClassIvarList) +
+        numFields * sizeof(ClassIvarEntry);
+        auto ivars = (ClassIvarList*) allocator.Allocate(ivarListSize,
+                                                         alignof(ClassIvarList));
+        memcpy(ivars, dependentIvars, ivarListSize);
+        rodata->IvarList = ivars;
+        
+        for (unsigned i = 0; i != numFields; ++i) {
+            ClassIvarEntry &ivar = ivars->getIvars()[i];
+            
+            // Remember the global ivar offset if present.
+            if (ivar.Offset) {
+                getGlobalIvarOffsets()[i] = ivar.Offset;
+            }
+            
+            // Change the ivar offset to point to the respective entry of
+            // the field-offset vector, as discussed above.
+            ivar.Offset = &fieldOffsets[i];
+            
+            // If the ivar's size doesn't match the field layout we
+            // computed, overwrite it and give it better type information.
+            if (ivar.Size != fieldLayouts[i].Size) {
+                ivar.Size = fieldLayouts[i].Size;
+                ivar.Type = nullptr;
+                ivar.Log2Alignment =
+                getLog2AlignmentFromMask(fieldLayouts[i].AlignMask);
+            }
+        }
     }
-  }
 #endif
-
-  // Okay, now do layout.
-  for (unsigned i = 0; i != numFields; ++i) {
-    // Skip empty fields.
-    if (fieldOffsets[i] == 0 && fieldLayouts[i].Size == 0)
-      continue;
-    auto offset = roundUpToAlignMask(size, fieldLayouts[i].AlignMask);
-    fieldOffsets[i] = offset;
-    size = offset + fieldLayouts[i].Size;
-    alignMask = std::max(alignMask, fieldLayouts[i].AlignMask);
-  }
-
-  // Save the final size and alignment into the metadata record.
-  assert(self->isTypeMetadata());
-  self->setInstanceSize(size);
-  self->setInstanceAlignMask(alignMask);
-
+    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 6\n");
+    // Okay, now do layout.
+    for (unsigned i = 0; i != numFields; ++i) {
+        // Skip empty fields.
+        if (fieldOffsets[i] == 0 && fieldLayouts[i].Size == 0)
+            continue;
+        auto offset = roundUpToAlignMask(size, fieldLayouts[i].AlignMask);
+        fieldOffsets[i] = offset;
+        size = offset + fieldLayouts[i].Size;
+        alignMask = std::max(alignMask, fieldLayouts[i].AlignMask);
+    }
+    
+    // Save the final size and alignment into the metadata record.
+    assert(self->isTypeMetadata());
+    self->setInstanceSize(size);
+    self->setInstanceAlignMask(alignMask);
+    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 7\n");
 #if SWIFT_OBJC_INTEROP
-  // Save the size into the Objective-C metadata as well.
-  rodata->InstanceSize = size;
-
-  // Register this class with the runtime.  This will also cause the
-  // runtime to lay us out.
-  swift_instantiateObjCClass(self);
-
-  // If we saved any global ivar offsets, make sure we write back to them.
-  if (_globalIvarOffsets) {
-    for (unsigned i = 0; i != numFields; ++i) {
-      if (!_globalIvarOffsets[i]) continue;
-
-      // To avoid dirtying memory, only write to the global ivar
-      // offset if it's actually wrong.
-      if (*_globalIvarOffsets[i] != fieldOffsets[i])
-        *_globalIvarOffsets[i] = fieldOffsets[i];
+    // Save the size into the Objective-C metadata as well.
+    rodata->InstanceSize = size;
+    
+    // Register this class with the runtime.  This will also cause the
+    // runtime to lay us out.
+    swift_instantiateObjCClass(self);
+    
+    // If we saved any global ivar offsets, make sure we write back to them.
+    if (_globalIvarOffsets) {
+        for (unsigned i = 0; i != numFields; ++i) {
+            if (!_globalIvarOffsets[i]) continue;
+            
+            // To avoid dirtying memory, only write to the global ivar
+            // offset if it's actually wrong.
+            if (*_globalIvarOffsets[i] != fieldOffsets[i])
+                *_globalIvarOffsets[i] = fieldOffsets[i];
+        }
+        
+        // Free the out-of-line if we allocated one.
+        if (_globalIvarOffsets != _inlineGlobalIvarOffsets) {
+            delete [] _globalIvarOffsets;
+        }
+        fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 8\n");
     }
-
-    // Free the out-of-line if we allocated one.
-    if (_globalIvarOffsets != _inlineGlobalIvarOffsets) {
-      delete [] _globalIvarOffsets;
-    }
-  }
 #endif
-
-  return self;
+    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 9\n");
+    return self;
 }
 
 /// \brief Fetch the type metadata associated with the formal dynamic
@@ -2323,7 +2167,6 @@ ExistentialTypeMetadata::mayTakeValue(const OpaqueValue *container) const {
     return true;
   // Opaque existential containers uniquely own their contained value.
   case ExistentialTypeRepresentation::Opaque:
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
   {
     // We can't take from a shared existential box without checking uniqueness.
     auto *opaque =
@@ -2331,9 +2174,6 @@ ExistentialTypeMetadata::mayTakeValue(const OpaqueValue *container) const {
     auto *vwt = opaque->Type->getValueWitnesses();
     return vwt->isValueInline();
   }
-#else
-    return true;
-#endif
     
   // References to boxed existential containers may be shared.
   case ExistentialTypeRepresentation::Error: {
@@ -2360,7 +2200,6 @@ const {
     break;
   
   case ExistentialTypeRepresentation::Opaque: {
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
     auto *opaque = reinterpret_cast<OpaqueExistentialContainer *>(container);
     auto *vwt = opaque->Type->getValueWitnesses();
     if (!vwt->isValueInline()) {
@@ -2369,12 +2208,6 @@ const {
       swift_deallocObject(*reinterpret_cast<HeapObject **>(&opaque->Buffer),
                           size, alignMask);
     }
-#else
-    // Containing the value may require a side allocation, which we need
-    // to clean up.
-    auto opaque = reinterpret_cast<OpaqueExistentialContainer *>(container);
-    opaque->Type->vw_deallocateBuffer(&opaque->Buffer);
-#endif
     break;
   }
   
@@ -2396,7 +2229,6 @@ ExistentialTypeMetadata::projectValue(const OpaqueValue *container) const {
   case ExistentialTypeRepresentation::Opaque: {
     auto *opaqueContainer =
       reinterpret_cast<const OpaqueExistentialContainer*>(container);
-#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
     auto *type = opaqueContainer->Type;
     auto *vwt = type->getValueWitnesses();
 
@@ -2409,10 +2241,6 @@ ExistentialTypeMetadata::projectValue(const OpaqueValue *container) const {
     auto *bytePtr = reinterpret_cast<const char *>(
         *reinterpret_cast<HeapObject *const *const>(&opaqueContainer->Buffer));
     return reinterpret_cast<const OpaqueValue *>(bytePtr + byteOffset);
-#else
-    return opaqueContainer->Type->vw_projectBuffer(
-      const_cast<ValueBuffer *>(&opaqueContainer->Buffer));
-#endif
   }
   case ExistentialTypeRepresentation::Error: {
     const SwiftError *errorBox
@@ -2688,22 +2516,22 @@ swift::swift_getForeignTypeMetadata(ForeignTypeMetadata *nonUnique) {
 
   // If we inserted the entry and there's an initialization function,
   // call it.  This has to be done with the lock dropped.
-  if (inserted && hasInit) {
-    nonUnique->getInitializationFunction()(nonUnique);
-
-    // Update the cache entry:
-
-    //   - Reacquire the lock.
-    ScopedLock guard(foreignTypes.Lock);
-
-    //   - Change the entry.
-    auto &entry = getCurrentEntry();
-    assert(entry == nullptr);
-    entry = nonUnique;
-
-    //   - Notify waiters.
-    foreignTypes.InitializationWaiters.notifyAll();
-  }
+    if (inserted && hasInit) {
+        nonUnique->getInitializationFunction()(nonUnique);
+        fprintf(stderr, "swift_getForeignTypeMetadata nonUnique->getInitializationFunction() 1\n");
+        // Update the cache entry:
+        
+        //   - Reacquire the lock.
+        ScopedLock guard(foreignTypes.Lock);
+        
+        //   - Change the entry.
+        auto &entry = getCurrentEntry();
+        assert(entry == nullptr);
+        entry = nonUnique;
+        
+        //   - Notify waiters.
+        foreignTypes.InitializationWaiters.notifyAll();
+    }
 
   // Remember the unique result in the invasive cache.  We don't want
   // to do this until after the initialization completes; otherwise,
@@ -2728,34 +2556,38 @@ Metadata::getGenericPattern() const {
 
 template<> const ClassMetadata *
 Metadata::getClassObject() const {
-  switch (getKind()) {
-  case MetadataKind::Class: {
-    // Native Swift class metadata is also the class object.
-    return static_cast<const ClassMetadata *>(this);
-  }
-  case MetadataKind::ObjCClassWrapper: {
-    // Objective-C class objects are referenced by their Swift metadata wrapper.
-    auto wrapper = static_cast<const ObjCClassWrapperMetadata *>(this);
-    return wrapper->Class;
-  }
-  // Other kinds of types don't have class objects.
-  case MetadataKind::Struct:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-  case MetadataKind::ForeignClass:
-  case MetadataKind::Opaque:
-  case MetadataKind::Tuple:
-  case MetadataKind::Function:
-  case MetadataKind::Existential:
-  case MetadataKind::ExistentialMetatype:
-  case MetadataKind::Metatype:
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-  case MetadataKind::ErrorObject:
-    return nullptr;
-  }
-
-  swift_runtime_unreachable("Unhandled MetadataKind in switch.");
+    fprintf(stderr, "getClassObject getKind(): %d\n", getKind());
+    switch (getKind()) {
+        case MetadataKind::Class: {
+            fprintf(stderr, "getClassObject MetadataKind::Class\n");
+            // Native Swift class metadata is also the class object.
+            return static_cast<const ClassMetadata *>(this);
+        }
+        case MetadataKind::ObjCClassWrapper: {
+            fprintf(stderr, "getClassObject MetadataKind::ObjCClassWrapper\n");
+            // Objective-C class objects are referenced by their Swift metadata wrapper.
+            auto wrapper = static_cast<const ObjCClassWrapperMetadata *>(this);
+            return wrapper->Class;
+        }
+            // Other kinds of types don't have class objects.
+        case MetadataKind::Struct:
+        case MetadataKind::Enum:
+        case MetadataKind::Optional:
+        case MetadataKind::ForeignClass:
+        case MetadataKind::Opaque:
+        case MetadataKind::Tuple:
+        case MetadataKind::Function:
+        case MetadataKind::Existential:
+        case MetadataKind::ExistentialMetatype:
+        case MetadataKind::Metatype:
+        case MetadataKind::HeapLocalVariable:
+        case MetadataKind::HeapGenericLocalVariable:
+        case MetadataKind::ErrorObject:
+            fprintf(stderr, "getClassObject return nullptr\n");
+            return nullptr;
+    }
+    fprintf(stderr, "getClassObject swift_runtime_unreachable\n");
+    swift_runtime_unreachable("Unhandled MetadataKind in switch.");
 }
 
 template <> OpaqueValue *Metadata::allocateBoxForExistentialIn(ValueBuffer *buffer) const {
@@ -2949,35 +2781,36 @@ allocateWitnessTable(GenericWitnessTable *genericTable,
 
 const WitnessTable *swift::swift_getGenericWitnessTable(
     GenericWitnessTable *genericTable, const Metadata *type,
-    void *const *instantiationArgs) SWIFT_CC(RegisterPreservingCC_IMPL) {
-  if (doesNotRequireInstantiation(genericTable)) {
-    return genericTable->Pattern;
-  }
-
-  // If type is not nullptr, the witness table depends on the substituted
-  // conforming type, so use that are the key.
-  constexpr const size_t numGenericArgs = 1;
-  const void *args[] = { type };
-
-  auto &cache = getCache(genericTable);
-  auto entry = cache.findOrAdd(args, numGenericArgs,
-    [&]() -> WitnessTableCacheEntry* {
-      // Allocate the witness table and fill it in.
-      auto entry = allocateWitnessTable(genericTable,
-                                        cache.getAllocator(),
-                                        args, numGenericArgs);
-
-      // Call the instantiation function to initialize
-      // dependent associated type metadata.
-      if (!genericTable->Instantiator.isNull()) {
-        genericTable->Instantiator(entry->get(genericTable),
-                                   type, instantiationArgs);
-      }
-
-      return entry;
-    });
-
-  return entry->get(genericTable);
+                                                        void *const *instantiationArgs) SWIFT_CC(RegisterPreservingCC_IMPL) {
+    fprintf(stderr, "swift_getGenericWitnessTable 1\n");
+    if (doesNotRequireInstantiation(genericTable)) {
+        return genericTable->Pattern;
+    }
+    
+    // If type is not nullptr, the witness table depends on the substituted
+    // conforming type, so use that are the key.
+    constexpr const size_t numGenericArgs = 1;
+    const void *args[] = { type };
+    
+    auto &cache = getCache(genericTable);
+    auto entry = cache.findOrAdd(args, numGenericArgs,
+                                 [&]() -> WitnessTableCacheEntry* {
+                                     // Allocate the witness table and fill it in.
+                                     auto entry = allocateWitnessTable(genericTable,
+                                                                       cache.getAllocator(),
+                                                                       args, numGenericArgs);
+                                     
+                                     // Call the instantiation function to initialize
+                                     // dependent associated type metadata.
+                                     if (!genericTable->Instantiator.isNull()) {
+                                         genericTable->Instantiator(entry->get(genericTable),
+                                                                    type, instantiationArgs);
+                                     }
+                                     
+                                     return entry;
+                                 });
+    
+    return entry->get(genericTable);
 }
 
 uint64_t swift::RelativeDirectPointerNullPtr = 0;

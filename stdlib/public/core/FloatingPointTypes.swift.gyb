@@ -64,7 +64,7 @@ else:
 }%
 
 % if bits == 80:
-#if (!os(Windows) || CYGWIN) && (arch(i386) || arch(x86_64))
+#if !os(Windows) && (arch(i386) || arch(x86_64))
 % end
 
 ${SelfDocComment}
@@ -160,8 +160,6 @@ extension ${Self}: BinaryFloatingPoint {
   /// [IEEE 754 specification][spec].
   ///
   /// [spec]: http://ieeexplore.ieee.org/servlet/opac?punumber=4610933
-  ///
-  /// - SeeAlso: `init(bitPattern:)`
   public var bitPattern: UInt${bits} {
     return UInt${bits}(Builtin.bitcast_FPIEEE${bits}_Int${bits}(_value))
   }
@@ -174,8 +172,6 @@ extension ${Self}: BinaryFloatingPoint {
   /// [spec]: http://ieeexplore.ieee.org/servlet/opac?punumber=4610933
   ///
   /// - Parameter bitPattern: The integer encoding of a `${Self}` instance.
-  ///
-  /// - SeeAlso: `bitPattern`
   public init(bitPattern: UInt${bits}) {
     self.init(_bits: Builtin.bitcast_Int${bits}_FPIEEE${bits}(bitPattern._value))
   }
@@ -706,7 +702,7 @@ extension ${Self} : _ExpressibleByBuiltinIntegerLiteral, ExpressibleByIntegerLit
   }
 }
 
-#if (!os(Windows) || CYGWIN) && (arch(i386) || arch(x86_64))
+#if !os(Windows) && (arch(i386) || arch(x86_64))
 
 % builtinFloatLiteralBits = 80
 extension ${Self} : _ExpressibleByBuiltinFloatLiteral {
@@ -793,8 +789,6 @@ extension ${Self} {
   ///     // Use 'abs(_:)' instead of 'magnitude'
   ///     print("Missed the target by \(abs(margin)) meters.")
   ///     // Prints "Missed the target by 0.25 meters."
-  ///
-  /// - SeeAlso: `abs(_:)`
   @_transparent
   public var magnitude: ${Self} {
     return ${Self}(_bits: Builtin.int_fabs_FPIEEE${bits}(_value))
@@ -853,7 +847,7 @@ extension ${Self} {
 %   That = src_type.stdlib_name
 
 %   if srcBits == 80:
-#if (!os(Windows) || CYGWIN) && (arch(i386) || arch(x86_64))
+#if !os(Windows) && (arch(i386) || arch(x86_64))
 %   end
 
 %   if srcBits == bits:

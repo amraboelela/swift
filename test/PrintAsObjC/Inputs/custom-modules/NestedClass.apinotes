@@ -1,6 +1,0 @@
-Name: NestedClass
-SwiftVersions:
-  - Version: 3.0
-    Classes:
-      - Name: InnerClass
-        SwiftName: InnerClass

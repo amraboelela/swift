@@ -593,6 +593,61 @@ bool EmitPolymorphicParameters::isClassPointerSource(unsigned paramIndex) {
   return false;
 }
 
+namespace {
+
+/// A class for binding type parameters of a generic function.
+class BindPolymorphicParameter : public PolymorphicConvention {
+  IRGenFunction &IGF;
+  CanSILFunctionType &SubstFnType;
+
+public:
+  BindPolymorphicParameter(IRGenFunction &IGF, CanSILFunctionType &origFnType,
+                           CanSILFunctionType &SubstFnType)
+      : PolymorphicConvention(IGF.IGM, origFnType), IGF(IGF),
+        SubstFnType(SubstFnType) {}
+
+  void emit(Explosion &in, unsigned paramIndex);
+
+private:
+  // Did the convention decide that the parameter at the given index
+  // was a class-pointer source?
+  bool isClassPointerSource(unsigned paramIndex);
+};
+
+} // end anonymous namespace
+
+bool BindPolymorphicParameter::isClassPointerSource(unsigned paramIndex) {
+  for (auto &source : getSources()) {
+    if (source.getKind() == MetadataSource::Kind::ClassPointer &&
+        source.getParamIndex() == paramIndex) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void BindPolymorphicParameter::emit(Explosion &nativeParam, unsigned paramIndex) {
+  if (!isClassPointerSource(paramIndex))
+    return;
+
+  assert(nativeParam.size() == 1);
+  auto paramType = SubstFnType->getParameters()[paramIndex].getType();
+  llvm::Value *instanceRef = nativeParam.getAll()[0];
+  SILType instanceType = SILType::getPrimitiveObjectType(paramType);
+  llvm::Value *metadata =
+    emitDynamicTypeOfHeapObject(IGF, instanceRef, instanceType);
+  IGF.bindLocalTypeDataFromTypeMetadata(paramType, IsInexact, metadata);
+}
+
+void irgen::bindPolymorphicParameter(IRGenFunction &IGF,
+                                     CanSILFunctionType &OrigFnType,
+                                     CanSILFunctionType &SubstFnType,
+                                     Explosion &nativeParam,
+                                     unsigned paramIndex) {
+  BindPolymorphicParameter(IGF, OrigFnType, SubstFnType)
+      .emit(nativeParam, paramIndex);
+}
+
 static bool shouldSetName(IRGenModule &IGM, llvm::Value *value, CanType type) {
   // If value names are globally disabled, honor that.
   if (!IGM.EnableValueNames) return false;
@@ -2369,7 +2424,7 @@ namespace {
                              CanSILFunctionType polyFn)
       : PolymorphicConvention(IGF.IGM, polyFn), IGF(IGF) {}
 
-    void emit(CanSILFunctionType substFnType, const SubstitutionMap &subs,
+    void emit(const SubstitutionMap &subs,
               WitnessMetadata *witnessMetadata, Explosion &out);
 
   private:
@@ -2402,16 +2457,13 @@ namespace {
 /// Pass all the arguments necessary for the given function.
 void irgen::emitPolymorphicArguments(IRGenFunction &IGF,
                                      CanSILFunctionType origFnType,
-                                     CanSILFunctionType substFnType,
                                      const SubstitutionMap &subs,
                                      WitnessMetadata *witnessMetadata,
                                      Explosion &out) {
-  EmitPolymorphicArguments(IGF, origFnType).emit(substFnType, subs,
-                                                 witnessMetadata, out);
+  EmitPolymorphicArguments(IGF, origFnType).emit(subs, witnessMetadata, out);
 }
 
-void EmitPolymorphicArguments::emit(CanSILFunctionType substFnType,
-                                    const SubstitutionMap &subs,
+void EmitPolymorphicArguments::emit(const SubstitutionMap &subs,
                                     WitnessMetadata *witnessMetadata,
                                     Explosion &out) {
   // Add all the early sources.

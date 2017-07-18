@@ -347,6 +347,7 @@ private:
     case Node::Kind::LocalDeclName:
     case Node::Kind::PrivateDeclName:
     case Node::Kind::MaterializeForSet:
+    case Node::Kind::MergedFunction:
     case Node::Kind::Metaclass:
     case Node::Kind::NativeOwningAddressor:
     case Node::Kind::NativeOwningMutableAddressor:
@@ -866,13 +867,19 @@ NodePointer NodePrinter::print(NodePointer Node, bool asPrefixContext) {
     Printer << " #" << (Node->getChild(0)->getIndex() + 1);
     return nullptr;
   case Node::Kind::PrivateDeclName:
-    if (Options.ShowPrivateDiscriminators)
-      Printer << '(';
+    if (Node->getNumChildren() > 1) {
+      if (Options.ShowPrivateDiscriminators)
+        Printer << '(';
 
-    print(Node->getChild(1));
+      print(Node->getChild(1));
 
-    if (Options.ShowPrivateDiscriminators)
-      Printer << " in " << Node->getChild(0)->getText() << ')';
+      if (Options.ShowPrivateDiscriminators)
+        Printer << " in " << Node->getChild(0)->getText() << ')';
+    } else {
+      if (Options.ShowPrivateDiscriminators) {
+        Printer << "(in " << Node->getChild(0)->getText() << ')';
+      }
+    }
     return nullptr;
   case Node::Kind::Module:
     if (Options.DisplayModuleNames)
@@ -1238,6 +1245,11 @@ NodePointer NodePrinter::print(NodePointer Node, bool asPrefixContext) {
     print(Node->getChild(Node->getNumChildren() - 1));
     return nullptr;
   }
+  case Node::Kind::MergedFunction:
+    if (!Options.ShortenThunk) {
+      Printer << "merged ";
+    }
+    return nullptr;
   case Node::Kind::GenericTypeMetadataPattern:
     Printer << "generic type metadata pattern for ";
     print(Node->getChild(0));
@@ -1466,7 +1478,7 @@ NodePointer NodePrinter::print(NodePointer Node, bool asPrefixContext) {
                                          "__allocating_init" : "init");
   case Node::Kind::Constructor:
     return printEntity(Node, asPrefixContext, TypePrinting::FunctionStyle,
-                       /*hasName*/false, "init");
+                       /*hasName*/Node->getNumChildren() > 2, "init");
   case Node::Kind::Destructor:
     return printEntity(Node, asPrefixContext, TypePrinting::NoType,
                        /*hasName*/false, "deinit");
@@ -1765,8 +1777,9 @@ printEntity(NodePointer Entity, bool asPrefixContext, TypePrinting TypePr,
       Printer << " of ";
       ExtraName = "";
     }
+    size_t CurrentPos = Printer.getStringRef().size();
     print(Entity->getChild(1));
-    if (!ExtraName.empty())
+    if (Printer.getStringRef().size() != CurrentPos && !ExtraName.empty())
       Printer << '.';
   }
   if (!ExtraName.empty()) {

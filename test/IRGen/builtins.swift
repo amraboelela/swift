@@ -222,12 +222,12 @@ func sizeof_alignof_test() {
 
 // CHECK: define hidden {{.*}}void @_T08builtins27generic_sizeof_alignof_testyxlF(
 func generic_sizeof_alignof_test<T>(_: T) {
-  // CHECK:      [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 17
+  // CHECK:      [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 11
   // CHECK-NEXT: [[T1:%.*]] = load i8*, i8** [[T0]]
   // CHECK-NEXT: [[SIZE:%.*]] = ptrtoint i8* [[T1]] to i64
   // CHECK-NEXT: store i64 [[SIZE]], i64* [[S:%.*]]
   var s = Builtin.sizeof(T.self)
-  // CHECK: [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 18
+  // CHECK: [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 12
   // CHECK-NEXT: [[T1:%.*]] = load i8*, i8** [[T0]]
   // CHECK-NEXT: [[T2:%.*]] = ptrtoint i8* [[T1]] to i64
   // CHECK-NEXT: [[T3:%.*]] = and i64 [[T2]], 65535
@@ -238,7 +238,7 @@ func generic_sizeof_alignof_test<T>(_: T) {
 
 // CHECK: define hidden {{.*}}void @_T08builtins21generic_strideof_testyxlF(
 func generic_strideof_test<T>(_: T) {
-  // CHECK:      [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 19
+  // CHECK:      [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 13
   // CHECK-NEXT: [[T1:%.*]] = load i8*, i8** [[T0]]
   // CHECK-NEXT: [[STRIDE:%.*]] = ptrtoint i8* [[T1]] to i64
   // CHECK-NEXT: store i64 [[STRIDE]], i64* [[S:%.*]]
@@ -531,7 +531,7 @@ struct Abc {
 	var value : Builtin.Word
 }
 
-// CHECK-LABEL define hidden {{.*}}@_T08builtins22assumeNonNegative_testBwAA3AbcVzF
+// CHECK-LABEL: define hidden {{.*}}@_T08builtins22assumeNonNegative_testBwAA3AbcVzF
 func assumeNonNegative_test(_ x: inout Abc) -> Builtin.Word {
   // CHECK: load {{.*}}, !range ![[R:[0-9]+]]
   return Builtin.assumeNonNegative_Word(x.value)
@@ -542,7 +542,7 @@ func return_word(_ x: Builtin.Word) -> Builtin.Word {
 	return x
 }
 
-// CHECK-LABEL define hidden {{.*}}@_T08builtins23assumeNonNegative_test2BwAA3AbcVzF
+// CHECK-LABEL: define hidden {{.*}}@_T08builtins23assumeNonNegative_test2BwBwF
 func assumeNonNegative_test2(_ x: Builtin.Word) -> Builtin.Word {
   // CHECK: call {{.*}}, !range ![[R]]
   return Builtin.assumeNonNegative_Word(return_word(x))
@@ -646,29 +646,34 @@ func acceptsBuiltinUnknownObject(_ ref: inout Builtin.UnknownObject?) {}
 // ObjC
 // CHECK-LABEL: define hidden {{.*}}i1 @_T08builtins8isUniqueBi1_BOSgzF({{%.*}}* nocapture dereferenceable({{.*}})) {{.*}} {
 // CHECK-NEXT: entry:
-// CHECK-NEXT: bitcast [[BUILTIN_UNKNOWN_OBJECT_TY]]* %0 to %objc_object**
-// CHECK-NEXT: load %objc_object*, %objc_object** %1
-// CHECK-NEXT: call i1 @swift_isUniquelyReferencedNonObjC(%objc_object* %2)
+// CHECK-NEXT: bitcast [[BUILTIN_UNKNOWN_OBJECT_TY]]* %0 to [[UNKNOWN_OBJECT:%objc_object|%swift\.refcounted]]**
+// CHECK-NEXT: load [[UNKNOWN_OBJECT]]*, [[UNKNOWN_OBJECT]]** %1
+// CHECK-objc-NEXT: call i1 @swift_isUniquelyReferencedNonObjC([[UNKNOWN_OBJECT]]* %2)
+// CHECK-native-NEXT: call i1 @swift_isUniquelyReferenced_native([[UNKNOWN_OBJECT]]* %2)
 // CHECK-NEXT: ret i1 %3
 func isUnique(_ ref: inout Builtin.UnknownObject?) -> Bool {
   return Builtin.isUnique(&ref)
 }
 
 // ObjC nonNull
-// CHECK-LABEL: define hidden {{.*}}i1 @_T08builtins8isUniqueBi1_BOzF(%objc_object** nocapture dereferenceable({{.*}})) {{.*}} {
+// CHECK-LABEL: define hidden {{.*}}i1 @_T08builtins8isUniqueBi1_BOzF
+// CHECK-SAME:    ([[UNKNOWN_OBJECT]]** nocapture dereferenceable({{.*}})) {{.*}} {
 // CHECK-NEXT: entry:
-// CHECK-NEXT: load %objc_object*, %objc_object** %0
-// CHECK-NEXT: call i1 @swift_isUniquelyReferencedNonObjC_nonNull(%objc_object* %1)
+// CHECK-NEXT: load [[UNKNOWN_OBJECT]]*, [[UNKNOWN_OBJECT]]** %0
+// CHECK-objc-NEXT: call i1 @swift_isUniquelyReferencedNonObjC_nonNull([[UNKNOWN_OBJECT]]* %1)
+// CHECK-native-NEXT: call i1 @swift_rt_swift_isUniquelyReferenced_nonNull_native([[UNKNOWN_OBJECT]]* %1)
 // CHECK-NEXT: ret i1 %2
 func isUnique(_ ref: inout Builtin.UnknownObject) -> Bool {
   return Builtin.isUnique(&ref)
 }
 
 // ObjC pinned nonNull
-// CHECK-LABEL: define hidden {{.*}}i1 @_T08builtins16isUniqueOrPinnedBi1_BOzF(%objc_object** nocapture dereferenceable({{.*}})) {{.*}} {
+// CHECK-LABEL: define hidden {{.*}}i1 @_T08builtins16isUniqueOrPinnedBi1_BOzF
+// CHECK-SAME:    ([[UNKNOWN_OBJECT]]** nocapture dereferenceable({{.*}})) {{.*}} {
 // CHECK-NEXT: entry:
-// CHECK-NEXT: load %objc_object*, %objc_object** %0
-// CHECK-NEXT: call i1 @swift_isUniquelyReferencedOrPinnedNonObjC_nonNull(%objc_object* %1)
+// CHECK-NEXT: load [[UNKNOWN_OBJECT]]*, [[UNKNOWN_OBJECT]]** %0
+// CHECK-native-NEXT: call i1 @swift_rt_swift_isUniquelyReferencedOrPinned_nonNull_native([[UNKNOWN_OBJECT]]* %1)
+// CHECK-objc-NEXT: call i1 @swift_isUniquelyReferencedOrPinnedNonObjC_nonNull([[UNKNOWN_OBJECT]]* %1)
 // CHECK-NEXT: ret i1 %2
 func isUniqueOrPinned(_ ref: inout Builtin.UnknownObject) -> Bool {
   return Builtin.isUniqueOrPinned(&ref)
@@ -728,7 +733,7 @@ func isUniqueIUO(_ ref: inout Builtin.NativeObject?) -> Bool {
 
 // CHECK-LABEL: define {{.*}} @{{.*}}generic_ispod_test
 func generic_ispod_test<T>(_: T) {
-  // CHECK:      [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 18
+  // CHECK:      [[T0:%.*]] = getelementptr inbounds i8*, i8** [[T:%.*]], i32 12
   // CHECK-NEXT: [[T1:%.*]] = load i8*, i8** [[T0]]
   // CHECK-NEXT: [[FLAGS:%.*]] = ptrtoint i8* [[T1]] to i64
   // CHECK-NEXT: [[ISNOTPOD:%.*]] = and i64 [[FLAGS]], 65536

@@ -338,12 +338,7 @@ public:
     NewProto = Builder.CreateCall(objc_allocateProtocol, protocolName);
     
     // Add the parent protocols.
-    auto *requirementSig = proto->getRequirementSignature();
-    auto conformsTo =
-      requirementSig->getConformsTo(proto->getSelfInterfaceType(),
-                                    *IGF.IGM.getSwiftModule());
-
-    for (auto parentProto : conformsTo) {
+    for (auto parentProto : proto->getInheritedProtocols()) {
       if (!parentProto->isObjC())
         continue;
       llvm::Value *parentRef = IGM.getAddrOfObjCProtocolRef(parentProto,
@@ -626,13 +621,8 @@ void IRGenModule::emitRuntimeRegistration() {
 
       std::function<void(ProtocolDecl*)> orderProtocol
         = [&](ProtocolDecl *proto) {
-          auto *requirementSig = proto->getRequirementSignature();
-          auto conformsTo = requirementSig->getConformsTo(
-              proto->getSelfInterfaceType(),
-              *getSwiftModule());
-
           // Recursively put parents first.
-          for (auto parent : conformsTo)
+          for (auto parent : proto->getInheritedProtocols())
             orderProtocol(parent);
 
           // Skip if we don't need to reify this protocol.
@@ -948,8 +938,8 @@ void IRGenerator::emitLazyDefinitions() {
   }
 }
 
-void IRGenerator::emitNSArchiveClassNameRegistration() {
-  if (ClassesForArchiveNameRegistration.empty())
+void IRGenerator::emitEagerClassInitialization() {
+  if (ClassesForEagerInitialization.empty())
     return;
 
   // Emit the register function in the primary module.
@@ -957,37 +947,28 @@ void IRGenerator::emitNSArchiveClassNameRegistration() {
 
   llvm::Function *RegisterFn = llvm::Function::Create(
                                 llvm::FunctionType::get(IGM->VoidTy, false),
-                                llvm::GlobalValue::InternalLinkage,
-                                "_swift_register_class_names_for_archives");
+                                llvm::GlobalValue::PrivateLinkage,
+                                "_swift_eager_class_initialization");
+  IGM->Module.getFunctionList().push_back(RegisterFn);
   IRGenFunction RegisterIGF(*IGM, RegisterFn);
   RegisterFn->setAttributes(IGM->constructInitialAttributes());
-  IGM->Module.getFunctionList().push_back(RegisterFn);
   RegisterFn->setCallingConv(IGM->DefaultCC);
 
-  for (ClassDecl *CD : ClassesForArchiveNameRegistration) {
+  for (ClassDecl *CD : ClassesForEagerInitialization) {
     Type Ty = CD->getDeclaredType();
     llvm::Value *MetaData = RegisterIGF.emitTypeMetadataRef(getAsCanType(Ty));
-    if (auto *LegacyAttr = CD->getAttrs().
-          getAttribute<NSKeyedArchiverClassNameAttr>()) {
-      // Register the name for the class in the NSKeyed(Un)Archiver.
-      llvm::Value *NameStr = IGM->getAddrOfGlobalString(LegacyAttr->Name);
-      RegisterIGF.Builder.CreateCall(IGM->getRegisterClassNameForArchivingFn(),
-                                     {NameStr, MetaData});
-    } else {
-      assert(CD->getAttrs().hasAttribute<StaticInitializeObjCMetadataAttr>());
+    assert(CD->getAttrs().hasAttribute<StaticInitializeObjCMetadataAttr>());
 
-      // In this case we don't add a name mapping, but just get the metadata
-      // to make sure that the class is registered. But: we need to add a use
-      // (empty inline asm instruction) for the metadata. Otherwise
-      // llvm would optimize the metadata accessor call away because it's
-      // defined as "readnone".
-      llvm::FunctionType *asmFnTy =
-        llvm::FunctionType::get(IGM->VoidTy, {MetaData->getType()},
-                                false /* = isVarArg */);
-      llvm::InlineAsm *inlineAsm =
-        llvm::InlineAsm::get(asmFnTy, "", "r", true /* = SideEffects */);
-      RegisterIGF.Builder.CreateCall(inlineAsm, MetaData);
-    }
+    // Get the metadata to make sure that the class is registered. We need to 
+    // add a use (empty inline asm instruction) for the metadata. Otherwise
+    // llvm would optimize the metadata accessor call away because it's
+    // defined as "readnone".
+    llvm::FunctionType *asmFnTy =
+      llvm::FunctionType::get(IGM->VoidTy, {MetaData->getType()},
+                              false /* = isVarArg */);
+    llvm::InlineAsm *inlineAsm =
+      llvm::InlineAsm::get(asmFnTy, "", "r", true /* = SideEffects */);
+    RegisterIGF.Builder.CreateCall(inlineAsm, MetaData);
   }
   RegisterIGF.Builder.CreateRetVoid();
 
@@ -1361,9 +1342,8 @@ bool LinkEntity::isFragile(ForDefinition_t isDefinition) const {
     auto isCompletelySerialized = conformanceModule->getResilienceStrategy() ==
                                   ResilienceStrategy::Fragile;
 
-    // The conformance is fragile if it is in a -sil-serialize-all module, or
-    // has a fully publicly determined layout.
-    return isCompletelySerialized || conformance->hasFixedLayout();
+    // The conformance is fragile if it is in a -sil-serialize-all module.
+    return isCompletelySerialized;
   }
   return false;
 }
@@ -1532,6 +1512,23 @@ LinkInfo LinkInfo::get(const UniversalLinkageInfo &linkInfo,
   return result;
 }
 
+LinkInfo LinkInfo::get(const UniversalLinkageInfo &linkInfo,
+                       StringRef name,
+                       SILLinkage linkage,
+                       bool isFragile,
+                       bool isSILOnly,
+                       ForDefinition_t isDefinition,
+                       bool isWeakImported) {
+  LinkInfo result;
+  
+  result.Name += name;
+  std::tie(result.Linkage, result.Visibility, result.DLLStorageClass) =
+    getIRLinkage(linkInfo, linkage, isFragile, isSILOnly,
+                 isDefinition, isWeakImported);
+  result.ForDefinition = isDefinition;
+  return result;
+}
+                       
 static bool isPointerTo(llvm::Type *ptrTy, llvm::Type *objTy) {
   return cast<llvm::PointerType>(ptrTy)->getElementType() == objTy;
 }

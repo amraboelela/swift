@@ -627,14 +627,11 @@ namespace {
   /// A physical path component which projects out an opened archetype
   /// from an existential.
   class OpenOpaqueExistentialComponent : public PhysicalPathComponent {
-    CanArchetypeType getOpenedArchetype() const {
-      return cast<ArchetypeType>(getSubstFormalType());
-    }
   public:
     OpenOpaqueExistentialComponent(CanArchetypeType openedArchetype,
                                    LValueTypeData typeData)
       : PhysicalPathComponent(typeData, OpenOpaqueExistentialKind) {
-      assert(getOpenedArchetype() == openedArchetype);
+      assert(getSubstFormalType() == openedArchetype);
     }
 
     ManagedValue offset(SILGenFunction &SGF, SILLocation loc, ManagedValue base,
@@ -664,7 +661,6 @@ namespace {
         llvm_unreachable("Bad existential representation for address-only type");
       }
 
-      SGF.setArchetypeOpeningSite(getOpenedArchetype(), addr);
       return ManagedValue::forLValue(addr);
     }
 
@@ -721,8 +717,6 @@ namespace {
                  == ExistentialRepresentation::Class);
         ref = SGF.B.createOpenExistentialRef(loc, result, getTypeOfRValue());
       }
-
-      SGF.setArchetypeOpeningSite(OpenedArchetype, ref.getValue());
 
       return RValue(SGF, loc, getSubstFormalType(), ref);
     }
@@ -817,7 +811,7 @@ static bool isReadNoneFunction(const Expr *e) {
   if (auto *dre = dyn_cast<DeclRefExpr>(e)) {
     DeclName name = dre->getDecl()->getFullName();
     return (name.getArgumentNames().size() == 1 &&
-            name.getBaseName().str() == "init" &&
+            name.getBaseName() == "init" &&
             !name.getArgumentNames()[0].empty() &&
             (name.getArgumentNames()[0].str() == "integerLiteral" ||
              name.getArgumentNames()[0].str() == "_builtinIntegerLiteral"));
@@ -859,7 +853,7 @@ static bool areCertainlyEqualIndices(const Expr *e1, const Expr *e2) {
   if (auto *dre1 = dyn_cast<DeclRefExpr>(e1)) {
     auto *dre2 = cast<DeclRefExpr>(e2);
     return dre1->getDecl() == dre2->getDecl() &&
-           dre1->getGenericArgs() == dre2->getGenericArgs();
+           dre1->getType()->isEqual(dre2->getType());
   }
 
   // Compare a variety of literals.
@@ -932,7 +926,7 @@ namespace {
         result.base = SGF.prepareAccessorBaseArg(loc, base, baseFormalType,
                                                  accessor);
 
-      if (subscripts)
+      if (!subscripts.isNull())
         result.subscripts = std::move(subscripts);
       
       return result;
@@ -983,7 +977,7 @@ namespace {
     }
 
     void printBase(raw_ostream &OS, StringRef name) const {
-      OS << name << "(" << decl->getName() << ")";
+      OS << name << "(" << decl->getBaseName() << ")";
       if (IsSuper) OS << " isSuper";
       if (IsDirectAccessorUse) OS << " isDirectAccessorUse";
       if (subscriptIndexExpr) {
@@ -1124,7 +1118,7 @@ namespace {
         // This is *amazingly* unprincipled.
         RValue borrowedSubscripts;
         RValue *optSubscripts = nullptr;
-        if (subscripts) {
+        if (!subscripts.isNull()) {
           CanType type = subscripts.getType();
           SmallVector<ManagedValue, 4> values;
           std::move(subscripts).getAll(values);
@@ -1350,9 +1344,10 @@ namespace {
         return;
 
       // If this is a simple property access, then we must have a conflict.
-      if (!subscripts) {
+      if (subscripts.isNull()) {
         assert(isa<VarDecl>(decl));
-        SGF.SGM.diagnose(loc1, diag::writeback_overlap_property,decl->getName())
+        SGF.SGM.diagnose(loc1, diag::writeback_overlap_property,
+                         decl->getBaseName().getIdentifier())
            .highlight(loc1.getSourceRange());
         SGF.SGM.diagnose(loc2, diag::writebackoverlap_note)
            .highlight(loc2.getSourceRange());
@@ -1751,13 +1746,20 @@ namespace {
 
 LValue LValue::forValue(ManagedValue value,
                         CanType substFormalType) {
-  assert(value.getType().isObject());
-  LValueTypeData typeData = getValueTypeData(substFormalType,
-                                             value.getValue());
+  if (value.getType().isObject()) {
+    LValueTypeData typeData = getValueTypeData(substFormalType,
+                                               value.getValue());
 
-  LValue lv;
-  lv.add<ValueComponent>(value, None, typeData, /*isRValue=*/true);
-  return lv;
+    LValue lv;
+    lv.add<ValueComponent>(value, None, typeData, /*isRValue=*/true);
+    return lv;
+  } else {
+    // Treat an address-only value as an lvalue we only read from.
+    if (!value.isLValue())
+      value = ManagedValue::forLValue(value.getValue());
+    return forAddress(value, None, AbstractionPattern(substFormalType),
+                      substFormalType);
+  }
 }
 
 LValue LValue::forAddress(ManagedValue address,
@@ -1784,7 +1786,7 @@ void LValue::addMemberComponent(SILGenFunction &SGF, SILLocation loc,
                                 CanType formalRValueType,
                                 RValue &&indices) {
   if (auto var = dyn_cast<VarDecl>(storage)) {
-    assert(!indices);
+    assert(indices.isNull());
     addMemberVarComponent(SGF, loc, var, subs, isSuper,
                           accessKind, accessSemantics, accessStrategy,
                           formalRValueType);
@@ -1891,7 +1893,7 @@ LValue SILGenLValue::visitRec(Expr *e, AccessKind accessKind,
       // this handles the case in initializers where there is actually a stack
       // allocation for it as well.
       if (isa<ParamDecl>(DRE->getDecl()) &&
-          DRE->getDecl()->getName() == SGF.getASTContext().Id_self &&
+          DRE->getDecl()->getFullName() == SGF.getASTContext().Id_self &&
           DRE->getDecl()->isImplicit()) {
         Ctx = SGFContext::AllowGuaranteedPlusZero;
         if (SGF.SelfInitDelegationState != SILGenFunction::NormalSelf) {
@@ -2083,7 +2085,7 @@ LValue SILGenLValue::visitOpaqueValueExpr(OpaqueValueExpr *e,
     lv = SGF.emitOpenExistentialLValue(
         opened, std::move(lv),
         CanArchetypeType(opened->getOpenedArchetype()),
-        e->getType()->getLValueOrInOutObjectType()->getCanonicalType(),
+        e->getType()->getWithoutSpecifierType()->getCanonicalType(),
         accessKind);
     return lv;
   }
@@ -2991,7 +2993,7 @@ SILGenFunction::emitOpenExistentialLValue(SILLocation loc,
                                           CanArchetypeType openedArchetype,
                                           CanType formalRValueType,
                                           AccessKind accessKind) {
-  assert(!formalRValueType->isLValueType());
+  assert(!formalRValueType->hasLValueType());
   LValueTypeData typeData = {
     AbstractionPattern::getOpaque(), formalRValueType,
     getLoweredType(formalRValueType).getObjectType()

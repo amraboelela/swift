@@ -383,9 +383,10 @@ enum class ConventionsKind : uint8_t {
                       SmallVectorImpl<SILParameterInfo> &inputs)
       : M(M), Convs(conventions), ForeignError(foreignError), Inputs(inputs) {}
 
-    void destructure(AbstractionPattern origType, CanType substType,
+    void destructure(AbstractionPattern origType,
+                     ArrayRef<AnyFunctionType::Param> params,
                      AnyFunctionType::ExtInfo extInfo) {
-      visitTopLevelType(origType, substType, extInfo);
+      visitTopLevelParams(origType, params, extInfo);
       maybeAddForeignErrorParameter();
     }
 
@@ -424,22 +425,12 @@ enum class ConventionsKind : uint8_t {
                 ClassDecl::ForeignKind::CFType) {
             return false;
           }
-          // swift_newtype-ed CF type as foreign class
-          if (auto typedefTy = clangTy->getAs<clang::TypedefType>()) {
-            if (typedefTy->getDecl()->getAttr<clang::SwiftNewtypeAttr>()) {
-              // Make sure that we actually made the struct during import
-              if (auto underlyingType =
-                      substTy->getSwiftNewtypeUnderlyingType()) {
-                if (auto underlyingClass =
-                        underlyingType->getClassOrBoundGenericClass()) {
-                  if (underlyingClass->getForeignClassKind() ==
-                          ClassDecl::ForeignKind::CFType) {
-                    return false;
-                  }
-                }
-              }
-            }
-          }
+        }
+
+        // swift_newtypes are always passed directly
+        if (auto typedefTy = clangTy->getAs<clang::TypedefType>()) {
+          if (typedefTy->getDecl()->getAttr<clang::SwiftNewtypeAttr>())
+            return false;
         }
 
         return true;
@@ -513,33 +504,35 @@ enum class ConventionsKind : uint8_t {
 
     /// This is a special entry point that allows destructure inputs to handle
     /// self correctly.
-    void visitTopLevelType(AbstractionPattern origType, CanType substType,
-                           AnyFunctionType::ExtInfo extInfo) {
+    void visitTopLevelParams(AbstractionPattern origType,
+                             ArrayRef<AnyFunctionType::Param> params,
+                             AnyFunctionType::ExtInfo extInfo) {
       // If we don't have 'self', we don't need to do anything special.
       if (!extInfo.hasSelfParam()) {
-        return visit(origType, substType);
+        if (params.empty()) {
+          return visit(origType, M.getASTContext().TheEmptyTupleType);
+        } else {
+          CanType ty = AnyFunctionType::composeInput(M.getASTContext(), params,
+                                                     /*canonicalVararg*/true)
+                        ->getCanonicalType();
+          return visit(origType, ty);
+        }
       }
 
       // Okay, handle 'self'.
-      if (auto substTupleType = dyn_cast<TupleType>(substType)) {
-        unsigned numEltTypes = substTupleType.getElementTypes().size();
-        assert(numEltTypes > 0);
+      unsigned numEltTypes = params.size();
+      assert(numEltTypes > 0);
 
-        // Process all the non-self parameters.
-        unsigned numNonSelfParams = numEltTypes - 1;
-        for (unsigned i = 0; i != numNonSelfParams; ++i) {
-          visit(origType.getTupleElementType(i),
-                substTupleType.getElementType(i));
-        }
-
-        // Process the self parameter.
-        visitSelfType(origType.getTupleElementType(numNonSelfParams),
-                      substTupleType.getElementType(numNonSelfParams),
-                      extInfo.getSILRepresentation());
-      } else {
-        visitSelfType(origType, substType,
-                      extInfo.getSILRepresentation());
+      // Process all the non-self parameters.
+      unsigned numNonSelfParams = numEltTypes - 1;
+      for (unsigned i = 0; i != numNonSelfParams; ++i) {
+        visit(origType.getTupleElementType(i), params[i].getCanType());
       }
+
+      // Process the self parameter.
+      visitSelfType(origType.getTupleElementType(numNonSelfParams),
+                    params[numNonSelfParams].getCanType(),
+                    extInfo.getSILRepresentation());
     }
 
     void visit(AbstractionPattern origType, CanType substType) {
@@ -547,15 +540,14 @@ enum class ConventionsKind : uint8_t {
       // the tuple type is materializable -- if it doesn't contain an
       // l-value type -- then it's a valid target for substitution and
       // we should not expand it.
-      if (isa<TupleType>(substType) &&
-          (!origType.isTypeParameter() ||
-           !substType->isMaterializable())) {
-        auto substTuple = cast<TupleType>(substType);
+      CanTupleType substTupleTy = dyn_cast<TupleType>(substType);
+      if (substTupleTy &&
+          (!origType.isTypeParameter() || substTupleTy->hasInOutElement())) {
         assert(origType.isTypeParameter() ||
-               origType.getNumTupleElements() == substTuple->getNumElements());
-        for (auto i : indices(substTuple.getElementTypes())) {
+               origType.getNumTupleElements() == substTupleTy->getNumElements());
+        for (auto i : indices(substTupleTy.getElementTypes())) {
           visit(origType.getTupleElementType(i),
-                substTuple.getElementType(i));
+                substTupleTy.getElementType(i));
         }
         return;
       }
@@ -748,7 +740,7 @@ static CanSILFunctionType getSILFunctionType(SILModule &M,
   {
     DestructureInputs destructurer(M, conventions, foreignError, inputs);
     destructurer.destructure(origType.getFunctionInputType(),
-                             substFnInterfaceType.getInput(),
+                             substFnInterfaceType.getParams(),
                              extInfo);
   }
   
@@ -1479,8 +1471,11 @@ static SelectorFamily getSelectorFamily(SILDeclRef c) {
     case AccessorKind::IsGetter:
       // Getter selectors can belong to families if their name begins with the
       // wrong thing.
-      if (FD->getAccessorStorageDecl()->isObjC() || c.isForeign)
-        return getSelectorFamily(FD->getAccessorStorageDecl()->getName());
+      if (FD->getAccessorStorageDecl()->isObjC() || c.isForeign) {
+        // TODO: Handle special names (subscript).
+        auto name = FD->getAccessorStorageDecl()->getBaseName().getIdentifier();
+        return getSelectorFamily(name);
+      }
       return SelectorFamily::None;
 
       // Other accessors are never selector family members.
@@ -2314,7 +2309,7 @@ TypeConverter::getLoweredASTFunctionType(CanAnyFunctionType fnType,
 
   // Merge inputs and generic parameters from the uncurry levels.
   for (;;) {
-    inputs.push_back(TupleTypeElt(fnType->getInput()));
+    inputs.push_back(TupleTypeElt(fnType->getInput()->getCanonicalType()));
 
     // The uncurried function calls all of the intermediate function
     // levels and so throws if any of them do.

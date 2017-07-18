@@ -47,6 +47,7 @@ set(SWIFTLIB_ESSENTIAL
   CString.swift
   CTypes.swift
   DebuggerSupport.swift
+  DoubleWidth.swift.gyb
   DropWhile.swift.gyb
   Dump.swift
   EmptyCollection.swift
@@ -54,6 +55,7 @@ set(SWIFTLIB_ESSENTIAL
   ErrorType.swift
   Existential.swift
   Filter.swift.gyb
+  FixedArray.swift.gyb
   FlatMap.swift
   Flatten.swift.gyb
   FloatingPoint.swift.gyb
@@ -124,6 +126,7 @@ set(SWIFTLIB_ESSENTIAL
   StringBuffer.swift
   StringComparable.swift
   StringCore.swift
+  StringIndex.swift
   StringInterpolation.swift
   StringLegacy.swift
   StringRangeReplaceableCollection.swift.gyb
@@ -150,6 +153,7 @@ set(SWIFTLIB_ESSENTIAL
   UTF16.swift
   UTF32.swift
   Unicode.swift # ORDER DEPENDENCY: must follow new unicode support
+  ValidUTF8Buffer.swift
   WriteBackMutableSlice.swift
   )
 

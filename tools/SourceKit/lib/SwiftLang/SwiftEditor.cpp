@@ -293,20 +293,6 @@ public:
     return false;
   }
 
-  bool matchesAnyTokenOnLine(unsigned Line, const SwiftSyntaxToken &Token) const {
-    assert(Line > 0);
-    if (Lines.size() < Line)
-      return false;
-
-    unsigned LineOffset = Line - 1;
-    for (auto &Tok: Lines[LineOffset]) {
-      if (Tok.Column == Token.Column && Tok.Length == Token.Length
-        && Tok.Kind == Token.Kind)
-      return true;
-    }
-    return false;
-  }
-
   void addTokenForLine(unsigned Line, const SwiftSyntaxToken &Token) {
     assert(Line > 0);
     if (Lines.size() < Line) {
@@ -346,17 +332,12 @@ public:
     }
   }
 
-  void clearLineRange(unsigned StartLine, unsigned EndLine, unsigned StartColumn = 0) {
-    assert (StartLine > 0 && EndLine >= StartLine);
-    auto LineIndex = StartLine - 1;
-    if (StartColumn > 0) {
-      auto &LineToks = Lines[LineIndex++];
-      while (!LineToks.empty() && LineToks.back().Column >= StartColumn)
-        LineToks.pop_back();
-    }
-
-    for (; LineIndex < Lines.size() && LineIndex < EndLine; ++LineIndex) {
-      Lines[LineIndex].clear();
+  void clearLineRange(unsigned StartLine, unsigned Length) {
+    assert(StartLine > 0);
+    unsigned LineOffset = StartLine - 1;
+    for (unsigned Line = LineOffset; Line < LineOffset + Length
+                                    && Line < Lines.size(); ++Line) {
+      Lines[Line].clear();
     }
   }
 
@@ -454,7 +435,7 @@ public:
 
   void readSemanticInfo(ImmutableTextSnapshotRef NewSnapshot,
                         std::vector<SwiftSemanticToken> &Tokens,
-                        std::vector<DiagnosticEntryInfo> &Diags,
+                        Optional<std::vector<DiagnosticEntryInfo>> &Diags,
                         ArrayRef<DiagnosticEntryInfo> ParserDiags);
 
   void processLatestSnapshotAsync(EditableTextBufferRef EditableBuffer);
@@ -472,7 +453,7 @@ private:
   std::vector<SwiftSemanticToken> takeSemanticTokens(
       ImmutableTextSnapshotRef NewSnapshot);
 
-  std::vector<DiagnosticEntryInfo> getSemanticDiagnostics(
+  Optional<std::vector<DiagnosticEntryInfo>> getSemanticDiagnostics(
       ImmutableTextSnapshotRef NewSnapshot,
       ArrayRef<DiagnosticEntryInfo> ParserDiags);
 };
@@ -564,7 +545,7 @@ uint64_t SwiftDocumentSemanticInfo::getASTGeneration() const {
 void SwiftDocumentSemanticInfo::readSemanticInfo(
     ImmutableTextSnapshotRef NewSnapshot,
     std::vector<SwiftSemanticToken> &Tokens,
-    std::vector<DiagnosticEntryInfo> &Diags,
+    Optional<std::vector<DiagnosticEntryInfo>> &Diags,
     ArrayRef<DiagnosticEntryInfo> ParserDiags) {
 
   llvm::sys::ScopedLock L(Mtx);
@@ -619,155 +600,73 @@ SwiftDocumentSemanticInfo::takeSemanticTokens(
   return std::move(SemaToks);
 }
 
-static bool
-adjustDiagnosticRanges(SmallVectorImpl<std::pair<unsigned, unsigned>> &Ranges,
-                       unsigned ByteOffset, unsigned RemoveLen, int Delta) {
-  for (auto &Range : Ranges) {
-    unsigned RangeBegin = Range.first;
-    unsigned RangeEnd = Range.first +  Range.second;
-    unsigned RemoveEnd = ByteOffset + RemoveLen;
-    // If it intersects with the remove range, ignore the whole diagnostic.
-    if (!(RangeEnd < ByteOffset || RangeBegin > RemoveEnd))
-      return true; // Ignore.
-    if (RangeBegin > RemoveEnd)
-      Range.first += Delta;
-  }
-  return false;
-}
-
-static bool
-adjustDiagnosticFixits(SmallVectorImpl<DiagnosticEntryInfo::Fixit> &Fixits,
-                       unsigned ByteOffset, unsigned RemoveLen, int Delta) {
-  for (auto &Fixit : Fixits) {
-    unsigned FixitBegin = Fixit.Offset;
-    unsigned FixitEnd = Fixit.Offset +  Fixit.Length;
-    unsigned RemoveEnd = ByteOffset + RemoveLen;
-    // If it intersects with the remove range, ignore the whole diagnostic.
-    if (!(FixitEnd < ByteOffset || FixitBegin > RemoveEnd))
-      return true; // Ignore.
-    if (FixitBegin > RemoveEnd)
-      Fixit.Offset += Delta;
-  }
-  return false;
-}
-
-static bool
-adjustDiagnosticBase(DiagnosticEntryInfoBase &Diag,
-                     unsigned ByteOffset, unsigned RemoveLen, int Delta) {
-  if (Diag.Offset >= ByteOffset && Diag.Offset < ByteOffset+RemoveLen)
-    return true; // Ignore.
-  bool Ignore = adjustDiagnosticRanges(Diag.Ranges, ByteOffset, RemoveLen, Delta);
-  if (Ignore)
-    return true;
-  Ignore = adjustDiagnosticFixits(Diag.Fixits, ByteOffset, RemoveLen, Delta);
-  if (Ignore)
-    return true;
-  if (Diag.Offset > ByteOffset)
-    Diag.Offset += Delta;
-  return false;
-}
-
-static bool
-adjustDiagnostic(DiagnosticEntryInfo &Diag, StringRef Filename,
-                 unsigned ByteOffset, unsigned RemoveLen, int Delta) {
-  for (auto &Note : Diag.Notes) {
-    if (Filename != Note.Filename)
-      continue;
-    bool Ignore = adjustDiagnosticBase(Note, ByteOffset, RemoveLen, Delta);
-    if (Ignore)
-      return true;
-  }
-  return adjustDiagnosticBase(Diag, ByteOffset, RemoveLen, Delta);
-}
-
-static std::vector<DiagnosticEntryInfo>
-adjustDiagnostics(std::vector<DiagnosticEntryInfo> Diags, StringRef Filename,
-                  unsigned ByteOffset, unsigned RemoveLen, int Delta) {
-  std::vector<DiagnosticEntryInfo> NewDiags;
-  NewDiags.reserve(Diags.size());
-
-  for (auto &Diag : Diags) {
-    bool Ignore = adjustDiagnostic(Diag, Filename, ByteOffset, RemoveLen, Delta);
-    if (!Ignore) {
-      NewDiags.push_back(std::move(Diag));
-    }
-  }
-
-  return NewDiags;
-}
-
-std::vector<DiagnosticEntryInfo>
+Optional<std::vector<DiagnosticEntryInfo>>
 SwiftDocumentSemanticInfo::getSemanticDiagnostics(
     ImmutableTextSnapshotRef NewSnapshot,
     ArrayRef<DiagnosticEntryInfo> ParserDiags) {
 
-  llvm::sys::ScopedLock L(Mtx);
+  std::vector<DiagnosticEntryInfo> curSemaDiags;
+  {
+    llvm::sys::ScopedLock L(Mtx);
 
-  if (SemaDiags.empty())
-    return SemaDiags;
-
-  assert(DiagSnapshot && "If we have diagnostics, we must have snapshot!");
-
-  if (!DiagSnapshot->precedesOrSame(NewSnapshot)) {
-    // It may happen that other thread has already updated the diagnostics to
-    // the version *after* NewSnapshot. This can happen in at least two cases:
-    //   (a) two or more editor.open or editor.replacetext queries are being
-    //       processed concurrently (not valid, but possible call pattern)
-    //   (b) while editor.replacetext processing is running, a concurrent
-    //       thread executes getBuffer()/getBufferForSnapshot() on the same
-    //       Snapshot/EditableBuffer (thus creating a new ImmutableTextBuffer)
-    //       and updates DiagSnapshot/SemaDiags
-    assert(NewSnapshot->precedesOrSame(DiagSnapshot));
-
-    // Since we cannot "adjust back" diagnostics, we just return an empty set.
-    // FIXME: add handling of the case#b above
-    return {};
-  }
-
-  SmallVector<unsigned, 16> ParserDiagLines;
-  for (auto Diag : ParserDiags)
-    ParserDiagLines.push_back(Diag.Line);
-  std::sort(ParserDiagLines.begin(), ParserDiagLines.end());
-
-  auto hasParserDiagAtLine = [&](unsigned Line) {
-    return std::binary_search(ParserDiagLines.begin(), ParserDiagLines.end(),
-                              Line);
-  };
-
-  // Adjust the position of the diagnostics.
-  DiagSnapshot->foreachReplaceUntil(NewSnapshot,
-    [&](ReplaceImmutableTextUpdateRef Upd) -> bool {
-      if (SemaDiags.empty())
-        return false;
-
-      unsigned ByteOffset = Upd->getByteOffset();
-      unsigned RemoveLen = Upd->getLength();
-      unsigned InsertLen = Upd->getText().size();
-      int Delta = InsertLen - RemoveLen;
-      SemaDiags = adjustDiagnostics(std::move(SemaDiags), Filename,
-                                    ByteOffset, RemoveLen, Delta);
-      return true;
-    });
-
-  if (!SemaDiags.empty()) {
-    auto ImmBuf = NewSnapshot->getBuffer();
-    for (auto &Diag : SemaDiags) {
-      std::tie(Diag.Line, Diag.Column) = ImmBuf->getLineAndColumn(Diag.Offset);
+    if (!DiagSnapshot || DiagSnapshot->getStamp() != NewSnapshot->getStamp()) {
+      // The semantic diagnostics are out-of-date, ignore them.
+      return llvm::None;
     }
 
-    // If there is a parser diagnostic in a line, ignore diagnostics in the same
-    // line that we got from the semantic pass.
-    // Note that the semantic pass also includes parser diagnostics so this
-    // avoids duplicates.
-    SemaDiags.erase(std::remove_if(SemaDiags.begin(), SemaDiags.end(),
-                                   [&](const DiagnosticEntryInfo &Diag) -> bool {
-                                     return hasParserDiagAtLine(Diag.Line);
-                                   }),
-                    SemaDiags.end());
+    curSemaDiags = SemaDiags;
   }
 
-  DiagSnapshot = NewSnapshot;
-  return SemaDiags;
+  // Diagnostics from the AST and diagnostics from the parser are based on the
+  // same source text snapshot. But diagnostics from the AST may have excluded
+  // the parser diagnostics due to a fatal error, e.g. if the source has a
+  // 'so such module' error, which will suppress other diagnostics.
+  // We don't want to turn off the suppression to avoid a flood of diagnostics
+  // when a module import fails, but we also don't want to lose the parser
+  // diagnostics in such a case, so merge the parser diagnostics with the sema
+  // ones.
+
+  auto orderDiagnosticEntryInfos = [](const DiagnosticEntryInfo &LHS,
+                                      const DiagnosticEntryInfo &RHS) -> bool {
+    if (LHS.Filename != RHS.Filename)
+      return LHS.Filename < RHS.Filename;
+    if (LHS.Offset != RHS.Offset)
+      return LHS.Offset < RHS.Offset;
+    return LHS.Description < RHS.Description;
+  };
+
+  std::vector<DiagnosticEntryInfo> sortedParserDiags;
+  sortedParserDiags.reserve(ParserDiags.size());
+  sortedParserDiags.insert(sortedParserDiags.end(), ParserDiags.begin(),
+                           ParserDiags.end());
+  std::stable_sort(sortedParserDiags.begin(), sortedParserDiags.end(),
+                   orderDiagnosticEntryInfos);
+
+  std::vector<DiagnosticEntryInfo> finalDiags;
+  finalDiags.reserve(sortedParserDiags.size()+curSemaDiags.size());
+
+  // Add sema diagnostics unless it is an existing parser diagnostic.
+  // Note that we want to merge and eliminate diagnostics from the 'sema' set
+  // that also show up in the 'parser' set, but we don't want to remove
+  // duplicate diagnostics from within the same set (e.g. duplicates existing in
+  // the 'sema' set). We want to report the diagnostics as the compiler reported
+  // them, even if there's some duplicate one. This is why we don't just do a
+  // simple append/sort/keep-uniques step.
+  for (const auto &curDE : curSemaDiags) {
+    bool existsAsParserDiag = std::binary_search(sortedParserDiags.begin(),
+                                                 sortedParserDiags.end(),
+                                             curDE, orderDiagnosticEntryInfos);
+    if (!existsAsParserDiag) {
+      finalDiags.push_back(curDE);
+    }
+  }
+
+  finalDiags.insert(finalDiags.end(),
+                    sortedParserDiags.begin(), sortedParserDiags.end());
+  std::stable_sort(finalDiags.begin(), finalDiags.end(),
+                   orderDiagnosticEntryInfos);
+
+  return finalDiags;
 }
 
 void SwiftDocumentSemanticInfo::updateSemanticInfo(
@@ -805,7 +704,8 @@ public:
   bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
                           TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type T,
                           ReferenceMetaData Data) override {
-    if (isa<VarDecl>(D) && D->hasName() && D->getName().str() == "self")
+      if (isa<VarDecl>(D) && D->hasName() &&
+          D->getFullName() == D->getASTContext().Id_self)
       return true;
 
     // Do not annotate references to unavailable decls.
@@ -1251,79 +1151,15 @@ public:
 };
 
 class SwiftEditorSyntaxWalker: public ide::SyntaxModelWalker {
-  struct RangeToken : SwiftSyntaxToken {
-    unsigned Line;
-    unsigned EndLine;
-    unsigned Offset;
-
-    RangeToken(SyntaxNodeKind Kind, unsigned Offset, unsigned Length,
-               unsigned Line, unsigned Column, unsigned EndLine) :
-      SwiftSyntaxToken(Column, Length, Kind), Line(Line), EndLine(EndLine),
-      Offset(Offset) {}
-  };
-
   SwiftSyntaxMap &SyntaxMap;
   LineRange EditedLineRange;
   SwiftEditorCharRange &AffectedRange;
-  unsigned OrigAffectedRangeEnd;
-
   SourceManager &SrcManager;
   EditorConsumer &Consumer;
   unsigned BufferID;
   SwiftDocumentStructureWalker DocStructureWalker;
   std::vector<EditorConsumerSyntaxMapEntry> ConsumerSyntaxMap;
-  std::vector<RangeToken> QueuedTokens;
   unsigned NestingLevel = 0;
-
-  RangeToken getToken(SyntaxNode Node) {
-    SourceLoc StartLoc = Node.Range.getStart();
-    auto StartLineAndColumn = SrcManager.getLineAndColumn(StartLoc);
-    auto EndLineAndColumn = SrcManager.getLineAndColumn(Node.Range.getEnd());
-    auto EndLine = EndLineAndColumn.first;
-    if (EndLineAndColumn.second == 1) {
-      --EndLine;
-    }
-
-    return {
-      Node.Kind,
-      /*Offset=*/ SrcManager.getLocOffsetInBuffer(StartLoc, BufferID),
-      /*Length=*/ Node.Range.getByteLength(),
-      /*Line=*/ StartLineAndColumn.first,
-      /*Column=*/ StartLineAndColumn.second,
-      EndLine
-    };
-  }
-
-  void addSyntaxMapEntry(const RangeToken Token) {
-    if (NestingLevel > 1) {
-      SyntaxMap.mergeTokenForLine(Token.Line, Token);
-    } else {
-      SyntaxMap.addTokenForLine(Token.Line, Token);
-    }
-
-    UIdent Kind = SwiftLangSupport::getUIDForSyntaxNodeKind(Token.Kind);
-    if (NestingLevel > 1) {
-      assert(!ConsumerSyntaxMap.empty());
-      auto &Last = ConsumerSyntaxMap.back();
-      mergeSplitRanges(Last.Offset, Last.Length, Token.Offset, Token.Length,
-                       [&](unsigned BeforeOff, unsigned BeforeLen,
-                           unsigned AfterOff, unsigned AfterLen) {
-                         auto LastKind = Last.Kind;
-                         ConsumerSyntaxMap.pop_back();
-                         if (BeforeLen)
-                           ConsumerSyntaxMap.emplace_back(BeforeOff, BeforeLen,
-                                                          LastKind);
-                         ConsumerSyntaxMap.emplace_back(Token.Offset,
-                                                        Token.Length, Kind);
-                         if (AfterLen)
-                           ConsumerSyntaxMap.emplace_back(AfterOff, AfterLen,
-                                                          LastKind);
-                       });
-    } else {
-      ConsumerSyntaxMap.emplace_back(Token.Offset, Token.Length, Kind);
-    }
-  }
-
 public:
   SwiftEditorSyntaxWalker(SwiftSyntaxMap &SyntaxMap,
                           LineRange EditedLineRange,
@@ -1331,9 +1167,8 @@ public:
                           SourceManager &SrcManager, EditorConsumer &Consumer,
                           unsigned BufferID)
     : SyntaxMap(SyntaxMap), EditedLineRange(EditedLineRange),
-      AffectedRange(AffectedRange),
-      OrigAffectedRangeEnd(AffectedRange.first + AffectedRange.second),
-      SrcManager(SrcManager), Consumer(Consumer), BufferID(BufferID),
+      AffectedRange(AffectedRange), SrcManager(SrcManager), Consumer(Consumer),
+      BufferID(BufferID),
       DocStructureWalker(SrcManager, BufferID, Consumer) { }
 
   bool walkToNodePre(SyntaxNode Node) override {
@@ -1341,83 +1176,96 @@ public:
       return DocStructureWalker.walkToNodePre(Node);
 
     ++NestingLevel;
-    RangeToken Token  = getToken(Node);
+    SourceLoc StartLoc = Node.Range.getStart();
+    auto StartLineAndColumn = SrcManager.getLineAndColumn(StartLoc);
+    auto EndLineAndColumn = SrcManager.getLineAndColumn(Node.Range.getEnd());
+    unsigned StartLine = StartLineAndColumn.first;
+    unsigned EndLine = EndLineAndColumn.second > 1 ? EndLineAndColumn.first
+                                                   : EndLineAndColumn.first - 1;
+    unsigned Offset = SrcManager.getByteDistance(
+                           SrcManager.getLocForBufferStart(BufferID), StartLoc);
+    // Note that the length can span multiple lines.
+    unsigned Length = Node.Range.getByteLength();
 
+    SwiftSyntaxToken Token(StartLineAndColumn.second, Length,
+                           Node.Kind);
     if (EditedLineRange.isValid()) {
-      if (Token.Line < EditedLineRange.startLine()) {
-        if (Token.EndLine < EditedLineRange.startLine()
-            && SyntaxMap.matchesAnyTokenOnLine(Token.Line, Token)) {
-          // 1: We start before the edited range and we have this token already
-          //    so don't process or report it.
+      if (StartLine < EditedLineRange.startLine()) {
+        if (EndLine < EditedLineRange.startLine()) {
+          // We're entirely before the edited range, no update needed.
           return true;
         }
 
-        // 2: The edit was inside this token, or made it appear (e.g. tokens
-        //    inside a multiline string interpolation when the string is
-        //    closed). Extend the edited range to include it, clear out the old
-        //    syntax map entries, and update the the affected range to start
-        //    here.
-        EditedLineRange.extendToIncludeLine(Token.Line);
-        EditedLineRange.extendToIncludeLine(Token.EndLine);
-        SyntaxMap.clearLineRange(Token.Line, EditedLineRange.endLine(), Token.Column);
+        // This token starts before the edited range, but doesn't end before it,
+        // we need to adjust edited line range and clear the affected syntax map
+        // line range.
+        unsigned AdjLineCount = EditedLineRange.startLine() - StartLine;
+        EditedLineRange.setRange(StartLine, AdjLineCount
+                                            + EditedLineRange.lineCount());
+        SyntaxMap.clearLineRange(StartLine, AdjLineCount);
 
-        // Bring the start of the affected range back to this offset
-        unsigned AdjCharCount = AffectedRange.first - Token.Offset;
+        // Also adjust the affected char range accordingly.
+        unsigned AdjCharCount = AffectedRange.first - Offset;
         AffectedRange.first -= AdjCharCount;
         AffectedRange.second += AdjCharCount;
       }
-      else if (Token.Offset > AffectedRange.first + AffectedRange.second) {
-        // 4: We're after the Edited range and affected range. Check we're still
-        //    in sync.
-        if (SyntaxMap.matchesAnyTokenOnLine(Token.Line, Token)) {
-          // 4a: We're in sync. No need to process the token now, but we may
-          //     still need to later if we see differences. That can happen if
-          //     the edit restored the opening quotes of a multiline string
-          //     literal and this token is in an interpolation – this token is
-          //     in sync, but there will be a new string token later.
-          QueuedTokens.push_back(Token);
-          return true;
-        }
-
-        // 4b: We're out of sync again. Process any tokens we queued up,
-        //     clearing out the existing syntax map tokens before hand and
-        //     restore the end of the affected range back to its original state
-        //     (the end of the buffer).
-        auto &FromToken = QueuedTokens.empty() ? Token : QueuedTokens.front();
-
-        EditedLineRange.extendToIncludeLine(Token.EndLine);
-        SyntaxMap.clearLineRange(FromToken.Line, Token.EndLine);
-
-        for (auto &QueuedToken: QueuedTokens)
-          addSyntaxMapEntry(QueuedToken);
-        AffectedRange.second = OrigAffectedRangeEnd - AffectedRange.first;
+      else if (Offset > AffectedRange.first + AffectedRange.second) {
+        // We're passed the affected range and already synced up, just return.
+        return true;
       }
-      else if (Token.Line > EditedLineRange.endLine()) {
-        // 3: We're after the edited line range but not the affected range,
-        //    check if we're in sync.
-        if (SyntaxMap.matchesFirstTokenOnLine(Token.Line, Token)) {
-          // 3a: We're synced up so don't process or report this token.
-          //     Tentatively update the end of the affected range and queue the
-          //     token in case we fall out of sync again later.
+      else if (StartLine > EditedLineRange.endLine()) {
+        // We're after the edited line range, let's test if we're synced up.
+        if (SyntaxMap.matchesFirstTokenOnLine(StartLine, Token)) {
+          // We're synced up, mark the affected range and return.
           AffectedRange.second =
-            Token.Offset - (Token.Column - 1) - AffectedRange.first;
-          QueuedTokens.push_back(Token);
+                 Offset - (StartLineAndColumn.second - 1) - AffectedRange.first;
           return true;
         }
-        // 3b: We're not synced up, continue replacing syntax map data on
-        //     this line.
-        EditedLineRange.extendToIncludeLine(Token.EndLine);
-        SyntaxMap.clearLineRange(Token.Line, Token.EndLine);
+
+        // We're not synced up, continue replacing syntax map data on this line.
+        SyntaxMap.clearLineRange(StartLine, 1);
+        EditedLineRange.extendToIncludeLine(StartLine);
       }
-      else if (Token.EndLine > Token.Line) {
-        // We're in the edited range and this token spans multiple lines. Make
-        // sure to replace syntax map data for the affected lines.
-        EditedLineRange.extendToIncludeLine(Token.EndLine);
-        SyntaxMap.clearLineRange(Token.Line, Token.EndLine, Token.Column);
+
+      if (EndLine > StartLine) {
+        // The token spans multiple lines, make sure to replace syntax map data
+        // for affected lines.
+        EditedLineRange.extendToIncludeLine(EndLine);
+
+        unsigned LineCount = EndLine - StartLine + 1;
+        SyntaxMap.clearLineRange(StartLine, LineCount);
       }
+
     }
 
-    addSyntaxMapEntry(std::move(Token));
+    // Add the syntax map token.
+    if (NestingLevel > 1)
+      SyntaxMap.mergeTokenForLine(StartLine, Token);
+    else
+      SyntaxMap.addTokenForLine(StartLine, Token);
+
+    // Add consumer entry.
+    unsigned ByteOffset = SrcManager.getLocOffsetInBuffer(Node.Range.getStart(),
+                                                          BufferID);
+    UIdent Kind = SwiftLangSupport::getUIDForSyntaxNodeKind(Node.Kind);
+    if (NestingLevel > 1) {
+      assert(!ConsumerSyntaxMap.empty());
+      auto &Last = ConsumerSyntaxMap.back();
+      mergeSplitRanges(Last.Offset, Last.Length, ByteOffset, Length,
+                       [&](unsigned BeforeOff, unsigned BeforeLen,
+                           unsigned AfterOff, unsigned AfterLen) {
+        auto LastKind = Last.Kind;
+        ConsumerSyntaxMap.pop_back();
+        if (BeforeLen)
+          ConsumerSyntaxMap.emplace_back(BeforeOff, BeforeLen, LastKind);
+        ConsumerSyntaxMap.emplace_back(ByteOffset, Length, Kind);
+        if (AfterLen)
+          ConsumerSyntaxMap.emplace_back(AfterOff, AfterLen, LastKind);
+      });
+    }
+    else
+      ConsumerSyntaxMap.emplace_back(ByteOffset, Length, Kind);
+
     return true;
   }
 
@@ -1498,18 +1346,17 @@ private:
       if (auto *FTR = dyn_cast<FunctionTypeRepr>(T)) {
         FoundFunctionTypeRepr = true;
         if (auto *TTR = dyn_cast_or_null<TupleTypeRepr>(FTR->getArgsTypeRepr())) {
-          for (unsigned i = 0, end = TTR->getNumElements(); i != end; ++i) {
-            auto *ArgTR = TTR->getElement(i);
+          for (auto &ArgElt : TTR->getElements()) {
             CharSourceRange NR;
             CharSourceRange TR;
-            auto name = TTR->getElementName(i);
+            auto name = ArgElt.Name;
             if (!name.empty()) {
-              NR = CharSourceRange(TTR->getElementNameLoc(i),
+              NR = CharSourceRange(ArgElt.NameLoc,
                                    name.getLength());
             }
             SourceLoc SRE = Lexer::getLocForEndOfToken(SM,
-                                                       ArgTR->getEndLoc());
-            TR = CharSourceRange(SM, ArgTR->getStartLoc(), SRE);
+                                                    ArgElt.Type->getEndLoc());
+            TR = CharSourceRange(SM, ArgElt.Type->getStartLoc(), SRE);
             Info.Params.emplace_back(NR, TR);
           }
         } else if (FTR->getArgsTypeRepr()) {
@@ -1857,10 +1704,7 @@ void SwiftEditorDocument::readSemanticInfo(ImmutableTextSnapshotRef Snapshot,
   }
 
   std::vector<SwiftSemanticToken> SemaToks;
-  std::vector<DiagnosticEntryInfo> SemaDiags;
-
-  // FIXME: Parser diagnostics should be filtered out of the semantic ones,
-  // Then just merge the semantic ones with the current parse ones.
+  Optional<std::vector<DiagnosticEntryInfo>> SemaDiags;
   Impl.SemanticInfo->readSemanticInfo(Snapshot, SemaToks, SemaDiags,
                                       Impl.ParserDiagnostics);
 
@@ -1877,16 +1721,17 @@ void SwiftEditorDocument::readSemanticInfo(ImmutableTextSnapshotRef Snapshot,
   static UIdent SemaDiagStage("source.diagnostic.stage.swift.sema");
   static UIdent ParseDiagStage("source.diagnostic.stage.swift.parse");
 
-  if (!SemaDiags.empty() || !SemaToks.empty()) {
+  // If there's no value returned for diagnostics it means they are out-of-date
+  // (based on a different snapshot).
+  if (SemaDiags.hasValue()) {
     Consumer.setDiagnosticStage(SemaDiagStage);
+    for (auto &Diag : SemaDiags.getValue())
+      Consumer.handleDiagnostic(Diag, SemaDiagStage);
   } else {
     Consumer.setDiagnosticStage(ParseDiagStage);
+    for (auto &Diag : Impl.ParserDiagnostics)
+      Consumer.handleDiagnostic(Diag, ParseDiagStage);
   }
-
-  for (auto &Diag : Impl.ParserDiagnostics)
-    Consumer.handleDiagnostic(Diag, ParseDiagStage);
-  for (auto &Diag : SemaDiags)
-    Consumer.handleDiagnostic(Diag, SemaDiagStage);
 }
 
 void SwiftEditorDocument::removeCachedAST() {

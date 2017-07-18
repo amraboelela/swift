@@ -54,7 +54,7 @@ const uint16_t VERSION_MAJOR = 0;
 /// in source control, you should also update the comment to briefly
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
-const uint16_t VERSION_MINOR = 346; // Last change: dependency types for enums
+const uint16_t VERSION_MINOR = 349; // Last change: '@autoclosure' and '@noescape' no longer decl attributes.
 
 using DeclID = PointerEmbeddedInt<unsigned, 31>;
 using DeclIDField = BCFixed<31>;
@@ -191,6 +191,15 @@ using CtorInitializerKindField = BCFixed<2>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
 // VERSION_MAJOR.
+enum class VarDeclSpecifier : uint8_t {
+  Let = 0,
+  Var,
+  InOut,
+};
+using VarDeclSpecifierField = BCFixed<2>;
+  
+// These IDs must \em not be renumbered or reordered without incrementing
+// VERSION_MAJOR.
 enum class ParameterConvention : uint8_t {
   Indirect_In,
   Indirect_Inout,
@@ -227,7 +236,7 @@ enum class AddressorKind : uint8_t {
   NotAddressor, Unsafe, Owning, NativeOwning, NativePinning
 };
 using AddressorKindField = BCFixed<3>;
-
+  
 /// Translates an operator DeclKind to a Serialization fixity, whose values are
 /// guaranteed to be stable.
 static inline OperatorKind getStableFixity(DeclKind kind) {
@@ -598,7 +607,8 @@ namespace decls_block {
     TypeIDField,        // inner type
     BCFixed<1>,         // vararg?
     BCFixed<1>,         // autoclosure?
-    BCFixed<1>          // escaping?
+    BCFixed<1>,         // escaping?
+    BCFixed<1>          // inout?
   >;
 
   using TupleTypeLayout = BCRecordLayout<
@@ -611,7 +621,8 @@ namespace decls_block {
     TypeIDField,        // type
     BCFixed<1>,         // vararg?
     BCFixed<1>,         // autoclosure?
-    BCFixed<1>          // escaping?
+    BCFixed<1>,         // escaping?
+    BCFixed<1>          // inout?
   >;
 
   using FunctionTypeLayout = BCRecordLayout<
@@ -874,7 +885,7 @@ namespace decls_block {
     BCFixed<1>,   // implicit?
     BCFixed<1>,   // explicitly objc?
     BCFixed<1>,   // static?
-    BCFixed<1>,   // isLet?
+    VarDeclSpecifierField,   // specifier
     BCFixed<1>,   // HasNonPatternBindingInit?
     StorageKindField,   // StorageKind
     TypeIDField,  // interface type
@@ -896,7 +907,7 @@ namespace decls_block {
     IdentifierIDField, // argument name
     IdentifierIDField, // parameter name
     DeclContextIDField,  // context decl
-    BCFixed<1>,   // isLet?
+    VarDeclSpecifierField,   // specifier
     TypeIDField  // interface type
   >;
 
@@ -1321,8 +1332,8 @@ namespace decls_block {
   using SynthesizedProtocolDeclAttrLayout
     = BCRecordLayout<SynthesizedProtocol_DECL_ATTR>;
   using ImplementsDeclAttrLayout = BCRecordLayout<Implements_DECL_ATTR>;
-  using NSKeyedArchiverClassNameDeclAttrLayout
-    = BCRecordLayout<NSKeyedArchiverClassName_DECL_ATTR>;
+  using ObjCRuntimeNameDeclAttrLayout
+    = BCRecordLayout<ObjCRuntimeName_DECL_ATTR>;
 
   using InlineDeclAttrLayout = BCRecordLayout<
     Inline_DECL_ATTR,
@@ -1358,12 +1369,6 @@ namespace decls_block {
   >;
 
 #undef BC_AVAIL_TUPLE
-
-  using AutoClosureDeclAttrLayout = BCRecordLayout<
-    AutoClosure_DECL_ATTR,
-    BCFixed<1>, // implicit flag
-    BCFixed<1>  // escaping
-  >;
 
   using ObjCDeclAttrLayout = BCRecordLayout<
     ObjC_DECL_ATTR,

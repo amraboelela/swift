@@ -457,7 +457,8 @@ bool Decl::isPrivateStdlibDecl(bool whitelistProtocols) const {
     return false;
 
   // If the name has leading underscore then it's a private symbol.
-  if (VD->getNameStr().startswith("_"))
+  if (!VD->getBaseName().isSpecial() &&
+      VD->getBaseName().getIdentifier().str().startswith("_"))
     return true;
 
   return false;
@@ -986,6 +987,25 @@ PatternBindingDecl *PatternBindingDecl::createDeserialized(
   return PBD;
 }
 
+ParamDecl *PatternBindingInitializer::getImplicitSelfDecl() {
+  if (SelfParam)
+    return SelfParam;
+
+  if (auto singleVar = getBinding()->getSingleVar()) {
+    auto *DC = singleVar->getDeclContext();
+    if (singleVar->getAttrs().hasAttribute<LazyAttr>() &&
+        DC->isTypeContext()) {
+      bool isInOut = !DC->getDeclaredTypeOfContext()->hasReferenceSemantics();
+      SelfParam = ParamDecl::createSelf(SourceLoc(), DC,
+                                        singleVar->isStatic(),
+                                        isInOut);
+      SelfParam->setDeclContext(this);
+    }
+  }
+
+  return SelfParam;
+}
+
 static bool patternContainsVarDeclBinding(const Pattern *P, const VarDecl *VD) {
   bool Result = false;
   P->forEachVariable([&](VarDecl *FoundVD) {
@@ -1146,7 +1166,13 @@ static bool isPolymorphic(const AbstractStorageDecl *storage) {
 
   case DeclKind::Class:
     // Final properties can always be direct, even in classes.
-    return !storage->isFinal();
+    if (storage->isFinal())
+      return false;
+    // Extension properties are statically dispatched, unless they're @objc.
+    if (storage->getDeclContext()->isExtensionContext()
+        && !storage->isObjC())
+      return false;
+    return true;
   }
   llvm_unreachable("bad DeclKind");
 }
@@ -1334,7 +1360,8 @@ bool AbstractStorageDecl::hasFixedLayout() const {
 
   // Private and (unversioned) internal variables always have a
   // fixed layout.
-  if (getEffectiveAccess() < Accessibility::Public)
+  if (!getFormalAccessScope(/*useDC=*/nullptr,
+                            /*respectVersionedAttr=*/true).isPublic())
     return true;
 
   // Check for an explicit @_fixed_layout attribute.
@@ -1583,47 +1610,21 @@ static Type mapSignatureFunctionType(ASTContext &ctx, Type type,
   }
 
   auto funcTy = type->castTo<AnyFunctionType>();
-  auto argTy = funcTy->getInput();
+  SmallVector<AnyFunctionType::Param, 4> newParams;
+  for (const auto &param : funcTy->getParams()) {
+    auto newParamType = mapSignatureParamType(ctx, param.getType());
+    ParameterTypeFlags newFlags = param.getParameterFlags().withEscaping(false);
 
-  if (auto tupleTy = argTy->getAs<TupleType>()) {
-    SmallVector<TupleTypeElt, 4> elements;
-    bool anyChanged = false;
-    unsigned idx = 0;
-    // Remap our parameters, and make sure to strip off @escaping
-    for (const auto &elt : tupleTy->getElements()) {
-      auto newEltTy = mapSignatureParamType(ctx, elt.getType());
-      auto newParamFlags = elt.getParameterFlags().withEscaping(false);
-      bool exactlyTheSame = newParamFlags == elt.getParameterFlags() &&
-                            newEltTy.getPointer() == elt.getType().getPointer();
-
-      // Don't build up anything if we never see any difference
-      if (!anyChanged && exactlyTheSame) {
-        ++idx;
-        continue;
-      }
-
-      // First time we see a diff, copy over all the prior
-      if (!anyChanged && !exactlyTheSame) {
-        elements.append(tupleTy->getElements().begin(),
-                        tupleTy->getElements().begin() + idx);
-        anyChanged = true;
-      }
-
-      elements.emplace_back(newEltTy, elt.getName(), newParamFlags);
-    }
-    if (anyChanged) {
-      argTy = TupleType::get(elements, ctx);
-    }
-  } else {
-    argTy = mapSignatureParamType(ctx, argTy);
-
+    // For the 'self' of a method, strip off 'inout'.
     if (isMethod) {
-      // In methods, strip the 'inout' off of 'self' so that mutating and
-      // non-mutating methods have the same self parameter type.
-      if (auto inoutTy = argTy->getAs<InOutType>()) {
-        argTy = inoutTy->getObjectType();
-      }
+      if (auto inoutType = newParamType->getAs<InOutType>())
+        newParamType = inoutType->getObjectType();
+
+      newFlags = newFlags.withInOut(false);
     }
+
+    AnyFunctionType::Param newParam(newParamType, param.getLabel(), newFlags);
+    newParams.push_back(newParam);
   }
 
   // Map the result type.
@@ -1639,9 +1640,9 @@ static Type mapSignatureFunctionType(ASTContext &ctx, Type type,
   // Rebuild the resulting function type.
   if (auto genericFuncTy = dyn_cast<GenericFunctionType>(funcTy))
     return GenericFunctionType::get(genericFuncTy->getGenericSignature(),
-                                    argTy, resultTy, info);
+                                    newParams, resultTy, info);
 
-  return FunctionType::get(argTy, resultTy, info);
+  return FunctionType::get(newParams, resultTy, info);
 }
 
 OverloadSignature ValueDecl::getOverloadSignature() const {
@@ -1680,7 +1681,7 @@ OverloadSignature ValueDecl::getOverloadSignature() const {
         if (auto funcTy = signature.InterfaceType->getAs<AnyFunctionType>()) {
           signature.InterfaceType
             = GenericFunctionType::get(genericSig,
-                                       funcTy->getInput(),
+                                       funcTy->getParams(),
                                        funcTy->getResult(),
                                        funcTy->getExtInfo())
                 ->getCanonicalType();
@@ -1890,18 +1891,18 @@ SourceLoc ValueDecl::getAttributeInsertionLoc(bool forModifier) const {
 
 /// Returns true if \p VD needs to be treated as publicly-accessible
 /// at the SIL, LLVM, and machine levels due to being versioned.
-static bool isVersionedInternalDecl(const ValueDecl *VD) {
-  assert(VD->getFormalAccess() == Accessibility::Internal);
+bool ValueDecl::isVersionedInternalDecl() const {
+  assert(getFormalAccess() == Accessibility::Internal);
 
-  if (VD->getAttrs().hasAttribute<VersionedAttr>())
+  if (getAttrs().hasAttribute<VersionedAttr>())
     return true;
 
-  if (auto *FD = dyn_cast<FuncDecl>(VD))
+  if (auto *FD = dyn_cast<FuncDecl>(this))
     if (auto *ASD = FD->getAccessorStorageDecl())
       if (ASD->getAttrs().hasAttribute<VersionedAttr>())
         return true;
 
-  if (auto *EED = dyn_cast<EnumElementDecl>(VD))
+  if (auto *EED = dyn_cast<EnumElementDecl>(this))
     if (EED->getParentEnum()->getAttrs().hasAttribute<VersionedAttr>())
       return true;
 
@@ -1928,21 +1929,17 @@ static Accessibility getTestableAccess(const ValueDecl *decl) {
 }
 
 Accessibility ValueDecl::getEffectiveAccess() const {
-  Accessibility effectiveAccess = getFormalAccess();
+  auto effectiveAccess = getFormalAccess(/*useDC=*/nullptr,
+                                         /*respectVersionedAttr=*/true);
 
   // Handle @testable.
   switch (effectiveAccess) {
-  case Accessibility::Public:
-    if (getModuleContext()->isTestingEnabled())
-      effectiveAccess = getTestableAccess(this);
-    break;
   case Accessibility::Open:
     break;
+  case Accessibility::Public:
   case Accessibility::Internal:
     if (getModuleContext()->isTestingEnabled())
       effectiveAccess = getTestableAccess(this);
-    else if (isVersionedInternalDecl(this))
-      effectiveAccess = Accessibility::Public;
     break;
   case Accessibility::FilePrivate:
     break;
@@ -1983,23 +1980,28 @@ Accessibility ValueDecl::getFormalAccessImpl(const DeclContext *useDC) const {
   return getFormalAccess();
 }
 
-AccessScope ValueDecl::getFormalAccessScope(const DeclContext *useDC) const {
+AccessScope ValueDecl::getFormalAccessScope(const DeclContext *useDC,
+                                            bool respectVersionedAttr) const {
   const DeclContext *result = getDeclContext();
-  Accessibility access = getFormalAccess(useDC);
+  Accessibility access = getFormalAccess(useDC, respectVersionedAttr);
 
   while (!result->isModuleScopeContext()) {
     if (result->isLocalContext() || access == Accessibility::Private)
       return AccessScope(result, true);
 
     if (auto enclosingNominal = dyn_cast<NominalTypeDecl>(result)) {
-      access = std::min(access, enclosingNominal->getFormalAccess(useDC));
+      access = std::min(access,
+                        enclosingNominal->getFormalAccess(useDC,
+                                                          respectVersionedAttr));
 
     } else if (auto enclosingExt = dyn_cast<ExtensionDecl>(result)) {
       // Just check the base type. If it's a constrained extension, Sema should
       // have already enforced access more strictly.
       if (auto extendedTy = enclosingExt->getExtendedType()) {
         if (auto nominal = extendedTy->getAnyNominal()) {
-          access = std::min(access, nominal->getFormalAccess(useDC));
+          access = std::min(access,
+                            nominal->getFormalAccess(useDC,
+                                                     respectVersionedAttr));
         }
       }
 
@@ -2048,10 +2050,52 @@ Type TypeDecl::getDeclaredInterfaceType() const {
   return interfaceType->castTo<MetatypeType>()->getInstanceType();
 }
 
+int TypeDecl::compare(const TypeDecl *type1, const TypeDecl *type2) {
+  // Order based on the enclosing declaration.
+  auto dc1 = type1->getDeclContext();
+  auto dc2 = type2->getDeclContext();
+
+  // Prefer lower depths.
+  auto depth1 = dc1->getSemanticDepth();
+  auto depth2 = dc2->getSemanticDepth();
+  if (depth1 != depth2)
+    return depth1 < depth2 ? -1 : +1;
+
+  // Prefer module names earlier in the alphabet.
+  if (dc1->isModuleScopeContext() && dc2->isModuleScopeContext()) {
+    auto module1 = dc1->getParentModule();
+    auto module2 = dc2->getParentModule();
+    if (int result = module1->getName().str().compare(module2->getName().str()))
+      return result;
+  }
+
+  auto nominal1 = dc1->getAsNominalTypeOrNominalTypeExtensionContext();
+  auto nominal2 = dc2->getAsNominalTypeOrNominalTypeExtensionContext();
+  if (static_cast<bool>(nominal1) != static_cast<bool>(nominal2)) {
+    return static_cast<bool>(nominal1) ? -1 : +1;
+  }
+  if (nominal1 && nominal2) {
+    if (int result = compare(nominal1, nominal2))
+      return result;
+  }
+
+  if (int result = type1->getBaseName().getIdentifier().str().compare(
+                                  type2->getBaseName().getIdentifier().str()))
+    return result;
+
+  // Error case: two type declarations that cannot be distinguished.
+  if (type1 < type2)
+    return -1;
+  if (type1 > type2)
+    return +1;
+  return 0;
+}
+
 bool NominalTypeDecl::hasFixedLayout() const {
   // Private and (unversioned) internal types always have a
   // fixed layout.
-  if (getEffectiveAccess() < Accessibility::Public)
+  if (!getFormalAccessScope(/*useDC=*/nullptr,
+                            /*respectVersionedAttr=*/true).isPublic())
     return true;
 
   // Check for an explicit @_fixed_layout attribute.
@@ -2693,6 +2737,8 @@ StringRef ClassDecl::getObjCRuntimeName(
     return objcClass->getObjCRuntimeNameAsString();
 
   // If there is an 'objc' attribute with a name, use that name.
+  if (auto attr = getAttrs().getAttribute<ObjCRuntimeNameAttr>())
+    return attr->Name;
   if (auto objc = getAttrs().getAttribute<ObjCAttr>()) {
     if (auto name = objc->getName())
       return name->getString(buffer);
@@ -2815,10 +2861,11 @@ ProtocolDecl::ProtocolDecl(DeclContext *DC, SourceLoc ProtocolLoc,
   ProtocolDeclBits.RequiresClass = false;
   ProtocolDeclBits.ExistentialConformsToSelfValid = false;
   ProtocolDeclBits.ExistentialConformsToSelf = false;
-  KnownProtocol = 0;
   ProtocolDeclBits.Circularity
     = static_cast<unsigned>(CircularityCheck::Unchecked);
   HasMissingRequirements = false;
+  KnownProtocol = 0;
+  NumRequirementsInSignature = 0;
 }
 
 llvm::TinyPtrVector<ProtocolDecl *>
@@ -2834,10 +2881,13 @@ ProtocolDecl::getInheritedProtocols() const {
         // Only protocols can appear in the inheritance clause
         // of a protocol -- anything else should get diagnosed
         // elsewhere.
-        if (auto *protoTy = type->getAs<ProtocolType>()) {
-          auto *protoDecl = protoTy->getDecl();
-          if (known.insert(protoDecl).second)
-            result.push_back(protoDecl);
+        if (type->isExistentialType()) {
+          auto layout = type->getExistentialLayout();
+          for (auto protoTy : layout.getProtocols()) {
+            auto *protoDecl = protoTy->getDecl();
+            if (known.insert(protoDecl).second)
+              result.push_back(protoDecl);
+          }
         }
       }
     }
@@ -2846,7 +2896,7 @@ ProtocolDecl::getInheritedProtocols() const {
 
   // Gather inherited protocols from the requirement signature.
   auto selfType = getProtocolSelfType();
-  for (auto req : getRequirementSignature()->getRequirements()) {
+  for (const auto &req : getRequirementSignature()) {
     if (req.getKind() == RequirementKind::Conformance &&
         req.getFirstType()->isEqual(selfType))
       result.push_back(req.getSecondType()->castTo<ProtocolType>()->getDecl());
@@ -2971,9 +3021,8 @@ findProtocolSelfReferences(const ProtocolDecl *proto, Type type,
   // Tuples preserve variance.
   if (auto tuple = type->getAs<TupleType>()) {
     auto kind = SelfReferenceKind::None();
-    for (auto &elt: tuple->getElements()) {
-      kind |= findProtocolSelfReferences(proto, elt.getType(),
-                                         skipAssocTypes);
+    for (auto &elt : tuple->getElements()) {
+      kind |= findProtocolSelfReferences(proto, elt.getType(), skipAssocTypes);
     }
     return kind;
   } 
@@ -2981,8 +3030,11 @@ findProtocolSelfReferences(const ProtocolDecl *proto, Type type,
   // Function preserve variance in the result type, and flip variance in
   // the parameter type.
   if (auto funcTy = type->getAs<AnyFunctionType>()) {
-    auto inputKind = findProtocolSelfReferences(proto, funcTy->getInput(),
-                                                skipAssocTypes);
+    auto inputKind = SelfReferenceKind::None();
+    for (auto &elt : funcTy->getParams()) {
+      inputKind |= findProtocolSelfReferences(proto, elt.getType(),
+                                              skipAssocTypes);
+    }
     auto resultKind = findProtocolSelfReferences(proto, funcTy->getResult(),
                                                  skipAssocTypes);
 
@@ -3233,35 +3285,39 @@ void ProtocolDecl::computeRequirementSignature() {
 
   auto module = getParentModule();
 
-  auto genericSig = getGenericSignature();
-  // The signature should look like <Self where Self : ThisProtocol>, and we
-  // reuse the two parts of it because the parameter and the requirement are
-  // exactly what we need.
-  auto validSig = genericSig->getGenericParams().size() == 1 &&
-                  genericSig->getRequirements().size() == 1;
-  if (!validSig) {
-    // This doesn't look like a protocol we can handle, so some other error must
-    // have occurred (usually a protocol nested within another declaration)
-    return;
-  }
-
-  auto selfType = genericSig->getGenericParams()[0];
-  auto requirement = genericSig->getRequirements()[0];
+  auto selfType = getSelfInterfaceType()->castTo<GenericTypeParamType>();
+  auto requirement =
+    Requirement(RequirementKind::Conformance, selfType,
+                getDeclaredInterfaceType());
 
   GenericSignatureBuilder builder(getASTContext(),
                                   LookUpConformanceInModule(module));
   builder.addGenericParameter(selfType);
   auto selfPA =
-      builder.resolveArchetype(selfType,
-                               ArchetypeResolutionKind::CompleteWellFormed);
+      builder.resolveArchetype(selfType, ArchetypeResolutionKind::WellFormed);
 
   builder.addRequirement(
          requirement,
          GenericSignatureBuilder::RequirementSource
-          ::forRequirementSignature(selfPA, this),
+           ::forRequirementSignature(selfPA, this),
          nullptr);
-  
-  RequirementSignature = builder.computeGenericSignature(SourceLoc());
+
+  // Compute and record the signature.
+  auto requirementSig = builder.computeGenericSignature(SourceLoc());
+  RequirementSignature = requirementSig->getRequirements().data();
+  assert(RequirementSignature != nullptr);
+  NumRequirementsInSignature = requirementSig->getRequirements().size();
+}
+
+void ProtocolDecl::setRequirementSignature(ArrayRef<Requirement> requirements) {
+  assert(!RequirementSignature && "already computed requirement signature");
+  if (requirements.empty()) {
+    RequirementSignature = reinterpret_cast<Requirement *>(this + 1);
+    NumRequirementsInSignature = 0;
+  } else {
+    RequirementSignature = getASTContext().AllocateCopy(requirements).data();
+    NumRequirementsInSignature = requirements.size();
+  }
 }
 
 /// Returns the default witness for a requirement, or nullptr if there is
@@ -3324,7 +3380,9 @@ bool AbstractStorageDecl::isSetterNonMutating() const {
   switch (getStorageKind()) {
   case AbstractStorageDecl::Stored:
   case AbstractStorageDecl::StoredWithTrivialAccessors:
-    return false;
+    // Instance member setters are mutating; static property setters and
+    // top-level setters are not.
+    return !isInstanceMember();
     
   case AbstractStorageDecl::StoredWithObservers:
   case AbstractStorageDecl::InheritedWithObservers:
@@ -3354,6 +3412,28 @@ FuncDecl *AbstractStorageDecl::getAccessorFunction(AccessorKind kind) const {
   case AccessorKind::NotAccessor: llvm_unreachable("called with NotAccessor");
   }
   llvm_unreachable("bad accessor kind!");
+}
+
+void AbstractStorageDecl::getAllAccessorFunctions(
+    SmallVectorImpl<Decl *> &decls) const {
+  auto tryPush = [&](Decl *decl) {
+    if (decl)
+      decls.push_back(decl);
+  };
+
+  tryPush(getGetter());
+  tryPush(getSetter());
+  tryPush(getMaterializeForSetFunc());
+
+  if (hasObservers()) {
+    tryPush(getDidSetFunc());
+    tryPush(getWillSetFunc());
+  }
+
+  if (hasAddressors()) {
+    tryPush(getAddressor());
+    tryPush(getMutableAddressor());
+  }
 }
 
 void AbstractStorageDecl::configureGetSetRecord(GetSetRecord *getSetInfo,
@@ -3916,9 +3996,12 @@ Pattern *VarDecl::getParentPattern() const {
 }
 
 bool VarDecl::isSelfParameter() const {
-  if (isa<ParamDecl>(this))
+  if (isa<ParamDecl>(this)) {
     if (auto *AFD = dyn_cast<AbstractFunctionDecl>(getDeclContext()))
       return AFD->getImplicitSelfDecl() == this;
+    if (auto *PBI = dyn_cast<PatternBindingInitializer>(getDeclContext()))
+      return PBI->getImplicitSelfDecl() == this;
+  }
 
   return false;
 }
@@ -4047,25 +4130,27 @@ void VarDecl::emitLetToVarNoteIfSimple(DeclContext *UseDC) const {
   }
 }
 
-ParamDecl::ParamDecl(bool isLet,
-                     SourceLoc letVarInOutLoc, SourceLoc argumentNameLoc,
+ParamDecl::ParamDecl(Specifier specifier,
+                     SourceLoc specifierLoc, SourceLoc argumentNameLoc,
                      Identifier argumentName, SourceLoc parameterNameLoc,
                      Identifier parameterName, Type ty, DeclContext *dc)
-  : VarDecl(DeclKind::Param, /*IsStatic*/false, /*IsLet*/isLet,
+  : VarDecl(DeclKind::Param, /*IsStatic*/false, specifier,
             /*IsCaptureList*/false, parameterNameLoc, parameterName, ty, dc),
   ArgumentName(argumentName), ArgumentNameLoc(argumentNameLoc),
-  LetVarInOutLoc(letVarInOutLoc) {
+  SpecifierLoc(specifierLoc) {
+    assert(specifier != Specifier::Var &&
+           "'var' cannot appear on parameters; you meant 'inout'");
 }
 
 /// Clone constructor, allocates a new ParamDecl identical to the first.
 /// Intentionally not defined as a copy constructor to avoid accidental copies.
 ParamDecl::ParamDecl(ParamDecl *PD)
-  : VarDecl(DeclKind::Param, /*IsStatic*/false, /*IsLet*/PD->isLet(),
+  : VarDecl(DeclKind::Param, /*IsStatic*/false, PD->getSpecifier(),
             /*IsCaptureList*/false, PD->getNameLoc(), PD->getName(),
             PD->hasType() ? PD->getType() : Type(), PD->getDeclContext()),
     ArgumentName(PD->getArgumentName()),
     ArgumentNameLoc(PD->getArgumentNameLoc()),
-    LetVarInOutLoc(PD->getLetVarInOutLoc()),
+    SpecifierLoc(PD->getSpecifierLoc()),
     DefaultValueAndIsVariadic(nullptr, PD->DefaultValueAndIsVariadic.getInt()),
     IsTypeLocImplicit(PD->IsTypeLocImplicit),
     defaultArgumentKind(PD->defaultArgumentKind) {
@@ -4106,7 +4191,7 @@ Type DeclContext::getSelfInterfaceType() const {
 /// generic parameters.
 ParamDecl *ParamDecl::createUnboundSelf(SourceLoc loc, DeclContext *DC) {
   ASTContext &C = DC->getASTContext();
-  auto *selfDecl = new (C) ParamDecl(/*IsLet*/true, SourceLoc(), SourceLoc(),
+  auto *selfDecl = new (C) ParamDecl(VarDecl::Specifier::Owned, SourceLoc(), SourceLoc(),
                                      Identifier(), loc, C.Id_self, Type(), DC);
   selfDecl->setImplicit();
   return selfDecl;
@@ -4126,6 +4211,7 @@ ParamDecl *ParamDecl::createSelf(SourceLoc loc, DeclContext *DC,
   ASTContext &C = DC->getASTContext();
   auto selfType = DC->getSelfTypeInContext();
   auto selfInterfaceType = DC->getSelfInterfaceType();
+  auto specifier = VarDecl::Specifier::Owned;
   assert(selfType && selfInterfaceType);
 
   if (isStaticMethod) {
@@ -4136,9 +4222,10 @@ ParamDecl *ParamDecl::createSelf(SourceLoc loc, DeclContext *DC,
   if (isInOut) {
     selfType = InOutType::get(selfType);
     selfInterfaceType = InOutType::get(selfInterfaceType);
+    specifier = VarDecl::Specifier::InOut;
   }
 
-  auto *selfDecl = new (C) ParamDecl(/*IsLet*/!isInOut, SourceLoc(),SourceLoc(),
+  auto *selfDecl = new (C) ParamDecl(specifier, SourceLoc(),SourceLoc(),
                                      Identifier(), loc, C.Id_self, selfType,DC);
   selfDecl->setImplicit();
   selfDecl->setInterfaceType(selfInterfaceType);
@@ -4377,7 +4464,7 @@ DeclName AbstractFunctionDecl::getEffectiveFullName() const {
         case AccessorKind::IsMutableAddressor:
         case AccessorKind::IsGetter:
           return subscript ? subscript->getFullName()
-                           : DeclName(ctx, afd->getName(),
+                           : DeclName(ctx, afd->getBaseName(),
                                       ArrayRef<Identifier>());
 
         case AccessorKind::IsSetter:
@@ -4395,7 +4482,7 @@ DeclName AbstractFunctionDecl::getEffectiveFullName() const {
             argNames.append(subscript->getFullName().getArgumentNames().begin(),
                             subscript->getFullName().getArgumentNames().end());
           }
-          return DeclName(ctx, afd->getName(), argNames);
+          return DeclName(ctx, afd->getBaseName(), argNames);
         }
       }
     }
@@ -4524,7 +4611,7 @@ ObjCSelector AbstractFunctionDecl::getObjCSelector(
     if (argNames.size() != preferredName.getArgumentNames().size()) {
       return ObjCSelector();
     }
-    baseName = preferredName.getBaseName();
+    baseName = preferredName.getBaseIdentifier();
     argNames = preferredName.getArgumentNames();
   }
 
@@ -5113,7 +5200,7 @@ ConstructorDecl::getDelegatingOrChainedInitKind(DiagnosticEngine *diags,
       } else if (auto *CRE = dyn_cast<ConstructorRefCallExpr>(Callee)) {
         arg = CRE->getArg();
       } else if (auto *dotExpr = dyn_cast<UnresolvedDotExpr>(Callee)) {
-        if (dotExpr->getName().getBaseName().str() != "init")
+        if (dotExpr->getName().getBaseName() != "init")
           return { true, E };
 
         arg = dotExpr->getBase();

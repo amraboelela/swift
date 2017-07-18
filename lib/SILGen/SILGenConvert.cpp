@@ -310,7 +310,8 @@ ManagedValue
 SILGenFunction::emitOptionalToOptional(SILLocation loc,
                                        ManagedValue input,
                                        SILType resultTy,
-                                       ValueTransformRef transformValue) {
+                                       ValueTransformRef transformValue,
+                                       SGFContext C) {
   auto contBB = createBasicBlock();
   auto isNotPresentBB = createBasicBlock();
   auto isPresentBB = createBasicBlock();
@@ -324,6 +325,7 @@ SILGenFunction::emitOptionalToOptional(SILLocation loc,
 
   // If the result is address-only, we need to return something in memory,
   // otherwise the result is the BBArgument in the merge point.
+  // TODO: use the SGFContext passed in.
   ManagedValue finalResult;
   if (resultTL.isAddressOnly() && silConv.useLoweredAddresses()) {
     finalResult = emitManagedBufferWithCleanup(
@@ -347,7 +349,8 @@ SILGenFunction::emitOptionalToOptional(SILLocation loc,
               loc, input, someDecl, input.getType().getAnyOptionalObjectType());
         }
 
-        ManagedValue result = transformValue(*this, loc, input, noOptResultTy);
+        ManagedValue result = transformValue(*this, loc, input, noOptResultTy,
+                                             SGFContext());
 
         if (!(resultTL.isAddressOnly() && silConv.useLoweredAddresses())) {
           SILValue some = B.createOptionalSome(loc, result).forward(*this);
@@ -795,20 +798,12 @@ SILGenFunction::emitOpenExistential(
     }
 
     if (existentialValue.hasCleanup()) {
-      if (this->SGM.M.getOptions().UseCOWExistentials) {
-        // With CoW existentials we can't consume the boxed value inside of
-        // the existential. (We could only do so after a uniqueness check on
-        // the box holding the value).
-        canConsume = false;
-        enterDestroyCleanup(existentialValue.getValue());
-        archetypeMV = ManagedValue::forUnmanaged(archetypeValue);
-      } else {
-        canConsume = true;
-        // Leave a cleanup to deinit the existential container.
-        enterDeinitExistentialCleanup(existentialValue.getValue(), CanType(),
-                                      ExistentialRepresentation::Opaque);
-        archetypeMV = emitManagedBufferWithCleanup(archetypeValue);
-      }
+      // With CoW existentials we can't consume the boxed value inside of
+      // the existential. (We could only do so after a uniqueness check on
+      // the box holding the value).
+      canConsume = false;
+      enterDestroyCleanup(existentialValue.getValue());
+      archetypeMV = ManagedValue::forUnmanaged(archetypeValue);
     } else {
       canConsume = false;
       archetypeMV = ManagedValue::forUnmanaged(archetypeValue);
@@ -859,7 +854,6 @@ SILGenFunction::emitOpenExistential(
   case ExistentialRepresentation::None:
     llvm_unreachable("not existential");
   }
-  setArchetypeOpeningSite(openedArchetype, archetypeMV.getValue());
 
   assert(!canConsume || isUnique); (void) isUnique;
 

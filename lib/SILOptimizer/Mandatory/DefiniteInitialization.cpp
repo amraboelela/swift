@@ -1103,9 +1103,9 @@ void LifetimeChecker::handleInOutUse(const DIMemoryUse &Use) {
     // about the method.  The magic numbers used by the diagnostic are:
     // 0 -> method, 1 -> property, 2 -> subscript, 3 -> operator.
     unsigned Case = ~0;
-    Identifier MethodName;
+    DeclBaseName MethodName;
     if (FD && FD->isAccessor()) {
-      MethodName = FD->getAccessorStorageDecl()->getName();
+      MethodName = FD->getAccessorStorageDecl()->getBaseName();
       Case = isa<SubscriptDecl>(FD->getAccessorStorageDecl()) ? 2 : 1;
     } else if (FD && FD->isOperator()) {
       MethodName = FD->getName();
@@ -1383,9 +1383,9 @@ bool LifetimeChecker::diagnoseMethodCall(const DIMemoryUse &Use,
   if (Method) {
     if (!shouldEmitError(Inst)) return true;
 
-    Identifier Name;
+    DeclBaseName Name;
     if (Method->isAccessor())
-      Name = Method->getAccessorStorageDecl()->getName();
+      Name = Method->getAccessorStorageDecl()->getBaseName();
     else
       Name = Method->getName();
 
@@ -2237,8 +2237,7 @@ handleConditionalDestroys(SILValue ControlVariableAddr) {
       }
       case DIKind::Yes:
         // super.init() already called, just release the value.
-        Release->removeFromParent();
-        B.getInsertionBB()->insert(B.getInsertionPoint(), Release);
+        Release->moveBefore(&*B.getInsertionPoint());
         continue;
       }
     }
