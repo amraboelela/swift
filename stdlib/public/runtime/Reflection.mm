@@ -663,7 +663,7 @@ SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 intptr_t swift_ClassMirror_count(HeapObject *owner,
                                  const OpaqueValue *value,
                                  const Metadata *type) {
-    fprintf(stderr, "swift_ClassMirror_count 1\n");
+    //fprintf(stderr, "swift_ClassMirror_count 1\n");
     auto Clas = static_cast<const ClassMetadata*>(type);
     swift_release(owner);
     auto count = Clas->getDescription()->Class.NumFields;
@@ -685,7 +685,7 @@ void swift_ClassMirror_subscript(String *outString,
                                  HeapObject *owner,
                                  OpaqueValue *value,
                                  const Metadata *type) {
-    fprintf(stderr, "swift_ClassMirror_subscript 1\n");
+    //fprintf(stderr, "swift_ClassMirror_subscript 1\n");
     auto Clas = static_cast<const ClassMetadata*>(type);
     
     if (classHasSuperclass(Clas)) {

@@ -118,7 +118,7 @@ _buildDemanglingForNominalType(const Metadata *type, Demangle::Demangler &Dem) {
 Demangle::NodePointer
 swift::_swift_buildDemanglingForMetadata(const Metadata *type,
                                          Demangle::Demangler &Dem) {
-    fprintf(stderr, "_swift_buildDemanglingForMetadata 1\n");
+    //fprintf(stderr, "_swift_buildDemanglingForMetadata 1\n");
     using namespace Demangle;
     
     switch (type->getKind()) {

@@ -75,13 +75,13 @@ HashableConformances;
 template<bool KnownToConformToHashable>
 LLVM_ATTRIBUTE_ALWAYS_INLINE
 static const Metadata *findHashableBaseTypeImpl(const Metadata *type) {
-    fprintf(stderr, "findHashableBaseTypeImpl 1\n");
+    //fprintf(stderr, "findHashableBaseTypeImpl 1\n");
     // Check the cache first.
     if (HashableConformanceEntry *entry =
         HashableConformances.find(HashableConformanceKey{type})) {
         return entry->baseTypeThatConformsToHashable;
     }
-    fprintf(stderr, "findHashableBaseTypeImpl 2\n");
+    //fprintf(stderr, "findHashableBaseTypeImpl 2\n");
     if (!KnownToConformToHashable &&
         !swift_conformsToProtocol(type, &HashableProtocolDescriptor)) {
         // Don't cache the negative response because we don't invalidate
@@ -140,7 +140,7 @@ void _swift_stdlib_makeAnyHashableUpcastingToHashableBaseType(
   const Metadata *type,
   const WitnessTable *hashableWT
                                                               ) {
-    fprintf(stderr, "_swift_stdlib_makeAnyHashableUpcastingToHashableBaseType type->getKind(): %d\n", type->getKind());
+    //fprintf(stderr, "_swift_stdlib_makeAnyHashableUpcastingToHashableBaseType type->getKind(): %d\n", type->getKind());
     switch (type->getKind()) {
         case MetadataKind::Class:
         case MetadataKind::ObjCClassWrapper:

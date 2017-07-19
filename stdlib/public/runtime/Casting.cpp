@@ -313,7 +313,7 @@ static bool _conformsToProtocol(const OpaqueValue *value,
                                 const Metadata *type,
                                 const ProtocolDescriptor *protocol,
                                 const WitnessTable **conformance) {
-    fprintf(stderr, "_conformsToProtocol 1\n");
+    //fprintf(stderr, "_conformsToProtocol 1\n");
     // Look up the witness table for protocols that need them.
     if (protocol->Flags.needsWitnessTable()) {
         auto witness = swift_conformsToProtocol(type, protocol);
@@ -323,7 +323,7 @@ static bool _conformsToProtocol(const OpaqueValue *value,
             *conformance = witness;
         return true;
     }
-    fprintf(stderr, "_conformsToProtocol type->getKind(): %d\n", type->getKind());
+    //fprintf(stderr, "_conformsToProtocol type->getKind(): %d\n", type->getKind());
     // For Objective-C protocols, check whether we have a class that
     // conforms to the given protocol.
     switch (type->getKind()) {
@@ -570,7 +570,7 @@ static void deallocateDynamicValue(OpaqueValue *value, const Metadata *type) {
 SWIFT_CC(c) SWIFT_RUNTIME_EXPORT
 id
 swift_dynamicCastMetatypeToObjectConditional(const Metadata *metatype) {
-    fprintf(stderr, "swift_dynamicCastMetatypeToObjectConditional 1\n");
+    //fprintf(stderr, "swift_dynamicCastMetatypeToObjectConditional 1\n");
     switch (metatype->getKind()) {
         case MetadataKind::Class:
             // Swift classes are objects in and of themselves.
@@ -603,7 +603,7 @@ swift_dynamicCastMetatypeToObjectConditional(const Metadata *metatype) {
 SWIFT_CC(c) SWIFT_RUNTIME_EXPORT
 id
 swift_dynamicCastMetatypeToObjectUnconditional(const Metadata *metatype) {
-    fprintf(stderr, "swift_dynamicCastMetatypeToObjectUnconditional 1\n");
+    //fprintf(stderr, "swift_dynamicCastMetatypeToObjectUnconditional 1\n");
     switch (metatype->getKind()) {
         case MetadataKind::Class:
             // Swift classes are objects in and of themselves.
@@ -672,7 +672,7 @@ static bool _dynamicCastToAnyHashable(OpaqueValue *destination,
                                       const Metadata *sourceType,
                                       const Metadata *targetType,
                                       DynamicCastFlags flags) {
-    fprintf(stderr, "_dynamicCastToAnyHashable 1\n");
+    //fprintf(stderr, "_dynamicCastToAnyHashable 1\n");
   // Look for a conformance to Hashable.
   auto hashableConformance = reinterpret_cast<const HashableWitnessTable *>(
       swift_conformsToProtocol(sourceType, &HashableProtocolDescriptor));
@@ -1408,7 +1408,7 @@ static bool _dynamicCastUnknownClassIndirect(OpaqueValue *dest,
 extern "C" const ProtocolDescriptor PROTOCOL_DESCR_SYM(s5Error);
 
 static const WitnessTable *findErrorWitness(const Metadata *srcType) {
-    fprintf(stderr, "findErrorWitness 1\n");
+    //fprintf(stderr, "findErrorWitness 1\n");
   return swift_conformsToProtocol(srcType, &PROTOCOL_DESCR_SYM(s5Error));
 }
 #endif
@@ -2885,7 +2885,7 @@ static bool _dynamicCastClassToValueViaObjCBridgeable(
 static id bridgeAnythingNonVerbatimToObjectiveC(OpaqueValue *src,
                                                 const Metadata *srcType,
                                                 bool consume) {
-    fprintf(stderr, "bridgeAnythingNonVerbatimToObjectiveC 1\n");
+    //fprintf(stderr, "bridgeAnythingNonVerbatimToObjectiveC 1\n");
     // We can always bridge objects verbatim.
     if (srcType->isAnyClass()) {
         id result;
@@ -2982,7 +2982,7 @@ extern "C" const _ObjectiveCBridgeableWitnessTable BRIDGING_CONFORMANCE_SYM;
 
 static const _ObjectiveCBridgeableWitnessTable *
 findBridgeWitness(const Metadata *T) {
-    fprintf(stderr, "findBridgeWitness 1\n");
+    //fprintf(stderr, "findBridgeWitness 1\n");
   auto w = swift_conformsToProtocol(T,
                                 &PROTOCOL_DESCR_SYM(s21_ObjectiveCBridgeable));
   if (LLVM_LIKELY(w))
@@ -3207,7 +3207,7 @@ bool _swift_isClassOrObjCExistentialType(const Metadata *value,
 
 SWIFT_CC(swift)
 const Metadata *swift::_swift_class_getSuperclass(const Metadata *theClass) {
-    fprintf(stderr, "_swift_class_getSuperclass 1\n");
+    //fprintf(stderr, "_swift_class_getSuperclass 1\n");
     if (const ClassMetadata *classType = theClass->getClassObject())
         if (classHasSuperclass(classType))
             return swift_getObjCClassMetadata(classType->SuperClass);

@@ -286,7 +286,7 @@ static SimpleGlobalCache<ObjCClassCacheEntry> ObjCClassWrappers;
 
 const Metadata *
 swift::swift_getObjCClassMetadata(const ClassMetadata *theClass) {
-    fprintf(stderr, "swift_getObjCClassMetadata 1\n");
+    //fprintf(stderr, "swift_getObjCClassMetadata 1\n");
     // Make calls resilient against receiving a null Objective-C class. This can
     // happen when classes are weakly linked and not available.
     if (theClass == nullptr)
@@ -296,7 +296,7 @@ swift::swift_getObjCClassMetadata(const ClassMetadata *theClass) {
     if (theClass->isTypeMetadata()) {
         return theClass;
     }
-    fprintf(stderr, "swift_getObjCClassMetadata 2\n");
+    //fprintf(stderr, "swift_getObjCClassMetadata 2\n");
 #if SWIFT_OBJC_INTEROP
     return &ObjCClassWrappers.getOrInsert(theClass).first->Data;
 #else
@@ -378,7 +378,7 @@ swift::swift_getFunctionTypeMetadata1(FunctionTypeFlags flags,
                                       const Metadata *result) {
     assert(flags.getNumArguments() == 1
            && "wrong number of arguments in function metadata flags?!");
-    fprintf(stderr, "swift_getFunctionTypeMetadata1 1\n");
+    //fprintf(stderr, "swift_getFunctionTypeMetadata1 1\n");
     const void *flagsArgsAndResult[] = {
         reinterpret_cast<const void*>(flags.getIntValue()),
         arg0,
@@ -393,7 +393,7 @@ swift::swift_getFunctionTypeMetadata2(FunctionTypeFlags flags,
                                       const Metadata *result) {
     assert(flags.getNumArguments() == 2
            && "wrong number of arguments in function metadata flags?!");
-    fprintf(stderr, "swift_getFunctionTypeMetadata2 1\n");
+    //fprintf(stderr, "swift_getFunctionTypeMetadata2 1\n");
     const void *flagsArgsAndResult[] = {
         reinterpret_cast<const void*>(flags.getIntValue()),
         arg0,
@@ -410,7 +410,7 @@ swift::swift_getFunctionTypeMetadata3(FunctionTypeFlags flags,
                                       const Metadata *result) {
     assert(flags.getNumArguments() == 3
            && "wrong number of arguments in function metadata flags?!");
-    fprintf(stderr, "swift_getFunctionTypeMetadata3 1\n");
+    //fprintf(stderr, "swift_getFunctionTypeMetadata3 1\n");
     const void *flagsArgsAndResult[] = {
         reinterpret_cast<const void*>(flags.getIntValue()),
         arg0,
@@ -423,14 +423,14 @@ swift::swift_getFunctionTypeMetadata3(FunctionTypeFlags flags,
 
 const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata(const void *flagsArgsAndResult[]) {
-    fprintf(stderr, "swift_getFunctionTypeMetadata 1\n");
+    //fprintf(stderr, "swift_getFunctionTypeMetadata 1\n");
     FunctionCacheEntry::Key key = { flagsArgsAndResult };
     return &FunctionTypes.getOrInsert(key).first->Data;
 }
 
 FunctionCacheEntry::FunctionCacheEntry(Key key) {
     auto flags = key.getFlags();
-    fprintf(stderr, "FunctionCacheEntry 1\n");
+    //fprintf(stderr, "FunctionCacheEntry 1\n");
     // Pick a value witness table appropriate to the function convention.
     // All function types of a given convention have the same value semantics,
     // so they share a value witness table.
@@ -1501,7 +1501,7 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
                                                  size_t numFields,
                                            const ClassFieldLayout *fieldLayouts,
                                                  size_t *fieldOffsets) {
-    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 1\n");
+    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 1\n");
     self = _swift_initializeSuperclass(self, /*copyFieldOffsetVectors=*/true);
     
     // Start layout by appending to a standard heap object header.
@@ -1510,7 +1510,7 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
 #if SWIFT_OBJC_INTEROP
     ClassROData *rodata = getROData(self);
 #endif
-    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 2\n");
+    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 2\n");
     // If we have a superclass, start from its size and alignment instead.
     if (classHasSuperclass(self)) {
         const ClassMetadata *super = self->SuperClass;
@@ -1532,14 +1532,14 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
             alignMask = 0xF; // malloc alignment guarantee
         }
 #endif
-        fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 3\n");
+        //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 3\n");
         // If we don't have a formal superclass, start with the basic heap header.
     } else {
         auto heapLayout = BasicLayout::initialForHeapObject();
         size = heapLayout.size;
         alignMask = heapLayout.flags.getAlignmentMask();
     }
-    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 4\n");
+    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 4\n");
 #if SWIFT_OBJC_INTEROP
     // In ObjC interop mode, we have up to two places we need each correct
     // ivar offset to end up:
@@ -1590,7 +1590,7 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
     // in Swift.  (But note that ObjC might think we have a superclass
     // even if Swift doesn't, because of SwiftObject.)
     rodata->InstanceStart = size;
-    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 5\n");
+    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 5\n");
     auto genericPattern = self->getDescription()->getGenericMetadataPattern();
     auto &allocator =
     genericPattern ? unsafeGetInitializedCache(genericPattern).getAllocator()
@@ -1632,7 +1632,7 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
         }
     }
 #endif
-    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 6\n");
+    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 6\n");
     // Okay, now do layout.
     for (unsigned i = 0; i != numFields; ++i) {
         // Skip empty fields.
@@ -1648,7 +1648,7 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
     assert(self->isTypeMetadata());
     self->setInstanceSize(size);
     self->setInstanceAlignMask(alignMask);
-    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 7\n");
+    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 7\n");
 #if SWIFT_OBJC_INTEROP
     // Save the size into the Objective-C metadata as well.
     rodata->InstanceSize = size;
@@ -1672,10 +1672,10 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
         if (_globalIvarOffsets != _inlineGlobalIvarOffsets) {
             delete [] _globalIvarOffsets;
         }
-        fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 8\n");
+        //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 8\n");
     }
 #endif
-    fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 9\n");
+    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 9\n");
     return self;
 }
 
@@ -2518,7 +2518,7 @@ swift::swift_getForeignTypeMetadata(ForeignTypeMetadata *nonUnique) {
   // call it.  This has to be done with the lock dropped.
     if (inserted && hasInit) {
         nonUnique->getInitializationFunction()(nonUnique);
-        fprintf(stderr, "swift_getForeignTypeMetadata nonUnique->getInitializationFunction() 1\n");
+        //fprintf(stderr, "swift_getForeignTypeMetadata nonUnique->getInitializationFunction() 1\n");
         // Update the cache entry:
         
         //   - Reacquire the lock.
@@ -2556,15 +2556,15 @@ Metadata::getGenericPattern() const {
 
 template<> const ClassMetadata *
 Metadata::getClassObject() const {
-    fprintf(stderr, "getClassObject getKind(): %d\n", getKind());
+    //fprintf(stderr, "getClassObject getKind(): %d\n", getKind());
     switch (getKind()) {
         case MetadataKind::Class: {
-            fprintf(stderr, "getClassObject MetadataKind::Class\n");
+            //fprintf(stderr, "getClassObject MetadataKind::Class\n");
             // Native Swift class metadata is also the class object.
             return static_cast<const ClassMetadata *>(this);
         }
         case MetadataKind::ObjCClassWrapper: {
-            fprintf(stderr, "getClassObject MetadataKind::ObjCClassWrapper\n");
+            //fprintf(stderr, "getClassObject MetadataKind::ObjCClassWrapper\n");
             // Objective-C class objects are referenced by their Swift metadata wrapper.
             auto wrapper = static_cast<const ObjCClassWrapperMetadata *>(this);
             return wrapper->Class;
@@ -2583,10 +2583,10 @@ Metadata::getClassObject() const {
         case MetadataKind::HeapLocalVariable:
         case MetadataKind::HeapGenericLocalVariable:
         case MetadataKind::ErrorObject:
-            fprintf(stderr, "getClassObject return nullptr\n");
+            //fprintf(stderr, "getClassObject return nullptr\n");
             return nullptr;
     }
-    fprintf(stderr, "getClassObject swift_runtime_unreachable\n");
+    //fprintf(stderr, "getClassObject swift_runtime_unreachable\n");
     swift_runtime_unreachable("Unhandled MetadataKind in switch.");
 }
 
@@ -2782,7 +2782,7 @@ allocateWitnessTable(GenericWitnessTable *genericTable,
 const WitnessTable *swift::swift_getGenericWitnessTable(
     GenericWitnessTable *genericTable, const Metadata *type,
                                                         void *const *instantiationArgs) SWIFT_CC(RegisterPreservingCC_IMPL) {
-    fprintf(stderr, "swift_getGenericWitnessTable 1\n");
+    //fprintf(stderr, "swift_getGenericWitnessTable 1\n");
     if (doesNotRequireInstantiation(genericTable)) {
         return genericTable->Pattern;
     }

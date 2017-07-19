@@ -126,10 +126,10 @@ namespace swift {
 
   static inline
     bool objectUsesNativeSwiftReferenceCounting(const void *object) {
-        fprintf(stderr, "objectUsesNativeSwiftReferenceCounting 1\n");
+        //fprintf(stderr, "objectUsesNativeSwiftReferenceCounting 1\n");
         assert(!isObjCTaggedPointerOrNull(object));
 #if SWIFT_HAS_OPAQUE_ISAS
-        fprintf(stderr, "objectUsesNativeSwiftReferenceCounting SWIFT_HAS_OPAQUE_ISAS\n");
+        //fprintf(stderr, "objectUsesNativeSwiftReferenceCounting SWIFT_HAS_OPAQUE_ISAS\n");
         // Fast path for opaque ISAs.  We don't want to call
         // _swift_getClassOfAllocated as that will call object_getClass.
         // Instead we can look at the bits in the ISA and tell if its a
@@ -139,7 +139,7 @@ namespace swift {
             return false;
         return usesNativeSwiftReferenceCounting(_swift_getClassOfAllocatedFromPointer(object));
 #else
-        fprintf(stderr, "objectUsesNativeSwiftReferenceCounting SWIFT_HAS_OPAQUE_ISAS else\n");
+        //fprintf(stderr, "objectUsesNativeSwiftReferenceCounting SWIFT_HAS_OPAQUE_ISAS else\n");
         return usesNativeSwiftReferenceCounting(_swift_getClassOfAllocated(object));
 #endif
     }
@@ -152,7 +152,7 @@ namespace swift {
   /// Check if a class has a formal superclass in the AST.
   static inline
     bool classHasSuperclass(const ClassMetadata *c) {
-        fprintf(stderr, "classHasSuperclass\n");
+        //fprintf(stderr, "classHasSuperclass\n");
         return (c->SuperClass && c->SuperClass != getRootSuperclass());
     }
 

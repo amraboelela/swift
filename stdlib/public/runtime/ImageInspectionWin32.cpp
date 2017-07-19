@@ -160,7 +160,7 @@ static uint8_t *_swift_getSectionDataPE(const void *handle, const char *sectionN
 
 static int _addImageCallback(struct _swift_dl_phdr_info *info,
                              size_t size, const void *data) {
-    fprintf(stderr, "_addImageCallback 1\n");
+    //fprintf(stderr, "_addImageCallback 1\n");
     const InspectArgs *inspectArgs = (InspectArgs *)data;
     // inspectArgs contains addImage*Block function and the section name
 #if defined(_WIN32)
@@ -195,7 +195,7 @@ static int _addImageCallback(struct _swift_dl_phdr_info *info,
 }
 
 void swift::initializeProtocolConformanceLookup() {
-    fprintf(stderr, "initializeProtocolConformanceLookup 1\n");
+    //fprintf(stderr, "initializeProtocolConformanceLookup 1\n");
     // Search the loaded dls. This only searches the already
     // loaded ones.
     // FIXME: Find a way to have this continue to happen for dlopen-ed images.
@@ -208,7 +208,7 @@ void swift::initializeProtocolConformanceLookup() {
 }
 
 void swift::initializeTypeMetadataRecordLookup() {
-    fprintf(stderr, "initializeTypeMetadataRecordLookup 1\n");
+    //fprintf(stderr, "initializeTypeMetadataRecordLookup 1\n");
     // Search the loaded dls. This only searches the already
     // loaded ones.
     // FIXME: Find a way to have this continue to happen for dlopen-ed images.

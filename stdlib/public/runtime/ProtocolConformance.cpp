@@ -225,9 +225,9 @@ struct ConformanceState {
     
     ConformanceState() {
         SectionsToScan.reserve(16);
-        fprintf(stderr, "ConformanceState 1\n");
+        //fprintf(stderr, "ConformanceState 1\n");
         initializeProtocolConformanceLookup();
-        fprintf(stderr, "ConformanceState 2\n");
+        //fprintf(stderr, "ConformanceState 2\n");
     }
     
     void cacheSuccess(const void *type, const ProtocolDescriptor *proto,
@@ -265,7 +265,7 @@ static void
 _registerProtocolConformances(ConformanceState &C,
                               const ProtocolConformanceRecord *begin,
                               const ProtocolConformanceRecord *end) {
-    fprintf(stderr, "_registerProtocolConformances 1\n");
+    //fprintf(stderr, "_registerProtocolConformances 1\n");
     ScopedLock guard(C.SectionsToScanLock);
     C.SectionsToScan.push_back(ConformanceSection{begin, end});
 }
@@ -283,20 +283,20 @@ void swift::addImageProtocolConformanceBlockCallback(const void *conformances,
     = reinterpret_cast<const ProtocolConformanceRecord*>
     (conformanceBytes + conformancesSize);
     
-    fprintf(stderr, "addImageProtocolConformanceBlockCallback 1\n");
+    //fprintf(stderr, "addImageProtocolConformanceBlockCallback 1\n");
     // Conformance cache should always be sufficiently initialized by this point.
     _registerProtocolConformances(Conformances.unsafeGetAlreadyInitialized(),
                                   recordsBegin, recordsEnd);
-    fprintf(stderr, "addImageProtocolConformanceBlockCallback 2\n");
+    //fprintf(stderr, "addImageProtocolConformanceBlockCallback 2\n");
 }
 
 void
 swift::swift_registerProtocolConformances(const ProtocolConformanceRecord *begin,
                                           const ProtocolConformanceRecord *end){
     auto &C = Conformances.get();
-    fprintf(stderr, "swift_registerProtocolConformances 1\n");
+    //fprintf(stderr, "swift_registerProtocolConformances 1\n");
     _registerProtocolConformances(C, begin, end);
-    fprintf(stderr, "swift_registerProtocolConformances 2\n");
+    //fprintf(stderr, "swift_registerProtocolConformances 2\n");
 }
 
 
@@ -315,19 +315,19 @@ struct ConformanceCacheResult {
     
     static ConformanceCacheResult
     cachedSuccess(const WitnessTable *table) {
-        fprintf(stderr, "ConformanceCacheResult cachedSuccess\n");
+        //fprintf(stderr, "ConformanceCacheResult cachedSuccess\n");
         return ConformanceCacheResult { true, table, nullptr };
     }
     
     static ConformanceCacheResult
     cachedFailure(ConformanceCacheEntry *entry, bool auth) {
-        fprintf(stderr, "ConformanceCacheResult cachedFailure auth: %d\n", auth);
+        //fprintf(stderr, "ConformanceCacheResult cachedFailure auth: %d\n", auth);
         return ConformanceCacheResult { auth, nullptr, entry };
     }
     
     static ConformanceCacheResult
     cacheMiss() {
-        fprintf(stderr, "ConformanceCacheResult cacheMiss\n");
+        //fprintf(stderr, "ConformanceCacheResult cacheMiss\n");
         return ConformanceCacheResult { false, nullptr, nullptr };
     }
 };
@@ -337,18 +337,18 @@ static
 ConformanceCacheResult
 searchInConformanceCache(const Metadata *type,
                          const ProtocolDescriptor *protocol) {
-    fprintf(stderr, "searchInConformanceCache 1\n");
+    //fprintf(stderr, "searchInConformanceCache 1\n");
     auto &C = Conformances.get();
     auto origType = type;
     ConformanceCacheEntry *failureEntry = nullptr;
-    fprintf(stderr, "searchInConformanceCache 2\n");
+    //fprintf(stderr, "searchInConformanceCache 2\n");
 recur:
     {
-        fprintf(stderr, "searchInConformanceCache recur\n");
+        //fprintf(stderr, "searchInConformanceCache recur\n");
         // Try the specific type first.
         if (auto *Value = C.findCached(type, protocol)) {
             if (Value->isSuccessful()) {
-                fprintf(stderr, "searchInConformanceCache Value->isSuccessful()\n");
+                //fprintf(stderr, "searchInConformanceCache Value->isSuccessful()\n");
                 // Found a conformance on the type or some superclass. Return it.
                 return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
             }
@@ -357,14 +357,14 @@ recur:
             
             bool isAuthoritative;
             if (type == origType) {
-                fprintf(stderr, "searchInConformanceCache type == origType\n");
+                //fprintf(stderr, "searchInConformanceCache type == origType\n");
                 // This negative cache entry is for the original query type.
                 // Remember it so it can be returned later.
                 failureEntry = Value;
                 // An up-to-date entry for the original type is authoritative.
                 isAuthoritative = true;
             } else {
-                fprintf(stderr, "searchInConformanceCache type != origType\n");
+                //fprintf(stderr, "searchInConformanceCache type != origType\n");
                 // An up-to-date cached failure for a superclass of the type is not
                 // authoritative: there may be a still-undiscovered conformance
                 // for the original query type.
@@ -375,7 +375,7 @@ recur:
             // FIXME: Using SectionsToScan.size() outside SectionsToScanLock
             // is undefined.
             if (Value->getFailureGeneration() == C.SectionsToScan.size()) {
-                fprintf(stderr, "searchInConformanceCache Value->getFailureGeneration() == C.SectionsToScan.size()\n");
+                //fprintf(stderr, "searchInConformanceCache Value->getFailureGeneration() == C.SectionsToScan.size()\n");
                 // Negative cache entry is up-to-date. Return failure along with
                 // the original query type's own cache entry, if we found one.
                 // (That entry may be out of date but the caller still has use for it.)
@@ -389,7 +389,7 @@ recur:
     }
     
     {
-        fprintf(stderr, "searchInConformanceCache const auto description\n");
+        //fprintf(stderr, "searchInConformanceCache const auto description\n");
         // For generic and resilient types, nondependent conformances
         // are keyed by the nominal type descriptor rather than the
         // metadata, so try that.
@@ -397,7 +397,7 @@ recur:
         
         // Hash and lookup the type-protocol pair in the cache.
         if (auto *Value = C.findCached(description, protocol)) {
-            fprintf(stderr, "searchInConformanceCache auto *Value = C.findCached(description, protocol)\n");
+            //fprintf(stderr, "searchInConformanceCache auto *Value = C.findCached(description, protocol)\n");
             if (Value->isSuccessful())
                 return ConformanceCacheResult::cachedSuccess(Value->getWitnessTable());
             
@@ -406,7 +406,7 @@ recur:
         }
     }
     
-    fprintf(stderr, "searchInConformanceCache 3\n");
+    //fprintf(stderr, "searchInConformanceCache 3\n");
     // If the type is a class, try its superclass.
     if (const ClassMetadata *classType = type->getClassObject()) {
         if (classHasSuperclass(classType)) {
@@ -422,7 +422,7 @@ recur:
         return ConformanceCacheResult::cachedFailure(failureEntry, false);
     else
         return ConformanceCacheResult::cacheMiss();
-    fprintf(stderr, "searchInConformanceCache 4\n");
+    //fprintf(stderr, "searchInConformanceCache 4\n");
 }
 
 /// Checks if a given candidate is a type itself, one of its
@@ -436,7 +436,7 @@ recur:
 static
 bool isRelatedType(const Metadata *type, const void *candidate,
                    bool candidateIsMetadata) {
-    fprintf(stderr, "isRelatedType 1\n");
+    //fprintf(stderr, "isRelatedType 1\n");
     while (true) {
         if (type == candidate && candidateIsMetadata)
             return true;
@@ -446,7 +446,7 @@ bool isRelatedType(const Metadata *type, const void *candidate,
         const auto description = type->getNominalTypeDescriptor().get();
         if (description == candidate && !candidateIsMetadata)
             return true;
-        fprintf(stderr, "isRelatedType 2\n");
+        //fprintf(stderr, "isRelatedType 2\n");
         // If the type is a class, try its superclass.
         if (const ClassMetadata *classType = type->getClassObject()) {
             if (classHasSuperclass(classType)) {
@@ -464,9 +464,9 @@ bool isRelatedType(const Metadata *type, const void *candidate,
 const WitnessTable *
 swift::swift_conformsToProtocol(const Metadata * const type,
                                 const ProtocolDescriptor *protocol) {
-    fprintf(stderr, "swift_conformsToProtocol 1\n");
+    //fprintf(stderr, "swift_conformsToProtocol 1\n");
     auto &C = Conformances.get();
-    fprintf(stderr, "swift_conformsToProtocol 2\n");
+    //fprintf(stderr, "swift_conformsToProtocol 2\n");
     // See if we have a cached conformance. The ConcurrentMap data structure
     // allows us to insert and search the map concurrently without locking.
     // We do lock the slow path because the SectionsToScan data structure is not
@@ -475,13 +475,13 @@ swift::swift_conformsToProtocol(const Metadata * const type,
     // If the result (positive or negative) is authoritative, return it.
     if (FoundConformance.isAuthoritative)
         return FoundConformance.witnessTable;
-    fprintf(stderr, "swift_conformsToProtocol 3\n");
+    //fprintf(stderr, "swift_conformsToProtocol 3\n");
     auto failureEntry = FoundConformance.failureEntry;
     
     // No up-to-date cache entry found.
     // Acquire the lock so we can scan conformance records.
     ScopedLock guard(C.SectionsToScanLock);
-    fprintf(stderr, "swift_conformsToProtocol 4\n");
+    //fprintf(stderr, "swift_conformsToProtocol 4\n");
     // The world may have changed while we waited for the lock.
     // If we found an out-of-date negative cache entry before
     // acquiring the lock, make sure the entry is still negative and out of date.
@@ -504,7 +504,7 @@ swift::swift_conformsToProtocol(const Metadata * const type,
         }
         failureEntry = FoundConformance.failureEntry;
     }
-    fprintf(stderr, "swift_conformsToProtocol 5\n");
+    //fprintf(stderr, "swift_conformsToProtocol 5\n");
     // We are now caught up after acquiring the lock.
     // Prepare to scan conformance records.
     
@@ -522,13 +522,13 @@ swift::swift_conformsToProtocol(const Metadata * const type,
         C.cacheFailure(type, protocol);
         return nullptr;
     }
-    fprintf(stderr, "swift_conformsToProtocol 6\n");
+    //fprintf(stderr, "swift_conformsToProtocol 6\n");
     // Really scan conformance records.
     
     for (unsigned sectionIdx = startSectionIdx;
          sectionIdx < endSectionIdx;
          ++sectionIdx) {
-        fprintf(stderr, "swift_conformsToProtocol 7\n");
+        //fprintf(stderr, "swift_conformsToProtocol 7\n");
         auto &section = C.SectionsToScan[sectionIdx];
         // Eagerly pull records for nondependent witnesses into our cache.
         for (const auto &record : section) {
@@ -585,19 +585,19 @@ swift::swift_conformsToProtocol(const Metadata * const type,
             }
         }
     }
-    fprintf(stderr, "swift_conformsToProtocol 8\n");
+    //fprintf(stderr, "swift_conformsToProtocol 8\n");
     // Conformance scan is complete.
     // Search the cache once more, and this time update the cache if necessary.
     
     FoundConformance = searchInConformanceCache(type, protocol);
-    fprintf(stderr, "swift_conformsToProtocol 9\n");
+    //fprintf(stderr, "swift_conformsToProtocol 9\n");
     if (FoundConformance.isAuthoritative) {
-        fprintf(stderr, "swift_conformsToProtocol FoundConformance.isAuthoritative\n");
+        //fprintf(stderr, "swift_conformsToProtocol FoundConformance.isAuthoritative\n");
         return FoundConformance.witnessTable;
     } else {
-        fprintf(stderr, "swift_conformsToProtocol C.cacheFailure(type, protocol)\n");
+        //fprintf(stderr, "swift_conformsToProtocol C.cacheFailure(type, protocol)\n");
         C.cacheFailure(type, protocol);
-        fprintf(stderr, "swift_conformsToProtocol return nullptr\n");
+        //fprintf(stderr, "swift_conformsToProtocol return nullptr\n");
         return nullptr;
     }
 }

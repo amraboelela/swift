@@ -639,10 +639,10 @@ void swift_deallocPartialClassInstance(HeapObject *object,
                                        HeapMetadata const *metadata,
                                        size_t allocatedSize,
                                        size_t allocatedAlignMask) {
-    fprintf(stderr, "swift_deallocPartialClassInstance 1\n");
+    //fprintf(stderr, "swift_deallocPartialClassInstance 1\n");
     if (!object)
         return;
-    fprintf(stderr, "swift_deallocPartialClassInstance 2\n");
+    //fprintf(stderr, "swift_deallocPartialClassInstance 2\n");
     // Destroy ivars
     auto *classMetadata = _swift_getClassOfAllocated(object)->getClassObject();
     assert(classMetadata && "Not a class?");
