@@ -805,7 +805,7 @@ makeUnionFieldAccessors(ClangImporter::Implementation &Impl,
     auto inoutSelfRef = new (C) DeclRefExpr(inoutSelfDecl, DeclNameLoc(),
                                             /*implicit*/ true);
     auto inoutSelf = new (C) InOutExpr(SourceLoc(), inoutSelfRef,
-      InOutType::get(importedUnionDecl->getDeclaredType()), /*implicit*/ true);
+      importedUnionDecl->getDeclaredType(), /*implicit*/ true);
 
     auto newValueDecl = setterDecl->getParameterList(1)->get(0);
 
@@ -1866,6 +1866,23 @@ applyPropertyOwnership(VarDecl *prop,
         prop->getInterfaceType(), ctx));
     return;
   }
+}
+
+/// Does this name refer to a method that might shadow Swift.print?
+///
+/// As a heuristic, methods that have a base name of 'print' but more than
+/// one argument are left alone. These can still shadow Swift.print but are
+/// less likely to be confused for it, at least.
+static bool isPrintLikeMethod(DeclName name, const DeclContext *dc) {
+  if (!name || name.isSpecial() || name.isSimpleName())
+    return false;
+  if (name.getBaseIdentifier().str() != "print")
+    return false;
+  if (!dc->isTypeContext())
+    return false;
+  if (name.getArgumentNames().size() > 1)
+    return false;
+  return true;
 }
 
 using MirroredMethodEntry =
@@ -3681,6 +3698,14 @@ namespace {
       if (forceClassMethod && decl->hasRelatedResultType())
         return nullptr;
 
+      // Hack: avoid importing methods named "print" that aren't available in
+      // the current version of Swift. We'd rather just let the user use
+      // Swift.print in that case.
+      if (!isActiveSwiftVersion() &&
+          isPrintLikeMethod(importedName.getDeclName(), dc)) {
+        return nullptr;
+      }
+
       // Add the implicit 'self' parameter patterns.
       bool isInstance = decl->isInstanceMethod() && !forceClassMethod;
       SmallVector<ParameterList *, 4> bodyParams;
@@ -5410,7 +5435,7 @@ SwiftDeclConverter::getImplicitProperty(ImportedName importedName,
       Impl.findLookupTable(*getClangSubmoduleForDecl(accessor));
   assert(lookupTable && "No lookup table?");
   bool foundAccessor = false;
-  for (auto entry : lookupTable->lookup(propertyName.str(),
+  for (auto entry : lookupTable->lookup(SerializedSwiftName(propertyName),
                                         importedName.getEffectiveContext())) {
     auto decl = entry.dyn_cast<clang::NamedDecl *>();
     if (!decl)
@@ -6246,7 +6271,7 @@ SwiftDeclConverter::importSubscript(Decl *decl,
   // Build the subscript declaration.
   auto &C = Impl.SwiftContext;
   auto bodyParams = getterThunk->getParameterList(1)->clone(C);
-  DeclName name(C, C.Id_subscript, {Identifier()});
+  DeclName name(C, DeclBaseName::createSubscript(), {Identifier()});
   auto subscript = Impl.createDeclWithClangNode<SubscriptDecl>(
       getter->getClangNode(), getOverridableAccessibility(dc), name,
       decl->getLoc(), bodyParams, decl->getLoc(),
@@ -7114,15 +7139,10 @@ void ClangImporter::Implementation::importAttributes(
   // Hack: mark any method named "print" with less than two parameters as
   // warn_unqualified_access.
   if (auto MD = dyn_cast<FuncDecl>(MappedDecl)) {
-    if (!MD->getName().empty() && MD->getName().str() == "print" &&
-        MD->getDeclContext()->isTypeContext()) {
-      auto *formalParams = MD->getParameterList(1);
-      if (formalParams->size() <= 1) {
-        // Use a non-implicit attribute so it shows up in the generated
-        // interface.
-        MD->getAttrs().add(
-            new (C) WarnUnqualifiedAccessAttr(/*implicit*/false));
-      }
+    if (isPrintLikeMethod(MD->getFullName(), MD->getDeclContext())) {
+      // Use a non-implicit attribute so it shows up in the generated
+      // interface.
+      MD->getAttrs().add(new (C) WarnUnqualifiedAccessAttr(/*implicit*/false));
     }
   }
 
@@ -8002,8 +8022,10 @@ ClangImporter::Implementation::loadAllMembers(Decl *D, uint64_t extra) {
   llvm::SmallPtrSet<Decl *, 4> knownAlternateMembers;
   for (const clang::Decl *m : objcContainer->decls()) {
     auto nd = dyn_cast<clang::NamedDecl>(m);
-    if (!nd || nd != nd->getCanonicalDecl())
+    if (!nd || nd != nd->getCanonicalDecl() ||
+        nd->getDeclContext() != objcContainer) {
       continue;
+    }
 
     forEachDistinctName(nd,
                         [&](ImportedName name, ImportNameVersion nameVersion) {

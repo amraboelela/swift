@@ -328,6 +328,7 @@ func testKeyPathSubscriptLValue(base: Z, kp: inout KeyPath<Z, Z>) {
 
 struct AA {
   subscript(x: Int) -> Int { return x }
+  subscript(labeled x: Int) -> Int { return x }
   var c: CC? = CC()
 }
 
@@ -351,6 +352,32 @@ func testMoreGeneralContext<T, U>(_: KeyPath<T, U>, with: T.Type) {}
 
 func testLiteralInMoreGeneralContext() {
   testMoreGeneralContext(\.property, with: A.self)
+}
+
+func testLabeledSubscript() {
+  let _: KeyPath<AA, Int> = \AA.[labeled: 0]
+  let _: KeyPath<AA, Int> = \.[labeled: 0]
+  let k = \AA.[labeled: 0]
+
+  // TODO: These ought to work without errors.
+  let _ = \AA.[keyPath: k] // expected-error{{}}
+  let _ = \AA.[keyPath: \AA.[labeled: 0]] // expected-error{{}}
+}
+
+func testInvalidKeyPathComponents() {
+  let _ = \.{return 0} // expected-error* {{}}
+}
+
+class X {
+  class var a: Int { return 1 }
+  static var b = 2
+}
+
+func testStaticKeyPathComponent() {
+  _ = \X.a // expected-error{{}}
+  _ = \X.Type.a // expected-error{{cannot refer to static member}}
+  _ = \X.b // expected-error{{}}
+  _ = \X.Type.b // expected-error{{cannot refer to static member}}
 }
 
 func testSyntaxErrors() { // expected-note{{}}

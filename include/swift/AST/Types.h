@@ -234,6 +234,11 @@ enum class TypeMatchFlags {
   AllowTopLevelOptionalMismatch = 1 << 2,
   /// Allow any ABI-compatible types to be considered matching.
   AllowABICompatible = 1 << 3,
+  /// Allow escaping function parameters to override optional non-escaping ones.
+  ///
+  /// This is necessary because Objective-C allows optional function paramaters
+  /// to be non-escaping, but Swift currently does not.
+  IgnoreNonEscapingForOptionalFunctionParam = 1 << 4
 };
 using TypeMatchOptions = OptionSet<TypeMatchFlags>;
 
@@ -444,9 +449,12 @@ public:
   /// semantics?
   bool hasReferenceSemantics();
 
-  /// Is this an uninhabited type, such as 'Never'?
+  /// Is this a nominally uninhabited type, such as 'Never'?
   bool isUninhabited();
 
+  /// Is this an uninhabited type, such as 'Never' or '(Never, Int)'?
+  bool isStructurallyUninhabited();
+  
   /// Is this the 'Any' type?
   bool isAny();
 
@@ -1441,10 +1449,9 @@ class ParenType : public TypeBase {
   ParameterTypeFlags parameterFlags;
 
   friend class ASTContext;
+  
   ParenType(Type UnderlyingType, RecursiveTypeProperties properties,
-            ParameterTypeFlags flags)
-      : TypeBase(TypeKind::Paren, nullptr, properties),
-        UnderlyingType(UnderlyingType), parameterFlags(flags) {}
+            ParameterTypeFlags flags);
 
 public:
   Type getUnderlyingType() const { return UnderlyingType; }
@@ -1484,8 +1491,9 @@ public:
   
   bool hasName() const { return !Name.empty(); }
   Identifier getName() const { return Name; }
-
-  Type getType() const { return ElementType; }
+  
+  Type getRawType() const { return ElementType; }
+  Type getType() const;
 
   ParameterTypeFlags getParameterFlags() const { return Flags; }
 
@@ -1506,14 +1514,10 @@ public:
   Type getVarargBaseTy() const;
   
   /// Retrieve a copy of this tuple type element with the type replaced.
-  TupleTypeElt getWithType(Type T) const {
-    return TupleTypeElt(T, getName(), getParameterFlags());
-  }
+  TupleTypeElt getWithType(Type T) const;
 
   /// Retrieve a copy of this tuple type element with the name replaced.
-  TupleTypeElt getWithName(Identifier name) const {
-    return TupleTypeElt(getType(), name, getParameterFlags());
-  }
+  TupleTypeElt getWithName(Identifier name) const;
 
   /// Retrieve a copy of this tuple type element with no name
   TupleTypeElt getWithoutName() const { return getWithName(Identifier()); }
@@ -2310,12 +2314,8 @@ public:
   
   class Param {
   public:
-    explicit Param(Type t) : Ty(t), Label(Identifier()), Flags() {}
-    explicit Param(const TupleTypeElt &tte)
-      : Ty(tte.isVararg() ? tte.getVarargBaseTy() : tte.getType()),
-        Label(tte.getName()), Flags(tte.getParameterFlags()) {}
-    explicit Param(Type t, Identifier l, ParameterTypeFlags f)
-      : Ty(t), Label(l), Flags(f) {}
+    explicit Param(const TupleTypeElt &tte);
+    explicit Param(Type t, Identifier l, ParameterTypeFlags f);
     
   private:
     /// The type of the parameter. For a variadic parameter, this is the
@@ -2329,11 +2329,15 @@ public:
     ParameterTypeFlags Flags = {};
     
   public:
-    Type getType() const { return Ty; }
+    Type getType() const;
     CanType getCanType() const {
-      assert(Ty->isCanonical());
-      return CanType(Ty);
+      assert(getType()->isCanonical());
+      return CanType(getType());
     }
+    
+    /// FIXME(Remove InOutType): This is mostly for copying between param
+    /// types and should go away.
+    Type getPlainType() const { return Ty; }
     
     Identifier getLabel() const { return Label; }
     
@@ -2351,6 +2355,17 @@ public:
     /// Whether the parameter is marked 'inout'
     bool isInOut() const { return Flags.isInOut(); }
   };
+
+  class CanParam : public Param {
+    explicit CanParam(const Param &param) : Param(param) {}
+  public:
+    static CanParam getFromParam(const Param &param) { return CanParam(param); }
+
+    CanType getType() const { return CanType(Param::getType()); }
+  };
+
+  using CanParamArrayRef =
+    ArrayRefView<Param,CanParam,CanParam::getFromParam,/*AccessOriginal*/true>;
   
   /// \brief A class which abstracts out some details necessary for
   /// making a call.
@@ -2510,11 +2525,17 @@ public:
   /// needed.
   static Type composeInput(ASTContext &ctx, ArrayRef<Param> params,
                            bool canonicalVararg);
+  static Type composeInput(ASTContext &ctx, CanParamArrayRef params,
+                           bool canonicalVararg) {
+    return composeInput(ctx, params.getOriginalArray(), canonicalVararg);
+  }
 
   Type getInput() const { return Input; }
   Type getResult() const { return Output; }
   ArrayRef<AnyFunctionType::Param> getParams() const;
   unsigned getNumParams() const { return NumParams; }
+
+  GenericSignature *getOptGenericSignature() const;
   
   ExtInfo getExtInfo() const {
     return ExtInfo(AnyFunctionTypeBits.ExtInfo);
@@ -2556,14 +2577,26 @@ public:
   }
 };
 BEGIN_CAN_TYPE_WRAPPER(AnyFunctionType, Type)
-  typedef AnyFunctionType::ExtInfo ExtInfo;
+  using ExtInfo = AnyFunctionType::ExtInfo;
+  using CanParamArrayRef = AnyFunctionType::CanParamArrayRef;
+
+  static CanAnyFunctionType get(CanGenericSignature signature,
+                                CanType input, CanType result);
+  static CanAnyFunctionType get(CanGenericSignature signature,
+                                CanType input, CanType result,
+                                const ExtInfo &extInfo);
+  static CanAnyFunctionType get(CanGenericSignature signature,
+                                CanParamArrayRef params,
+                                CanType result, const ExtInfo &info);
+
+  CanGenericSignature getOptGenericSignature() const;
 
   CanType getInput() const {
     return getPointer()->getInput()->getCanonicalType();
   }
-  
-  ArrayRef<AnyFunctionType::Param> getParams() const {
-    return getPointer()->getParams();
+
+  CanParamArrayRef getParams() const {
+    return CanParamArrayRef(getPointer()->getParams());
   }
 
   PROXY_CAN_TYPE_SIMPLE_GETTER(getResult)
@@ -2611,20 +2644,19 @@ private:
 };
 BEGIN_CAN_TYPE_WRAPPER(FunctionType, AnyFunctionType)
   static CanFunctionType get(CanType input, CanType result) {
-    return CanFunctionType(
-             FunctionType::get(input, result)
-               ->getCanonicalType()->castTo<FunctionType>());
+    auto fnType = FunctionType::get(input, result);
+    return cast<FunctionType>(fnType->getCanonicalType());
   }
   static CanFunctionType get(CanType input, CanType result,
                              const ExtInfo &info) {
-    return CanFunctionType(
-             FunctionType::get(input, result, info)
-               ->getCanonicalType()->castTo<FunctionType>());
+    auto fnType = FunctionType::get(input, result, info);
+    return cast<FunctionType>(fnType->getCanonicalType());
   }
-  static CanFunctionType get(ArrayRef<AnyFunctionType::Param> params,
-                             Type result, const ExtInfo &info) {
-    return CanFunctionType(FunctionType::get(params, result, info,
-                                             /*canonicalVararg=*/true));
+  static CanFunctionType get(CanParamArrayRef params, CanType result,
+                             const ExtInfo &info) {
+    auto fnType = FunctionType::get(params.getOriginalArray(),
+                                    result, info, /*canonicalVararg=*/true);
+    return cast<FunctionType>(fnType->getCanonicalType());
   }
 
   CanFunctionType withExtInfo(ExtInfo info) const {
@@ -2744,13 +2776,13 @@ BEGIN_CAN_TYPE_WRAPPER(GenericFunctionType, AnyFunctionType)
 
   /// Create a new generic function type.
   static CanGenericFunctionType get(CanGenericSignature sig,
-                                    ArrayRef<AnyFunctionType::Param> params,
-                                    CanType result,
+                                    CanParamArrayRef params, CanType result,
                                     const ExtInfo &info) {
     // Knowing that the argument types are independently canonical is
     // not sufficient to guarantee that the function type will be canonical.
-    auto fnType = GenericFunctionType::get(sig, params, result, info,
-                                             /*canonicalVararg=*/true);
+    auto fnType = GenericFunctionType::get(sig, params.getOriginalArray(),
+                                           result, info,
+                                           /*canonicalVararg=*/true);
     return cast<GenericFunctionType>(fnType->getCanonicalType());
   }
 
@@ -2767,6 +2799,48 @@ BEGIN_CAN_TYPE_WRAPPER(GenericFunctionType, AnyFunctionType)
                     cast<GenericFunctionType>(getPointer()->withExtInfo(info)));
   }
 END_CAN_TYPE_WRAPPER(GenericFunctionType, AnyFunctionType)
+
+inline CanAnyFunctionType
+CanAnyFunctionType::get(CanGenericSignature signature,
+                        CanType input, CanType result) {
+  return get(signature, input, result, ExtInfo());
+}
+
+inline CanAnyFunctionType
+CanAnyFunctionType::get(CanGenericSignature signature,
+                        CanType input, CanType result, const ExtInfo &extInfo) {
+  if (signature) {
+    return CanGenericFunctionType::get(signature, input, result, extInfo);
+  } else {
+    return CanFunctionType::get(input, result, extInfo);
+  }
+}
+
+inline CanAnyFunctionType
+CanAnyFunctionType::get(CanGenericSignature signature, CanParamArrayRef params,
+                        CanType result, const ExtInfo &extInfo) {
+  if (signature) {
+    return CanGenericFunctionType::get(signature, params, result, extInfo);
+  } else {
+    return CanFunctionType::get(params, result, extInfo);
+  }
+}
+
+inline GenericSignature *AnyFunctionType::getOptGenericSignature() const {
+  if (auto genericFn = dyn_cast<GenericFunctionType>(this)) {
+    return genericFn->getGenericSignature();
+  } else {
+    return nullptr;
+  }
+}
+
+inline CanGenericSignature CanAnyFunctionType::getOptGenericSignature() const {
+  if (auto genericFn = dyn_cast<GenericFunctionType>(*this)) {
+    return genericFn.getGenericSignature();
+  } else {
+    return CanGenericSignature();
+  }
+}
 
 /// Conventions for passing arguments as parameters.
 enum class ParameterConvention {
@@ -4709,6 +4783,16 @@ inline Type TupleTypeElt::getVarargBaseTy() const {
   return T;
 }
 
+inline TupleTypeElt TupleTypeElt::getWithName(Identifier name) const {
+  assert(getParameterFlags().isInOut() == getType()->is<InOutType>());
+  return TupleTypeElt(getRawType(), name, getParameterFlags());
+}
+
+inline TupleTypeElt TupleTypeElt::getWithType(Type T) const {
+  auto flags = getParameterFlags().withInOut(T->is<InOutType>());
+  return TupleTypeElt(T->getInOutObjectType(), getName(), flags);
+}
+
 /// Create one from what's present in the parameter decl and type
 inline ParameterTypeFlags
 ParameterTypeFlags::fromParameterType(Type paramTy, bool isVariadic) {
@@ -4716,6 +4800,10 @@ ParameterTypeFlags::fromParameterType(Type paramTy, bool isVariadic) {
                      paramTy->castTo<AnyFunctionType>()->isAutoClosure();
   bool escaping = paramTy->is<AnyFunctionType>() &&
                   !paramTy->castTo<AnyFunctionType>()->isNoEscape();
+  // FIXME(Remove InOut): The last caller that needs this is argument
+  // decomposition.  Start by enabling the assertion there and fixing up those
+  // callers, then remove this, then remove
+  // ParameterTypeFlags::fromParameterType entirely.
   bool inOut = paramTy->is<InOutType>();
   return {isVariadic, autoclosure, escaping, inOut};
 }

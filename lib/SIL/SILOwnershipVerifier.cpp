@@ -441,7 +441,6 @@ CONSTANT_OWNERSHIP_INST(Guaranteed, false, RefElementAddr)
 CONSTANT_OWNERSHIP_INST(Owned, true, AutoreleaseValue)
 CONSTANT_OWNERSHIP_INST(Owned, true, DeallocBox)
 CONSTANT_OWNERSHIP_INST(Owned, true, DeallocExistentialBox)
-CONSTANT_OWNERSHIP_INST(Owned, true, DeallocPartialRef)
 CONSTANT_OWNERSHIP_INST(Owned, true, DeallocRef)
 CONSTANT_OWNERSHIP_INST(Owned, true, DestroyValue)
 CONSTANT_OWNERSHIP_INST(Owned, true, ReleaseValue)
@@ -450,7 +449,7 @@ CONSTANT_OWNERSHIP_INST(Owned, true, StrongRelease)
 CONSTANT_OWNERSHIP_INST(Owned, true, StrongUnpin)
 CONSTANT_OWNERSHIP_INST(Owned, true, UnownedRelease)
 CONSTANT_OWNERSHIP_INST(Owned, true, InitExistentialRef)
-CONSTANT_OWNERSHIP_INST(Owned, true, OpenExistentialOpaque)
+CONSTANT_OWNERSHIP_INST(Owned, true, OpenExistentialValue)
 CONSTANT_OWNERSHIP_INST(Owned, true, EndLifetime)
 CONSTANT_OWNERSHIP_INST(Trivial, false, AddressToPointer)
 CONSTANT_OWNERSHIP_INST(Trivial, false, BeginAccess)
@@ -528,8 +527,8 @@ CONSTANT_OWNERSHIP_INST(Trivial, false, DeallocValueBuffer)
             SHOULD_CHECK_FOR_DATAFLOW_VIOLATIONS};                             \
   }
 CONSTANT_OR_TRIVIAL_OWNERSHIP_INST(Owned, true, CheckedCastValueBranch)
-CONSTANT_OR_TRIVIAL_OWNERSHIP_INST(Owned, true, InitExistentialOpaque)
-CONSTANT_OR_TRIVIAL_OWNERSHIP_INST(Owned, true, DeinitExistentialOpaque)
+CONSTANT_OR_TRIVIAL_OWNERSHIP_INST(Owned, true, InitExistentialValue)
+CONSTANT_OR_TRIVIAL_OWNERSHIP_INST(Owned, true, DeinitExistentialValue)
 #undef CONSTANT_OR_TRIVIAL_OWNERSHIP_INST
 
 #define ACCEPTS_ANY_OWNERSHIP_INST(INST)                                       \
@@ -586,6 +585,7 @@ ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, BridgeObjectToWord)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, CopyBlock)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, DynamicMethod)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, OpenExistentialBox)
+ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, OpenExistentialBoxValue)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, RefTailAddr)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, RefToRawPointer)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(false, RefToUnmanaged)
@@ -687,7 +687,18 @@ FORWARD_CONSTANT_OR_TRIVIAL_OWNERSHIP_INST(Guaranteed, false, StructExtract)
 #undef CONSTANT_OR_TRIVIAL_OWNERSHIP_INST
 
 OwnershipUseCheckerResult
-OwnershipCompatibilityUseChecker::visitEndBorrowArgumentInst(EndBorrowArgumentInst *I) {
+OwnershipCompatibilityUseChecker::visitDeallocPartialRefInst(
+    DeallocPartialRefInst *I) {
+  if (getValue() == I->getInstance()) {
+    return {compatibleWithOwnership(ValueOwnershipKind::Owned), true};
+  }
+
+  return {compatibleWithOwnership(ValueOwnershipKind::Trivial), false};
+}
+
+OwnershipUseCheckerResult
+OwnershipCompatibilityUseChecker::visitEndBorrowArgumentInst(
+    EndBorrowArgumentInst *I) {
   // If we are currently checking an end_borrow_argument as a subobject, then we
   // treat this as just a use.
   if (isCheckingSubObject())
@@ -893,8 +904,10 @@ OwnershipCompatibilityUseChecker::visitStoreUnownedInst(StoreUnownedInst *I) {
 
 OwnershipUseCheckerResult
 OwnershipCompatibilityUseChecker::visitStoreWeakInst(StoreWeakInst *I) {
+  // A store_weak instruction implies that the value to be stored to be live,
+  // but it does not touch the strong reference count of the value.
   if (getValue() == I->getSrc())
-    return {compatibleWithOwnership(ValueOwnershipKind::Owned), true};
+    return {true, false};
   return {compatibleWithOwnership(ValueOwnershipKind::Trivial), false};
 }
 
@@ -2068,9 +2081,10 @@ void SILInstruction::verifyOperandOwnership() const {
   if (!getModule().getOptions().EnableSILOwnership)
     return;
 
-  // If the given function has unqualified ownership, there is nothing to
-  // verify.
-  if (getFunction()->hasUnqualifiedOwnership())
+  // If the given function has unqualified ownership or we have been asked by
+  // the user not to verify this function, there is nothing to verify.
+  if (getFunction()->hasUnqualifiedOwnership() ||
+      !getFunction()->shouldVerifyOwnership())
     return;
 
   // If we are testing the verifier, bail so we only print errors once when
@@ -2116,9 +2130,9 @@ void SILValue::verifyOwnership(SILModule &Mod,
   SILFunction *F = (*this)->getFunction();
   assert(F && "Instructions and arguments should have a function");
 
-  // If the given function has unqualified ownership, there is nothing further
-  // to verify.
-  if (F->hasUnqualifiedOwnership())
+  // If the given function has unqualified ownership or we have been asked by
+  // the user not to verify this function, there is nothing to verify.
+  if (F->hasUnqualifiedOwnership() || !F->shouldVerifyOwnership())
     return;
 
   ErrorBehaviorKind ErrorBehavior;

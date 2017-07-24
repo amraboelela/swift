@@ -29,15 +29,19 @@ extension String {
 
 /// Convenience accessors
 extension String.Index._Cache {
+  @_versioned
   var utf16: Void? {
     if case .utf16 = self { return () } else { return nil }
   }
+  @_versioned
   var utf8: String.Index._UTF8Buffer? {
     if case .utf8(let r) = self { return r } else { return nil }
   }
+  @_versioned
   var character: UInt16? {
     if case .character(let r) = self { return r } else { return nil }
   }
+  @_versioned
   var unicodeScalar: UnicodeScalar? {
     if case .unicodeScalar(let r) = self { return r } else { return nil }
   }
@@ -72,7 +76,7 @@ extension String.Index {
     _cache = c
   }
   
-  internal static var _strideBits : Int { return 16 }
+  internal static var _strideBits : Int { return 2 }
   internal static var _mask : UInt64 { return (1 &<< _Self._strideBits) &- 1 }
   
   internal mutating func _setEncodedOffset(_ x: Int) {
@@ -81,7 +85,7 @@ extension String.Index {
   
   /// The offset into a string's UTF-16 encoding for this index.
   public var encodedOffset : Int {
-    return Int(_compoundOffset >> numericCast(_Self._strideBits))
+    return Int(_compoundOffset >> _Self._strideBits)
   }
 
   /// The offset of this index within whatever encoding this is being viewed as

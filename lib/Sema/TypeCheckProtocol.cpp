@@ -1303,7 +1303,7 @@ WitnessChecker::lookupValueWitnesses(ValueDecl *req, bool *ignoringNames) {
                                        SourceLoc(),
                                        lookupOptions);
     for (auto candidate : lookup) {
-      witnesses.push_back(candidate.Decl);
+      witnesses.push_back(candidate.getValueDecl());
     }
   } else {
     // Variable/function/subscript requirements.
@@ -1322,7 +1322,7 @@ WitnessChecker::lookupValueWitnesses(ValueDecl *req, bool *ignoringNames) {
     }
 
     for (auto candidate : candidates) {
-      witnesses.push_back(candidate);
+      witnesses.push_back(candidate.getValueDecl());
     }
   }
 
@@ -1374,7 +1374,7 @@ bool WitnessChecker::findBestWitness(
       auto lookup = TC.lookupUnqualified(overlay, requirement->getBaseName(),
                                          SourceLoc(), lookupOptions);
       for (auto candidate : lookup)
-        witnesses.push_back(candidate.Decl);
+        witnesses.push_back(candidate.getValueDecl());
       break;
     }
     case Done:
@@ -3003,11 +3003,15 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
 
       break;
 
-    case CheckKind::WitnessUnavailable:
-      diagnoseOrDefer(requirement, /*isError=*/false,
-        [witness, requirement](NormalProtocolConformance *conformance) {
+    case CheckKind::WitnessUnavailable: {
+      bool emitError = !witness->getASTContext().LangOpts.isSwiftVersion3();
+      diagnoseOrDefer(requirement, /*isError=*/emitError,
+        [witness, requirement, emitError](
+                                    NormalProtocolConformance *conformance) {
           auto &diags = witness->getASTContext().Diags;
-          diags.diagnose(witness, diag::witness_unavailable,
+          diags.diagnose(witness,
+                         emitError ? diag::witness_unavailable
+                                   : diag::witness_unavailable_warn,
                          witness->getDescriptiveKind(),
                          witness->getFullName(),
                          conformance->getProtocol()->getFullName());
@@ -3015,6 +3019,7 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
                          requirement->getFullName());
         });
       break;
+    }
     }
 
     ClassDecl *classDecl = Adoptee->getClassOrBoundGenericClass();
@@ -5785,8 +5790,11 @@ static Optional<unsigned> scorePotentiallyMatchingNames(DeclName lhs,
       score = lhsFirstName.edit_distance(rhsFirstName.str(), true, limit);
     }
   } else {
-    // TODO: Handling of special names
-    score = 0;
+    if (lhs.getBaseName().getKind() == rhs.getBaseName().getKind()) {
+      score = 0;
+    } else {
+      return None;
+    }
   }
   if (score > limit) return None;
 
@@ -5916,8 +5924,7 @@ canSuppressPotentialWitnessWarningWithNonObjC(ValueDecl *requirement,
 /// argument labels.
 static unsigned getNameLength(DeclName name) {
   unsigned length = 0;
-  // TODO: Handle special names
-  if (!name.getBaseName().empty())
+  if (!name.getBaseName().empty() && !name.getBaseName().isSpecial())
     length += name.getBaseIdentifier().str().size();
   for (auto arg : name.getArgumentNames()) {
     if (!arg.empty())

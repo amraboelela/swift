@@ -267,8 +267,7 @@ ERROR(incorrect_explicit_closure_result,none,
       "declared closure result %0 is incompatible with contextual type %1",
       (Type, Type))
 
-// FIXME: make this an error when we've fixed the Dispatch problem.
-WARNING(err_noescape_param_call,none,
+ERROR(err_noescape_param_call,none,
       "passing a %select{|closure which captures a }1non-escaping function "
       "parameter %0 to a call to a non-escaping function parameter can allow "
       "re-entrant modification of a variable",
@@ -423,7 +422,7 @@ ERROR(noescape_functiontype_mismatch,none,
 ERROR(expr_keypath_no_objc_runtime,none,
       "'#keyPath' can only be used with the Objective-C runtime", ())
 ERROR(expression_unused_keypath_result,none,
-      "result of '#keyPath' is unused", ())
+      "result of key path is unused", ())
 ERROR(expr_keypath_non_objc_property,none,
       "argument of '#keyPath' refers to non-'@objc' property %0",
       (DeclName))
@@ -435,14 +434,17 @@ ERROR(expr_keypath_type_of_property,none,
       "cannot refer to type member %0 within instance of type %1",
       (DeclName, Type))
 ERROR(expr_keypath_generic_type,none,
-      "'#keyPath' cannot refer to generic type %0", (DeclName))
+      "key path cannot refer to generic type %0", (DeclName))
 ERROR(expr_keypath_not_property,none,
-      "'#keyPath' cannot refer to %0 %1", (DescriptiveDeclKind, DeclName))
+      "key path cannot refer to %0 %1", (DescriptiveDeclKind, DeclName))
 ERROR(expr_keypath_mutating_getter,none,
-      "'#keyPath' cannot refer to %0, which has a mutating getter",
+      "key path cannot refer to %0, which has a mutating getter",
+      (DeclName))
+ERROR(expr_keypath_static_member,none,
+      "key path cannot refer to static member %0",
       (DeclName))
 ERROR(expr_keypath_empty,none,
-      "empty '#keyPath' does not refer to a property", ())
+      "empty key path does not refer to a property", ())
 ERROR(expr_unsupported_objc_key_path_component,none,
       "an Objective-C key path cannot contain "
       "%select{BAD|subscript|BAD|BAD|optional-forcing|optional-chaining|BAD} "
@@ -460,7 +462,7 @@ ERROR(expr_swift_keypath_not_starting_with_type,none,
 ERROR(expr_swift_keypath_unimplemented_component,none,
       "key path support for %0 components is not implemented", (StringRef))
 ERROR(expr_smart_keypath_value_covert_to_contextual_type,none,
-      "KeyPath value type %0 cannot be converted to contextual type %1",
+      "key path value type %0 cannot be converted to contextual type %1",
       (Type, Type))
 ERROR(expr_swift_keypath_empty, none,
       "key path must have at least one component", ())
@@ -1591,7 +1593,10 @@ NOTE(declared_protocol_conformance_here,none,
      "%0 implicitly conforms to protocol %2}1 here",
      (Type, unsigned, DeclName, DeclName))
 
-WARNING(witness_unavailable,none,
+WARNING(witness_unavailable_warn,none,
+        "unavailable %0 %1 was used to satisfy a requirement of protocol %2",
+        (DescriptiveDeclKind, DeclName, DeclName))
+ERROR(witness_unavailable,none,
         "unavailable %0 %1 was used to satisfy a requirement of protocol %2",
         (DescriptiveDeclKind, DeclName, DeclName))
 
@@ -2990,6 +2995,13 @@ ERROR(throwing_operator_without_try,none,
       "operator can throw but expression is not marked with 'try'", ())
 ERROR(throwing_call_without_try,none,
       "call can throw but is not marked with 'try'", ())
+NOTE(note_forgot_try,none,
+      "did you mean to use 'try'?", ())
+NOTE(note_error_to_optional,none,
+      "did you mean to handle error as optional value?", ())
+NOTE(note_disable_error_propagation,none,
+      "did you mean to disable error propagation?", ())
+
 WARNING(no_throw_in_try,none,
         "no calls to throwing functions occur within 'try' expression", ())
 
@@ -3286,6 +3298,8 @@ ERROR(objc_invalid_on_func_curried,none,
       "cannot be represented in Objective-C", (unsigned))
 ERROR(objc_observing_accessor, none,
       "observing accessors are not allowed to be marked @objc", ())
+ERROR(objc_addressor, none,
+      "addressors are not allowed to be marked @objc", ())
 ERROR(objc_invalid_on_func_variadic,none,
       "method cannot be %" OBJC_ATTR_SELECT "0 because it has a variadic "
       "parameter", (unsigned))

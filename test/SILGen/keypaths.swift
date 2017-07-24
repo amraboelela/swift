@@ -209,3 +209,60 @@ func keyPathForOptional() {
   // CHECK-SAME:   stored_property #OptionalFields.x : $Optional<S<Int>>)
   _ = \OptionalFields2.y?.x
 }
+
+class StorageQualified {
+  weak var tooWeak: StorageQualified?
+  unowned var disowned: StorageQualified
+  
+  init() { fatalError() }
+}
+
+final class FinalStorageQualified {
+  weak var tooWeak: StorageQualified?
+  unowned var disowned: StorageQualified
+  
+  init() { fatalError() }
+}
+
+// CHECK-LABEL: sil hidden @{{.*}}keyPathForStorageQualified
+func keyPathForStorageQualified() {
+  // CHECK: = keypath $ReferenceWritableKeyPath<StorageQualified, Optional<StorageQualified>>,
+  // CHECK-SAME: settable_property $Optional<StorageQualified>, id #StorageQualified.tooWeak!getter.1
+  _ = \StorageQualified.tooWeak
+  // CHECK: = keypath $ReferenceWritableKeyPath<StorageQualified, StorageQualified>,
+  // CHECK-SAME: settable_property $StorageQualified, id #StorageQualified.disowned!getter.1
+  _ = \StorageQualified.disowned
+
+  // CHECK: = keypath $ReferenceWritableKeyPath<FinalStorageQualified, Optional<StorageQualified>>,
+  // CHECK-SAME: settable_property $Optional<StorageQualified>, id ##FinalStorageQualified.tooWeak
+  _ = \FinalStorageQualified.tooWeak
+  // CHECK: = keypath $ReferenceWritableKeyPath<FinalStorageQualified, StorageQualified>,
+  // CHECK-SAME: settable_property $StorageQualified, id ##FinalStorageQualified.disowned
+  _ = \FinalStorageQualified.disowned
+}
+
+struct IUOProperty {
+  var iuo: IUOBlob!
+}
+
+struct IUOBlob {
+  var x: Int
+  subscript(y: String) -> String {
+    get { return y }
+    set {}
+  }
+}
+
+// CHECK-LABEL: sil hidden @{{.*}}iuoKeyPaths
+func iuoKeyPaths() {
+  // CHECK: = keypath $WritableKeyPath<IUOProperty, Int>,
+  // CHECK-SAME: stored_property #IUOProperty.iuo
+  // CHECK-SAME: optional_force
+  // CHECK-SAME: stored_property #IUOBlob.x
+  _ = \IUOProperty.iuo.x
+  // CHECK: = keypath $WritableKeyPath<IUOProperty, Int>,
+  // CHECK-SAME: stored_property #IUOProperty.iuo
+  // CHECK-SAME: optional_force
+  // CHECK-SAME: stored_property #IUOBlob.x
+  _ = \IUOProperty.iuo!.x
+}

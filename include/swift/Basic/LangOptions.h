@@ -79,8 +79,8 @@ namespace swift {
     /// \brief Disable API availability checking.
     bool DisableAvailabilityChecking = false;
 
-    /// \brief Disable typo correction.
-    bool DisableTypoCorrection = false;
+    /// \brief Maximum number of typo corrections we are allowed to perform.
+    unsigned TypoCorrectionLimit = 10;
     
     /// Should access control be respected?
     bool EnableAccessControl = true;
@@ -171,6 +171,10 @@ namespace swift {
 
     unsigned SolverBindingThreshold = 1024 * 1024;
 
+    /// \brief The upper bound to number of sub-expressions unsolved
+    /// before termination of the shrink phrase of the constraint solver.
+    unsigned SolverShrinkUnsolvedThreshold = 5;
+
     /// The maximum depth to which to test decl circularity.
     unsigned MaxCircularityDepth = 500;
 
@@ -205,6 +209,9 @@ namespace swift {
 
     /// Should we use \c ASTScope-based resolution for unqualified name lookup?
     bool EnableASTScopeLookup = false;
+
+    /// Enable SE-0157: Recursive Protocol Constraints.
+    bool EnableRecursiveConstraints = false;
 
     /// Whether to use the import as member inference system
     ///
