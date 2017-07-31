@@ -58,11 +58,7 @@ For macOS, you need [Xcode 9.0 beta 2](https://developer.apple.com/xcode/downloa
 
 For Ubuntu, you'll need the following development dependencies:
 
-<<<<<<< HEAD
-    sudo apt-get install git cmake ninja-build clang python uuid-dev libicu-dev icu-devtools libbsd-dev libedit-dev libxml2-dev libsqlite3-dev swig libpython-dev libncurses5-dev pkg-config libblocksruntime-dev libcurl4-openssl-dev autoconf libtool systemtap-sdt-dev postfix dh-autoreconf libkqueue-dev
-=======
     sudo apt-get install git cmake ninja-build clang python uuid-dev libicu-dev icu-devtools libbsd-dev libedit-dev libxml2-dev libsqlite3-dev swig libpython-dev libncurses5-dev pkg-config libblocksruntime-dev libcurl4-openssl-dev autoconf libtool systemtap-sdt-dev postfix dh-autoreconf libkqueue-dev tzdata
->>>>>>> 42272d9e932bb262590d4396fee7dfb142b0501c
 
 **Note:** LLDB currently requires at least `swig-1.3.40` but will successfully build
 with version 2 shipped with Ubuntu.
