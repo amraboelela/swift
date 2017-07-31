@@ -1146,7 +1146,7 @@ namespace {
       // We are under opaque value(s) mode - load the any and init an opaque
       auto loadedPayload = SGF.emitManagedLoadCopy(Loc, payload.getValue());
       auto &anyTL = SGF.getTypeLowering(opaque, outputSubstType);
-      SILValue loadedOpaque = SGF.B.createInitExistentialOpaque(
+      SILValue loadedOpaque = SGF.B.createInitExistentialValue(
           Loc, anyTL.getLoweredType(), inputTupleType, loadedPayload.getValue(),
           /*Conformances=*/{});
       return ManagedValue(loadedOpaque, loadedPayload.getCleanup());
@@ -3061,7 +3061,8 @@ SILGenFunction::emitTransformedValue(SILLocation loc, ManagedValue v,
                                      SGFContext ctxt) {
   return emitTransformedValue(loc, v,
                               AbstractionPattern(inputType), inputType,
-                              AbstractionPattern(outputType), outputType);
+                              AbstractionPattern(outputType), outputType,
+                              ctxt);
 }
 
 ManagedValue
@@ -3291,7 +3292,7 @@ void SILGenFunction::emitProtocolWitness(Type selfType,
 
   // Get the type of the witness.
   auto witnessInfo = getConstantInfo(witness);
-  CanAnyFunctionType witnessSubstTy = witnessInfo.LoweredInterfaceType;
+  CanAnyFunctionType witnessSubstTy = witnessInfo.LoweredType;
   if (!witnessSubs.empty()) {
     witnessSubstTy = cast<FunctionType>(
       cast<GenericFunctionType>(witnessSubstTy)
@@ -3343,7 +3344,7 @@ void SILGenFunction::emitProtocolWitness(Type selfType,
     }
   }
 
-  AbstractionPattern witnessOrigTy(witnessInfo.LoweredInterfaceType);
+  AbstractionPattern witnessOrigTy(witnessInfo.LoweredType);
   TranslateArguments(*this, loc,
                      origParams, witnessParams,
                      witnessFTy->getParameters())

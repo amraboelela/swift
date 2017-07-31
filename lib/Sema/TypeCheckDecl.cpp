@@ -1,3 +1,5 @@
+// A similar struct with Codable properties adopting Codable should get a
+// synthesized init(from:), along with the memberwise initializer.
 //===--- TypeCheckDecl.cpp - Type Checking for Declarations ---------------===//
 //
 // This source file is part of the Swift.org open source project
@@ -1277,7 +1279,7 @@ static void configureImplicitSelf(TypeChecker &tc,
                  : VarDecl::Specifier::Owned;
   selfDecl->setSpecifier(specifier);
 
-  selfDecl->setInterfaceType(selfIfaceTy);
+  selfDecl->setInterfaceType(selfIfaceTy->getInOutObjectType());
 }
 
 /// Record the context type of 'self' after the generic environment of
@@ -1286,8 +1288,14 @@ static void recordSelfContextType(AbstractFunctionDecl *func) {
   auto selfDecl = func->getImplicitSelfDecl();
   Type selfTy = func->computeInterfaceSelfType(/*isInitializingCtor*/true,
                                                /*wantDynamicSelf*/true);
+
   selfTy = func->mapTypeIntoContext(selfTy);
-  selfDecl->setType(selfTy);
+  // FIXME(Remove InOutType): 'computeInterfaceSelfType' should tell us if
+  // we need to do this.
+  if (selfTy->is<InOutType>()) {
+    selfDecl->setSpecifier(VarDecl::Specifier::InOut);
+  }
+  selfDecl->setType(selfTy->getInOutObjectType());
 }
 
 namespace {
@@ -3106,9 +3114,10 @@ static void checkEnumRawValues(TypeChecker &TC, EnumDecl *ED) {
     // Check the raw value expr, if we have one.
     if (auto *rawValue = elt->getRawValueExpr()) {
       Expr *typeCheckedExpr = rawValue;
-      if (!TC.typeCheckExpression(typeCheckedExpr, ED, 
-                                  TypeLoc::withoutLoc(rawTy),
-                                  CTP_EnumCaseRawValue)) {
+      auto resultTy = TC.typeCheckExpression(typeCheckedExpr, ED,
+                                             TypeLoc::withoutLoc(rawTy),
+                                             CTP_EnumCaseRawValue);
+      if (resultTy) {
         elt->setTypeCheckedRawValueExpr(typeCheckedExpr);
       }
       lastExplicitValueElt = elt;
@@ -3123,9 +3132,9 @@ static void checkEnumRawValues(TypeChecker &TC, EnumDecl *ED) {
       }
       elt->setRawValueExpr(nextValue);
       Expr *typeChecked = nextValue;
-      if (!TC.typeCheckExpression(typeChecked, ED, 
-                                  TypeLoc::withoutLoc(rawTy),
-                                  CTP_EnumCaseRawValue))
+      auto resultTy = TC.typeCheckExpression(
+          typeChecked, ED, TypeLoc::withoutLoc(rawTy), CTP_EnumCaseRawValue);
+      if (resultTy)
         elt->setTypeCheckedRawValueExpr(typeChecked);
     }
     prevValue = elt->getRawValueExpr();
@@ -3406,7 +3415,7 @@ static void checkVarBehavior(VarDecl *decl, TypeChecker &TC) {
         FuncDecl *defaultInitStorageDecl = nullptr;
         FuncDecl *parameterizedInitStorageDecl = nullptr;
         for (auto found : lookup) {
-          if (auto foundFunc = dyn_cast<FuncDecl>(found.Decl)) {
+          if (auto foundFunc = dyn_cast<FuncDecl>(found.getValueDecl())) {
             if (!foundFunc->isStatic())
               continue;
             auto methodTy = foundFunc->getInterfaceType()
@@ -3439,7 +3448,7 @@ static void checkVarBehavior(VarDecl *decl, TypeChecker &TC) {
                       expectedDefaultInitStorageTy,
                       expectedParameterizedInitStorageTy);
           for (auto found : lookup)
-            TC.diagnose(found.Decl->getLoc(),
+            TC.diagnose(found.getValueDecl()->getLoc(),
                         diag::found_candidate);
           conformance->setInvalid();
           continue;
@@ -5728,7 +5737,7 @@ public:
       }
 
       for (auto memberResult : members) {
-        auto member = memberResult.Decl;
+        auto member = memberResult.getValueDecl();
 
         if (member->isInvalid())
           continue;
@@ -5826,6 +5835,8 @@ public:
           matchMode |= TypeMatchFlags::AllowTopLevelOptionalMismatch;
         } else if (parentDecl->isObjC()) {
           matchMode |= TypeMatchFlags::AllowNonOptionalForIUOParam;
+          matchMode |=
+              TypeMatchFlags::IgnoreNonEscapingForOptionalFunctionParam;
         }
 
         if (declTy->matches(parentDeclTy, matchMode, &TC)) {
@@ -8239,7 +8250,7 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
                                     NameLookupFlags::IgnoreAccessibility);
 
     for (auto memberResult : ctors) {
-      auto member = memberResult.Decl;
+      auto member = memberResult.getValueDecl();
 
       // Skip unavailable superclass initializers.
       if (AvailableAttr::isUnavailable(member))
@@ -8324,6 +8335,96 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
   }
 }
 
+void TypeChecker::synthesizeMemberForLookup(NominalTypeDecl *target,
+                                            DeclName member) {
+  auto baseName = member.getBaseName();
+  if (baseName.isSpecial())
+    return;
+
+  // Checks whether the target conforms to the given protocol. If the
+  // conformance is incomplete, check the conformance to force synthesis, if
+  // possible.
+  //
+  // Swallows diagnostics if conformance checking is already in progress (so we
+  // don't display diagnostics twice).
+  //
+  // Returns whether the target conforms to the protocol and the conformance is
+  // complete.
+  auto evaluateTargetConformanceTo = [&](ProtocolDecl *protocol) {
+    auto targetType = target->getDeclaredInterfaceType();
+    if (auto ref = conformsToProtocol(targetType, protocol, target,
+                                      ConformanceCheckFlags::Used,
+                                      SourceLoc())) {
+      if (auto *conformance =
+          dyn_cast_or_null<NormalProtocolConformance>(ref->getConcrete())) {
+        if (conformance->isIncomplete()) {
+          // Check conformance, forcing synthesis.
+          //
+          // If synthesizing conformance fails, this will produce diagnostics.
+          // If conformance checking was already in progress elsewhere, though,
+          // this could produce diagnostics twice.
+          //
+          // To prevent this duplication, we swallow the diagnostics if the
+          // state of the conformance is not Incomplete.
+          DiagnosticTransaction transaction(Context.Diags);
+          auto shouldSwallowDiagnostics =
+            conformance->getState() != ProtocolConformanceState::Incomplete;
+
+          checkConformance(conformance);
+          if (shouldSwallowDiagnostics)
+            transaction.abort();
+
+          return conformance->isComplete();
+        }
+      }
+    }
+
+    return false;
+  };
+
+  if (member.isSimpleName()) {
+    if (baseName.getIdentifier() == Context.Id_CodingKeys) {
+      // CodingKeys is a special type which may be synthesized as part of
+      // Encodable/Decodable conformance. If the target conforms to either
+      // protocol and would derive conformance to either, the type may be
+      // synthesized.
+      // If the target conforms to either and the conformance has not yet been
+      // evaluated, then we should do that here.
+      //
+      // Try to synthesize Decodable first. If that fails, try to synthesize
+      // Encodable. If either succeeds and CodingKeys should have been
+      // synthesized, it will be synthesized.
+      auto *decodableProto = Context.getProtocol(KnownProtocolKind::Decodable);
+      auto *encodableProto = Context.getProtocol(KnownProtocolKind::Encodable);
+      if (!evaluateTargetConformanceTo(decodableProto))
+        (void)evaluateTargetConformanceTo(encodableProto);
+    }
+  } else {
+    auto argumentNames = member.getArgumentNames();
+    if (argumentNames.size() != 1)
+      return;
+
+    auto argumentName = argumentNames.front();
+    if (baseName.getIdentifier() == Context.Id_init &&
+        argumentName == Context.Id_from) {
+      // init(from:) may be synthesized as part of derived confromance to the
+      // Decodable protocol.
+      // If the target should conform to the Decodable protocol, check the
+      // conformance here to attempt synthesis.
+      auto *decodableProto = Context.getProtocol(KnownProtocolKind::Decodable);
+      (void)evaluateTargetConformanceTo(decodableProto);
+    } else if (baseName.getIdentifier() == Context.Id_encode &&
+               argumentName == Context.Id_to) {
+      // encode(to:) may be synthesized as part of derived confromance to the
+      // Encodable protocol.
+      // If the target should conform to the Encodable protocol, check the
+      // conformance here to attempt synthesis.
+      auto *encodableProto = Context.getProtocol(KnownProtocolKind::Encodable);
+      (void)evaluateTargetConformanceTo(encodableProto);
+    }
+  }
+}
+
 void TypeChecker::addImplicitStructConformances(StructDecl *SD) {
   // Type-check the protocol conformances of the struct decl to instantiate its
   // derived conformances.
@@ -8337,10 +8438,10 @@ void TypeChecker::addImplicitEnumConformances(EnumDecl *ED) {
     if (elt->getTypeCheckedRawValueExpr()) continue;
     Expr *typeChecked = elt->getRawValueExpr();
     Type rawTy = ED->mapTypeIntoContext(ED->getRawType());
-    bool error = typeCheckExpression(typeChecked, ED, 
-                                     TypeLoc::withoutLoc(rawTy),
-                                     CTP_EnumCaseRawValue);
-    assert(!error); (void)error;
+    auto resultTy = typeCheckExpression(
+        typeChecked, ED, TypeLoc::withoutLoc(rawTy), CTP_EnumCaseRawValue);
+    assert(resultTy);
+    (void)resultTy;
     elt->setTypeCheckedRawValueExpr(typeChecked);
     checkEnumElementErrorHandling(elt);
   }
@@ -8373,7 +8474,7 @@ void TypeChecker::defineDefaultConstructor(NominalTypeDecl *decl) {
       // tuple.
       bool foundDefaultConstructor = false;
       for (auto memberResult : ctors) {
-        auto member = memberResult.Decl;
+        auto member = memberResult.getValueDecl();
 
         // Dig out the parameter tuple for this constructor.
         auto ctor = dyn_cast<ConstructorDecl>(member);

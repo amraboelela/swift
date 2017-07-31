@@ -253,7 +253,7 @@ static bool matchesDeclRefKind(ValueDecl *value, DeclRefKind refKind) {
 static bool containsDeclRefKind(LookupResult &lookupResult,
                                 DeclRefKind refKind) {
   for (auto candidate : lookupResult) {
-    ValueDecl *D = candidate.Decl;
+    ValueDecl *D = candidate.getValueDecl();
     if (!D || !D->hasInterfaceType())
       continue;
     if (matchesDeclRefKind(D, refKind))
@@ -428,15 +428,15 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
                                                          relookupOptions);
     if (inaccessibleResults) {
       // FIXME: What if the unviable candidates have different levels of access?
-      const ValueDecl *first = inaccessibleResults.front().Decl;
+      const ValueDecl *first = inaccessibleResults.front().getValueDecl();
       diagnose(Loc, diag::candidate_inaccessible,
                Name, first->getFormalAccess());
 
       // FIXME: If any of the candidates (usually just one) are in the same
       // module we could offer a fix-it.
       for (auto lookupResult : inaccessibleResults) {
-        diagnose(lookupResult.Decl, diag::decl_declared_here,
-                 lookupResult.Decl->getFullName());
+        diagnose(lookupResult.getValueDecl(), diag::decl_declared_here,
+                 lookupResult.getValueDecl()->getFullName());
       }
 
       // Don't try to recover here; we'll get more access-related diagnostics
@@ -485,7 +485,7 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
     } else {
       // Note all the correction candidates.
       for (auto &result : Lookup) {
-        noteTypoCorrection(Name, nameLoc, result);
+        noteTypoCorrection(Name, nameLoc, result.getValueDecl());
       }
     }
 
@@ -499,8 +499,8 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
 
   // If we have an unambiguous reference to a type decl, form a TypeExpr.
   if (Lookup.size() == 1 && UDRE->getRefKind() == DeclRefKind::Ordinary &&
-      isa<TypeDecl>(Lookup[0].Decl)) {
-    auto *D = cast<TypeDecl>(Lookup[0].Decl);
+      isa<TypeDecl>(Lookup[0].getValueDecl())) {
+    auto *D = cast<TypeDecl>(Lookup[0].getValueDecl());
     // FIXME: This is odd.
     if (isa<ModuleDecl>(D)) {
       return new (Context) DeclRefExpr(D, UDRE->getNameLoc(),
@@ -510,6 +510,7 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
     }
 
     return TypeExpr::createForDecl(Loc, D,
+                                   Lookup[0].getDeclContext(),
                                    UDRE->isImplicit());
   }
 
@@ -517,13 +518,14 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
   SmallVector<ValueDecl*, 4> ResultValues;
   for (auto Result : Lookup) {
     // If we find a member, then all of the results aren't non-members.
-    bool IsMember = Result.Base && !isa<ModuleDecl>(Result.Base);
+    bool IsMember = (Result.getBaseDecl() &&
+                     !isa<ModuleDecl>(Result.getBaseDecl()));
     if (IsMember) {
       AllDeclRefs = false;
       break;
     }
 
-    ValueDecl *D = Result.Decl;
+    ValueDecl *D = Result.getValueDecl();
     if (!D->hasInterfaceType()) validateDecl(D);
 
     // FIXME: Circularity hack.
@@ -588,16 +590,19 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
   ResultValues.clear();
   bool AllMemberRefs = true;
   ValueDecl *Base = nullptr;
+  DeclContext *BaseDC = nullptr;
   for (auto Result : Lookup) {
     // Track the base for member declarations.
-    if (Result.Base && !isa<ModuleDecl>(Result.Base)) {
-      ResultValues.push_back(Result.Decl);
-      if (Base && Result.Base != Base) {
+    if (Result.getBaseDecl() &&
+        !isa<ModuleDecl>(Result.getBaseDecl())) {
+      ResultValues.push_back(Result.getValueDecl());
+      if (Base && Result.getBaseDecl() != Base) {
         AllMemberRefs = false;
         break;
       }
 
-      Base = Result.Base;
+      Base = Result.getBaseDecl();
+      BaseDC = Result.getDeclContext();
       continue;
     }
 
@@ -610,9 +615,10 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
     if (auto PD = dyn_cast<ProtocolDecl>(Base)) {
       BaseExpr = TypeExpr::createForDecl(Loc,
                                          PD->getGenericParams()->getParams().front(),
+                                         /*DC*/nullptr,
                                          /*isImplicit=*/true);
     } else if (auto NTD = dyn_cast<NominalTypeDecl>(Base)) {
-      BaseExpr = TypeExpr::createForDecl(Loc, NTD, /*isImplicit=*/true);
+      BaseExpr = TypeExpr::createForDecl(Loc, NTD, BaseDC, /*isImplicit=*/true);
     } else {
       BaseExpr = new (Context) DeclRefExpr(Base, UDRE->getNameLoc(),
                                            /*Implicit=*/true);
@@ -1465,7 +1471,8 @@ void PreCheckExpression::resolveKeyPathExpr(KeyPathExpr *KPE) {
         // .[0] or just plain [0]
         components.push_back(
             KeyPathExpr::Component::forUnresolvedSubscriptWithPrebuiltIndexExpr(
-                SE->getIndex(), SE->getLoc()));
+                TC.Context,
+                SE->getIndex(), SE->getArgumentLabels(), SE->getLoc()));
 
         expr = SE->getBase();
       } else if (auto BOE = dyn_cast<BindOptionalExpr>(expr)) {
@@ -1601,16 +1608,13 @@ CleanupIllFormedExpressionRAII::~CleanupIllFormedExpressionRAII() {
 
 /// Pre-check the expression, validating any types that occur in the
 /// expression and folding sequence expressions.
-static bool preCheckExpression(TypeChecker &tc, Expr *&expr, DeclContext *dc) {
-  PreCheckExpression preCheck(tc, dc);
+bool TypeChecker::preCheckExpression(Expr *&expr, DeclContext *dc) {
+  PreCheckExpression preCheck(*this, dc);
   // Perform the pre-check.
   if (auto result = expr->walk(preCheck)) {
     expr = result;
     return false;
   }
-
-  // Pre-check failed. Clean up and return.
-  CleanupIllFormedExpressionRAII::doIt(expr, tc.Context);
   return true;
 }
 
@@ -1646,11 +1650,6 @@ solveForExpression(Expr *&expr, DeclContext *dc, Type convertType,
                    ExprTypeCheckListener *listener, ConstraintSystem &cs,
                    SmallVectorImpl<Solution> &viable,
                    TypeCheckExprOptions options) {
-  // First, pre-check the expression, validating any types that occur in the
-  // expression and folding sequence expressions.
-  if (preCheckExpression(*this, expr, dc))
-    return true;
-
   // Attempt to solve the constraint system.
   auto solution = cs.solve(expr,
                            convertType,
@@ -1696,80 +1695,19 @@ solveForExpression(Expr *&expr, DeclContext *dc, Type convertType,
   return false;
 }
 
-namespace {
-  /// ExprCleanser - This class is used by typeCheckExpression to ensure that in
-  /// no situation will an expr node be left with a dangling type variable stuck
-  /// to it.  Often type checking will create new AST nodes and replace old ones
-  /// (e.g. by turning an UnresolvedDotExpr into a MemberRefExpr).  These nodes
-  /// might be left with pointers into the temporary constraint system through
-  /// their type variables, and we don't want pointers into the original AST to
-  /// dereference these now-dangling types.
-  class ExprCleanser {
-    llvm::SmallVector<Expr*,4> Exprs;
-    llvm::SmallVector<TypeLoc*, 4> TypeLocs;
-    llvm::SmallVector<Pattern*, 4> Patterns;
-  public:
-
-    ExprCleanser(Expr *E) {
-      struct ExprCleanserImpl : public ASTWalker {
-        ExprCleanser *TS;
-        ExprCleanserImpl(ExprCleanser *TS) : TS(TS) {}
-
-        std::pair<bool, Expr *> walkToExprPre(Expr *expr) override {
-          TS->Exprs.push_back(expr);
-          return { true, expr };
-        }
-
-        bool walkToTypeLocPre(TypeLoc &TL) override {
-          TS->TypeLocs.push_back(&TL);
-          return true;
-        }
-
-        std::pair<bool, Pattern*> walkToPatternPre(Pattern *P) override {
-          TS->Patterns.push_back(P);
-          return { true, P };
-        }
-
-        // Don't walk into statements.  This handles the BraceStmt in
-        // non-single-expr closures, so we don't walk into their body.
-        std::pair<bool, Stmt *> walkToStmtPre(Stmt *S) override {
-          return { false, S };
-        }
-      };
-
-      E->walk(ExprCleanserImpl(this));
-    }
-
-    ~ExprCleanser() {
-      // Check each of the expression nodes to verify that there are no type
-      // variables hanging out.  If so, just nuke the type.
-      for (auto E : Exprs) {
-        if (E->getType() && E->getType()->hasTypeVariable())
-          E->setType(Type());
-      }
-
-      for (auto TL : TypeLocs) {
-        if (TL->getTypeRepr() && TL->getType() &&
-            TL->getType()->hasTypeVariable())
-          TL->setType(Type(), false);
-      }
-
-      for (auto P : Patterns) {
-        if (P->hasType() && P->getType()->hasTypeVariable())
-          P->setType(Type());
-      }
-    }
-  };
-} // end anonymous namespace
-
 #pragma mark High-level entry points
-bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
+Type TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
                                       TypeLoc convertType,
                                       ContextualTypePurpose convertTypePurpose,
                                       TypeCheckExprOptions options,
                                       ExprTypeCheckListener *listener,
                                       ConstraintSystem *baseCS) {
   PrettyStackTraceExpr stackTrace(Context, "type-checking", expr);
+
+  // First, pre-check the expression, validating any types that occur in the
+  // expression and folding sequence expressions.
+  if (preCheckExpression(expr, dc))
+    return Type();
 
   // Construct a constraint system from this expression.
   ConstraintSystemOptions csOptions = ConstraintSystemFlags::AllowFixes;
@@ -1778,7 +1716,7 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
   ConstraintSystem cs(*this, dc, csOptions);
   cs.baseCS = baseCS;
   CleanupIllFormedExpressionRAII cleanup(Context, expr);
-  ExprCleanser cleanup2(expr);
+  ExprCleaner cleanup2(expr);
 
   // Verify that a purpose was specified if a convertType was.  Note that it is
   // ok to have a purpose without a convertType (which is used for call
@@ -1820,7 +1758,7 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
   SmallVector<Solution, 4> viable;
   if (solveForExpression(expr, dc, convertType.getType(),
                          allowFreeTypeVariables, listener, cs, viable, options))
-    return true;
+    return Type();
 
   // If the client allows the solution to have unresolved type expressions,
   // check for them now.  We cannot apply the solution with unresolved TypeVars,
@@ -1828,8 +1766,7 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
   if (options.contains(TypeCheckExprFlags::AllowUnresolvedTypeVariables) &&
       (viable.size() != 1 ||
        (convertType.getType() && convertType.getType()->hasUnresolvedType()))) {
-    expr->setType(ErrorType::get(Context));
-    return false;
+    return ErrorType::get(Context);
   }
 
   auto result = expr;
@@ -1837,11 +1774,13 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
   if (listener) {
     result = listener->foundSolution(solution, result);
     if (!result)
-      return true;
+      return Type();
   }
 
-  if (options.contains(TypeCheckExprFlags::SkipApplyingSolution))
-    return false;
+  if (options.contains(TypeCheckExprFlags::SkipApplyingSolution)) {
+    cleanup.disable();
+    return cs.getType(expr);
+  }
 
   // Apply the solution to the expression.
   bool isDiscarded = options.contains(TypeCheckExprFlags::IsDiscarded);
@@ -1851,7 +1790,7 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
                             skipClosures);
   if (!result) {
     // Failure already diagnosed, above, as part of applying the solution.
-    return true;
+    return Type();
   }
 
   if (getLangOpts().DebugConstraintSolver) {
@@ -1864,7 +1803,7 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
   if (listener) {
     result = listener->appliedSolution(solution, result);
     if (!result) {
-      return true;
+      return Type();
     }
   }
 
@@ -1878,10 +1817,10 @@ bool TypeChecker::typeCheckExpression(Expr *&expr, DeclContext *dc,
 
   expr = result;
   cleanup.disable();
-  return false;
+  return cs.getType(expr);
 }
 
-Optional<Type> TypeChecker::
+Type TypeChecker::
 getTypeOfExpressionWithoutApplying(Expr *&expr, DeclContext *dc,
                                    ConcreteDeclRef &referencedDecl,
                                  FreeTypeVariableBinding allowFreeTypeVariables,
@@ -1910,7 +1849,7 @@ getTypeOfExpressionWithoutApplying(Expr *&expr, DeclContext *dc,
                          allowFreeTypeVariables, listener, cs, viable,
                          TypeCheckExprFlags::SuppressDiagnostics)) {
     recoverOriginalType();
-    return None;
+    return Type();
   }
 
   // Get the expression's simplified type.
@@ -1923,7 +1862,7 @@ getTypeOfExpressionWithoutApplying(Expr *&expr, DeclContext *dc,
 
   if (exprType->hasError()) {
     recoverOriginalType();
-    return None;
+    return Type();
   }
 
   // Dig the declaration out of the solution.
@@ -2149,27 +2088,31 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
     ConstraintLocator *Locator;
 
     /// The type of the initializer.
-    Type InitType;
+    llvm::PointerIntPair<Type, 1, bool> InitTypeAndInOut;
 
   public:
     explicit BindingListener(Pattern *&pattern, Expr *&initializer)
       : pattern(pattern), initializer(initializer),
-        Locator(nullptr) { }
+        Locator(nullptr), InitTypeAndInOut(Type(), false) { }
 
-    Type getInitType() const { return InitType; }
+    Type getInitType() const { return InitTypeAndInOut.getPointer(); }
+    bool isInOut() const { return InitTypeAndInOut.getInt(); }
 
     bool builtConstraints(ConstraintSystem &cs, Expr *expr) override {
       // Save the locator we're using for the expression.
       Locator = cs.getConstraintLocator(expr);
 
       // Collect constraints from the pattern.
-      InitType = cs.generateConstraints(pattern, Locator);
-      if (!InitType)
+      InitTypeAndInOut.setPointer(cs.generateConstraints(pattern, Locator));
+      InitTypeAndInOut.setInt(expr->isSemanticallyInOutExpr());
+      if (!InitTypeAndInOut.getPointer())
         return true;
 
+      assert(!InitTypeAndInOut.getPointer()->is<InOutType>());
       // Add a conversion constraint between the types.
       cs.addConstraint(ConstraintKind::Conversion, cs.getType(expr),
-                       InitType, Locator, /*isFavored*/true);
+                       InitTypeAndInOut.getPointer(), Locator,
+                       /*isFavored*/true);
 
       // The expression has been pre-checked; save it in case we fail later.
       initializer = expr;
@@ -2178,7 +2121,8 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
 
     Expr *foundSolution(Solution &solution, Expr *expr) override {
       // Figure out what type the constraints decided on.
-      InitType = solution.simplifyType(InitType);
+      InitTypeAndInOut.setPointer(solution.simplifyType(InitTypeAndInOut.getPointer()));
+      InitTypeAndInOut.setInt(expr->isSemanticallyInOutExpr());
 
       // Just keep going.
       return expr;
@@ -2187,13 +2131,13 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
     Expr *appliedSolution(Solution &solution, Expr *expr) override {
       // Convert the initializer to the type of the pattern.
       // ignoreTopLevelInjection = Binding->isConditional()
-      expr = solution.coerceToType(expr, InitType, Locator,
+      expr = solution.coerceToType(expr, InitTypeAndInOut.getPointer(), Locator,
                                    false /* ignoreTopLevelInjection */);
       if (!expr) {
         return nullptr;
       }
 
-      assert(solution.getConstraintSystem().getType(expr)->isEqual(InitType));
+      assert(solution.getConstraintSystem().getType(expr)->isEqual(InitTypeAndInOut.getPointer()));
 
       initializer = expr;
       return expr;
@@ -2226,12 +2170,9 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
   if (skipApplyingSolution)
     flags |= TypeCheckExprFlags::SkipApplyingSolution;
 
-  bool hadError = typeCheckExpression(initializer, DC, contextualType,
-                                     contextualPurpose,
-                                     flags,
-                                     &listener);
-
-  if (!hadError) {
+  auto resultTy = typeCheckExpression(initializer, DC, contextualType,
+                                      contextualPurpose, flags, &listener);
+  if (resultTy) {
     TypeResolutionOptions options;
     options |= TR_OverrideType;
     options |= TR_InExpression;
@@ -2240,20 +2181,20 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
     }
 
     // Apply the solution to the pattern as well.
-    if (coercePatternToType(pattern, DC, listener.getInitType(), options)) {
+    if (coercePatternToType(pattern, DC, listener.getInitType(), options,
+                            nullptr, TypeLoc(), listener.isInOut())) {
       return true;
     }
   }
 
-  if (hadError && !initializer->getType())
+  if (!resultTy && !initializer->getType())
     initializer->setType(ErrorType::get(Context));
 
   // If the type of the pattern is inferred, assign error types to the pattern
   // and its variables, to prevent it from being referenced by the constraint
   // system.
-  if (hadError &&
-      (!pattern->hasType() ||
-       pattern->getType()->hasUnboundGenericType())) {
+  if (!resultTy &&
+      (!pattern->hasType() || pattern->getType()->hasUnboundGenericType())) {
     pattern->setType(ErrorType::get(Context));
     pattern->forEachVariable([&](VarDecl *var) {
       // Don't change the type of a variable that we've been able to
@@ -2267,7 +2208,7 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
     });
   }
 
-  return hadError;
+  return !resultTy;
 }
 
 bool TypeChecker::typeCheckPatternBinding(PatternBindingDecl *PBD,
@@ -2469,7 +2410,8 @@ bool TypeChecker::typeCheckForEachBinding(DeclContext *dc, ForEachStmt *stmt) {
   assert(seq && "type-checking an uninitialized for-each statement?");
 
   // Type-check the for-each loop sequence and element pattern.
-  return typeCheckExpression(seq, dc, &listener);
+  auto resultTy = typeCheckExpression(seq, dc, &listener);
+  return !resultTy;
 }
 
 /// \brief Compute the rvalue type of the given expression, which is the
@@ -2530,9 +2472,11 @@ bool TypeChecker::typeCheckCondition(Expr *&expr, DeclContext *dc) {
   // If this expression is already typechecked and has an i1 type, then it has
   // already got its conversion from Boolean back to i1.  Just re-typecheck
   // it.
-  if (expr->getType() && expr->getType()->isBuiltinIntegerType(1))
-    return typeCheckExpression(expr, dc);
-  
+  if (expr->getType() && expr->getType()->isBuiltinIntegerType(1)) {
+    auto resultTy = typeCheckExpression(expr, dc);
+    return !resultTy;
+  }
+
   /// Expression type checking listener for conditions.
   class ConditionListener : public ExprTypeCheckListener {
     Expr *OrigExpr = nullptr;
@@ -2570,7 +2514,8 @@ bool TypeChecker::typeCheckCondition(Expr *&expr, DeclContext *dc) {
   };
 
   ConditionListener listener;
-  return typeCheckExpression(expr, dc, &listener);
+  auto resultTy = typeCheckExpression(expr, dc, &listener);
+  return !resultTy;
 }
 
 bool TypeChecker::typeCheckStmtCondition(StmtCondition &cond, DeclContext *dc,
@@ -2676,7 +2621,7 @@ bool TypeChecker::typeCheckExprPattern(ExprPattern *EP, DeclContext *DC,
   
   SmallVector<ValueDecl*, 4> choices;
   for (auto &result : matchLookup) {
-    choices.push_back(result.Decl);
+    choices.push_back(result.getValueDecl());
   }
   
   if (choices.empty()) {
@@ -3102,19 +3047,6 @@ void Solution::dump(raw_ostream &out) const {
       fix.first.print(out, &getConstraintSystem());
       out << " @ ";
       fix.second->dump(sm, out);
-      out << "\n";
-    }
-  }
-
-  if (!Conformances.empty()) {
-    out << "\nConformances:\n";
-    auto &cs = getConstraintSystem();
-    for (auto &e : Conformances) {
-      out.indent(2);
-      out << "At ";
-      e.first->dump(&cs.getASTContext().SourceMgr, out);
-      out << "\n";
-      e.second.dump(out);
       out << "\n";
     }
   }

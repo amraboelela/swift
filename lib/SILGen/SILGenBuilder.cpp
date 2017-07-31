@@ -148,13 +148,13 @@ InitExistentialAddrInst *SILGenBuilder::createInitExistentialAddr(
       loc, existential, formalConcreteType, loweredConcreteType, conformances);
 }
 
-InitExistentialOpaqueInst *SILGenBuilder::createInitExistentialOpaque(
+InitExistentialValueInst *SILGenBuilder::createInitExistentialValue(
     SILLocation Loc, SILType ExistentialType, CanType FormalConcreteType,
     SILValue Concrete, ArrayRef<ProtocolConformanceRef> Conformances) {
   for (auto conformance : Conformances)
     getSILGenModule().useConformance(conformance);
 
-  return SILBuilder::createInitExistentialOpaque(
+  return SILBuilder::createInitExistentialValue(
       Loc, ExistentialType, FormalConcreteType, Concrete, Conformances);
 }
 
@@ -494,7 +494,9 @@ ManagedValue SILGenBuilder::createLoadCopy(SILLocation loc, ManagedValue v,
       lowering.emitLoadOfCopy(*this, loc, v.getValue(), IsNotTake);
   if (lowering.isTrivial())
     return ManagedValue::forUnmanaged(result);
-  assert(!lowering.isAddressOnly() && "cannot retain an unloadable type");
+  assert((!lowering.isAddressOnly()
+          || !SGF.silConv.useLoweredAddresses()) &&
+         "cannot retain an unloadable type");
   return SGF.emitManagedRValueWithCleanup(result, lowering);
 }
 
@@ -644,6 +646,17 @@ ManagedValue SILGenBuilder::createOpenExistentialRef(SILLocation loc,
   SILValue openedExistential =
       SILBuilder::createOpenExistentialRef(loc, original.forward(SGF), type);
   return cloner.clone(openedExistential);
+}
+
+ManagedValue SILGenBuilder::createStore(SILLocation loc, ManagedValue value,
+                                        SILValue address,
+                                        StoreOwnershipQualifier qualifier) {
+  SILModule &M = SGF.F.getModule();
+  CleanupCloner cloner(*this, value);
+  if (value.getType().isTrivial(M) || value.getOwnershipKind() == ValueOwnershipKind::Trivial)
+    qualifier = StoreOwnershipQualifier::Trivial;
+  SILBuilder::createStore(loc, value.forward(SGF), address, qualifier);
+  return cloner.clone(address);
 }
 
 //===----------------------------------------------------------------------===//

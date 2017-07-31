@@ -109,6 +109,9 @@ def disable_target_os_checking :
 def enable_astscope_lookup : Flag<["-"], "enable-astscope-lookup">,
   HelpText<"Enable ASTScope-based unqualified name lookup">;
 
+def enable_recursive_constraints : Flag<["-"], "enable-recursive-constraints">,
+  HelpText<"Enable SE-0157: Recursive Protocol Constraints">;
+
 def print_clang_stats : Flag<["-"], "print-clang-stats">,
   HelpText<"Print Clang importer statistics">;
 
@@ -283,9 +286,6 @@ def disable_deserialization_recovery :
   Flag<["-"], "disable-deserialization-recovery">,
   HelpText<"Don't attempt to recover from missing xrefs (etc) in swiftmodules">;
 
-def enable_cow_existentials : Flag<["-"], "enable-cow-existentials">,
-  HelpText<"Enable the copy-on-write existential implementation">;
-
 def disable_availability_checking : Flag<["-"],
   "disable-availability-checking">,
   HelpText<"Disable checking for potentially unavailable APIs">;
@@ -399,6 +399,9 @@ def disable_incremental_llvm_codegeneration :
 def emit_sorted_sil : Flag<["-"], "emit-sorted-sil">,
   HelpText<"When printing SIL, print out all sil entities sorted by name to "
            "ease diffing">;
+
+def emit_syntax : Flag<["-"], "emit-syntax">,
+  HelpText<"Parse input file(s) and emit the Syntax tree(s) as JSON">, ModeOpt;
 
 def use_malloc : Flag<["-"], "use-malloc">,
   HelpText<"Allocate internal data structures using malloc "

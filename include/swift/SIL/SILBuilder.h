@@ -476,6 +476,14 @@ public:
         getSILDebugLocation(Loc), text.toStringRef(Out), encoding, F));
   }
 
+  LoadInst *createTrivialLoadOr(SILLocation Loc, SILValue LV,
+                                LoadOwnershipQualifier Qualifier) {
+    if (LV->getType().isTrivial(getModule())) {
+      return createLoad(Loc, LV, LoadOwnershipQualifier::Trivial);
+    }
+    return createLoad(Loc, LV, Qualifier);
+  }
+
   LoadInst *createLoad(SILLocation Loc, SILValue LV,
                        LoadOwnershipQualifier Qualifier) {
     assert((Qualifier != LoadOwnershipQualifier::Unqualified) ||
@@ -509,7 +517,8 @@ public:
   }
 
   LoadBorrowInst *createLoadBorrow(SILLocation Loc, SILValue LV) {
-    assert(LV->getType().isLoadable(F.getModule()));
+    assert(!SILModuleConventions(F.getModule()).useLoweredAddresses()
+           || LV->getType().isLoadable(F.getModule()));
     return insert(new (F.getModule())
                       LoadBorrowInst(getSILDebugLocation(Loc), LV));
   }
@@ -517,6 +526,17 @@ public:
   BeginBorrowInst *createBeginBorrow(SILLocation Loc, SILValue LV) {
     return insert(new (F.getModule())
                       BeginBorrowInst(getSILDebugLocation(Loc), LV));
+  }
+
+  /// Utility function that returns a trivial store if the stored type is
+  /// trivial and a \p Qualifier store if the stored type is non-trivial.
+  StoreInst *createTrivialStoreOr(SILLocation Loc, SILValue Src,
+                                  SILValue DestAddr,
+                                  StoreOwnershipQualifier Qualifier) {
+    if (Src->getType().isTrivial(getModule())) {
+      return createStore(Loc, Src, DestAddr, StoreOwnershipQualifier::Trivial);
+    }
+    return createStore(Loc, Src, DestAddr, Qualifier);
   }
 
   StoreInst *createStore(SILLocation Loc, SILValue Src, SILValue DestAddr,
@@ -1169,10 +1189,10 @@ public:
     return I;
   }
 
-  OpenExistentialOpaqueInst *createOpenExistentialOpaque(SILLocation Loc,
+  OpenExistentialValueInst *createOpenExistentialValue(SILLocation Loc,
                                                          SILValue Operand,
                                                          SILType SelfTy) {
-    auto *I = insert(new (F.getModule()) OpenExistentialOpaqueInst(
+    auto *I = insert(new (F.getModule()) OpenExistentialValueInst(
         getSILDebugLocation(Loc), Operand, SelfTy));
     if (OpenedArchetypesTracker)
       OpenedArchetypesTracker->registerOpenedArchetypes(I);
@@ -1207,6 +1227,15 @@ public:
     return I;
   }
 
+  OpenExistentialBoxValueInst *
+  createOpenExistentialBoxValue(SILLocation Loc, SILValue Operand, SILType Ty) {
+    auto *I = insert(new (F.getModule()) OpenExistentialBoxValueInst(
+        getSILDebugLocation(Loc), Operand, Ty));
+    if (OpenedArchetypesTracker)
+      OpenedArchetypesTracker->registerOpenedArchetypes(I);
+    return I;
+  }
+
   InitExistentialAddrInst *
   createInitExistentialAddr(SILLocation Loc, SILValue Existential,
                             CanType FormalConcreteType,
@@ -1217,11 +1246,11 @@ public:
         LoweredConcreteType, Conformances, &F, OpenedArchetypes));
   }
 
-  InitExistentialOpaqueInst *
-  createInitExistentialOpaque(SILLocation Loc, SILType ExistentialType,
+  InitExistentialValueInst *
+  createInitExistentialValue(SILLocation Loc, SILType ExistentialType,
                               CanType FormalConcreteType, SILValue Concrete,
                               ArrayRef<ProtocolConformanceRef> Conformances) {
-    return insert(InitExistentialOpaqueInst::create(
+    return insert(InitExistentialValueInst::create(
         getSILDebugLocation(Loc), ExistentialType, FormalConcreteType, Concrete,
         Conformances, &F, OpenedArchetypes));
   }
@@ -1250,9 +1279,9 @@ public:
         getSILDebugLocation(Loc), Existential));
   }
 
-  DeinitExistentialOpaqueInst *
-  createDeinitExistentialOpaque(SILLocation Loc, SILValue Existential) {
-    return insert(new (F.getModule()) DeinitExistentialOpaqueInst(
+  DeinitExistentialValueInst *
+  createDeinitExistentialValue(SILLocation Loc, SILValue Existential) {
+    return insert(new (F.getModule()) DeinitExistentialValueInst(
         getSILDebugLocation(Loc), Existential));
   }
 
@@ -1297,10 +1326,7 @@ public:
   }
 
   ValueMetatypeInst *createValueMetatype(SILLocation Loc, SILType Metatype,
-                                         SILValue Base) {
-    return insert(new (F.getModule()) ValueMetatypeInst(
-        getSILDebugLocation(Loc), Metatype, Base));
-  }
+                                         SILValue Base);
 
   ExistentialMetatypeInst *
   createExistentialMetatype(SILLocation Loc, SILType Metatype, SILValue Base) {

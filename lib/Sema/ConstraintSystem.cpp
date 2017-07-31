@@ -128,7 +128,9 @@ bool ConstraintSystem::typeVarOccursInType(TypeVariableType *typeVar,
 
 void ConstraintSystem::assignFixedType(TypeVariableType *typeVar, Type type,
                                        bool updateState) {
-  
+  assert(!type->hasError() &&
+         "Should not be assigning a type involving ErrorType!");
+
   typeVar->getImpl().assignFixedType(type, getSavedBindings());
 
   if (!updateState)
@@ -247,7 +249,9 @@ LookupResult &ConstraintSystem::lookupMember(Type base, DeclName name) {
 
   // We are performing dynamic lookup. Filter out redundant results early.
   llvm::DenseSet<std::tuple<char, ObjCSelector, CanType>> known;
-  result->filter([&](ValueDecl *decl) -> bool {
+  result->filter([&](LookupResultEntry entry) -> bool {
+    auto *decl = entry.getValueDecl();
+
     if (decl->isInvalid())
       return false;
 
@@ -580,7 +584,8 @@ Type ConstraintSystem::getFixedTypeRecursive(Type type,
     if (auto parenTy = dyn_cast<ParenType>(type.getPointer())) {
       type = getFixedTypeRecursive(parenTy->getUnderlyingType(), flags,
                                    wantRValue, retainParens);
-      return ParenType::get(getASTContext(), type);
+      auto flags = parenTy->getParameterFlags().withInOut(type->is<InOutType>());
+      return ParenType::get(getASTContext(), type->getInOutObjectType(), flags);
     }
   }
 
@@ -855,7 +860,7 @@ ConstraintSystem::getTypeOfReference(ValueDecl *value,
   // Unqualified reference to a type.
   if (auto typeDecl = dyn_cast<TypeDecl>(value)) {
     // Resolve the reference to this type declaration in our current context.
-    auto type = TC.resolveTypeInContext(typeDecl, DC,
+    auto type = TC.resolveTypeInContext(typeDecl, nullptr, DC,
                                         TR_InExpression,
                                         /*isSpecialized=*/false);
 
@@ -1201,17 +1206,19 @@ ConstraintSystem::getTypeOfMemberReference(
 
     // If self is a value type and the base type is an lvalue, wrap it in an
     // inout type.
+    auto selfFlags = ParameterTypeFlags();
     if (!outerDC->getDeclaredTypeOfContext()->hasReferenceSemantics() &&
         baseTy->is<LValueType>() &&
         !selfTy->hasError())
-      selfTy = InOutType::get(selfTy);
+      selfFlags = selfFlags.withInOut(true);
 
     // If the storage is generic, add a generic signature.
+    auto selfParam = AnyFunctionType::Param(selfTy, Identifier(), selfFlags);
     if (auto *sig = innerDC->getGenericSignatureOfContext()) {
-      funcType = GenericFunctionType::get(sig, selfTy, refType,
+      funcType = GenericFunctionType::get(sig, {selfParam}, refType,
                                           AnyFunctionType::ExtInfo());
     } else {
-      funcType = FunctionType::get(selfTy, refType,
+      funcType = FunctionType::get({selfParam}, refType,
                                    AnyFunctionType::ExtInfo());
     }
   }
@@ -1794,8 +1801,7 @@ DeclName OverloadChoice::getName() const {
       // don't currently pre-filter subscript overload sets by argument
       // keywords, so "subscript" is still the name that keypath subscripts
       // are looked up by.
-      auto &C = getBaseType()->getASTContext();
-      return DeclName(C.Id_subscript);
+      return DeclBaseName::createSubscript();
     }
     case OverloadChoiceKind::BaseType:
     case OverloadChoiceKind::TupleIndex:

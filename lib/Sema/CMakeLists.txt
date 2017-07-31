@@ -33,7 +33,6 @@ add_swift_library(swiftSema STATIC
   PCMacro.cpp
   PlaygroundTransform.cpp
   ResilienceDiagnostics.cpp
-  Semantics.cpp
   SourceLoader.cpp
   TypeCheckAttr.cpp
   TypeCheckAvailability.cpp
@@ -57,6 +56,7 @@ add_swift_library(swiftSema STATIC
   LINK_LIBRARIES
     swiftParse
     swiftAST
+    swiftSerialization
   ${EXTRA_TYPECHECKER_FLAGS}
 )
 

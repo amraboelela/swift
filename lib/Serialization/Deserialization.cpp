@@ -1201,7 +1201,7 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
       XRefValuePathPieceLayout::readRecord(scratch, TID, IID, inProtocolExt,
                                            isStatic);
 
-    Identifier name = getIdentifier(IID);
+    DeclBaseName name = getDeclBaseName(IID);
     pathTrace.addValue(name);
 
     Type filterTy = getType(TID);
@@ -1319,9 +1319,7 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
                                                   &blobData);
     switch (recordID) {
     case XREF_TYPE_PATH_PIECE: {
-      if (values.size() == 1) {
-        ModuleDecl *module = values.front()->getModuleContext();
-
+      if (values.size() == 1 && isa<NominalTypeDecl>(values.front())) {
         // Fast path for nested types that avoids deserializing all
         // members of the parent type.
         IdentifierID IID;
@@ -1334,29 +1332,27 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
           "If you're seeing a crash here, try passing "
             "-Xfrontend -disable-serialization-nested-type-lookup-table"};
 
+        auto *baseType = cast<NominalTypeDecl>(values.front());
         TypeDecl *nestedType = nullptr;
         if (onlyInNominal) {
           // Only look in the file containing the type itself.
           const DeclContext *dc = values.front()->getDeclContext();
-          auto *serializedFile =
-            dyn_cast<SerializedASTFile>(dc->getModuleScopeContext());
-          if (serializedFile) {
-            nestedType =
-              serializedFile->File.lookupNestedType(memberName,
-                                                    values.front());
+          auto *containingFile =
+            dyn_cast<FileUnit>(dc->getModuleScopeContext());
+          if (containingFile) {
+            nestedType = containingFile->lookupNestedType(memberName, baseType);
           }
         } else {
-          // Fault in extensions, then ask every serialized AST in the module.
-          (void)cast<NominalTypeDecl>(values.front())->getExtensions();
-          for (FileUnit *file : module->getFiles()) {
+          // Fault in extensions, then ask every file in the module.
+          ModuleDecl *extensionModule = M;
+          if (!extensionModule)
+            extensionModule = baseType->getModuleContext();
+
+          (void)baseType->getExtensions();
+          for (FileUnit *file : extensionModule->getFiles()) {
             if (file == getFile())
               continue;
-            auto *serializedFile = dyn_cast<SerializedASTFile>(file);
-            if (!serializedFile)
-              continue;
-            nestedType =
-              serializedFile->File.lookupNestedType(memberName,
-                                                    values.front());
+            nestedType = file->lookupNestedType(memberName, baseType);
             if (nestedType)
               break;
           }
@@ -1376,7 +1372,7 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
     case XREF_VALUE_PATH_PIECE:
     case XREF_INITIALIZER_PATH_PIECE: {
       TypeID TID = 0;
-      Identifier memberName;
+      DeclBaseName memberName;
       Optional<swift::CtorInitializerKind> ctorInit;
       bool isType = false;
       bool inProtocolExt = false;
@@ -1385,7 +1381,7 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
       case XREF_TYPE_PATH_PIECE: {
         IdentifierID IID;
         XRefTypePathPieceLayout::readRecord(scratch, IID, inProtocolExt);
-        memberName = getIdentifier(IID);
+        memberName = getDeclBaseName(IID);
         isType = true;
         break;
       }
@@ -1394,7 +1390,7 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
         IdentifierID IID;
         XRefValuePathPieceLayout::readRecord(scratch, TID, IID, inProtocolExt,
                                              isStatic);
-        memberName = getIdentifier(IID);
+        memberName = getDeclBaseName(IID);
         break;
       }
 
@@ -1613,11 +1609,24 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
   return values.front();
 }
 
-Identifier ModuleFile::getIdentifier(IdentifierID IID) {
+DeclBaseName ModuleFile::getDeclBaseName(IdentifierID IID) {
   if (IID == 0)
     return Identifier();
 
-  size_t rawID = IID - NUM_SPECIAL_MODULES;
+  if (IID < NUM_SPECIAL_IDS) {
+    switch (static_cast<SpecialIdentifierID>(static_cast<uint8_t>(IID))) {
+    case BUILTIN_MODULE_ID:
+    case CURRENT_MODULE_ID:
+    case OBJC_HEADER_MODULE_ID:
+        llvm_unreachable("Cannot get DeclBaseName of special module id");
+    case SUBSCRIPT_ID:
+      return DeclBaseName::createSubscript();
+    case NUM_SPECIAL_IDS:
+      llvm_unreachable("implementation detail only");
+    }
+  }
+
+  size_t rawID = IID - NUM_SPECIAL_IDS;
   assert(rawID < Identifiers.size() && "invalid identifier ID");
   auto identRecord = Identifiers[rawID];
 
@@ -1632,6 +1641,12 @@ Identifier ModuleFile::getIdentifier(IdentifierID IID) {
          "unterminated identifier string data");
 
   return getContext().getIdentifier(rawStrPtr.slice(0, terminatorOffset));
+}
+
+Identifier ModuleFile::getIdentifier(IdentifierID IID) {
+  auto name = getDeclBaseName(IID);
+  assert(!name.isSpecial());
+  return name.getIdentifier();
 }
 
 DeclContext *ModuleFile::getLocalDeclContext(DeclContextID DCID) {
@@ -1776,8 +1791,8 @@ DeclContext *ModuleFile::getDeclContext(DeclContextID DCID) {
 }
 
 ModuleDecl *ModuleFile::getModule(ModuleID MID) {
-  if (MID < NUM_SPECIAL_MODULES) {
-    switch (static_cast<SpecialModuleID>(static_cast<uint8_t>(MID))) {
+  if (MID < NUM_SPECIAL_IDS) {
+    switch (static_cast<SpecialIdentifierID>(static_cast<uint8_t>(MID))) {
     case BUILTIN_MODULE_ID:
       return getContext().TheBuiltinModule;
     case CURRENT_MODULE_ID:
@@ -1787,7 +1802,9 @@ ModuleDecl *ModuleFile::getModule(ModuleID MID) {
         static_cast<ClangImporter *>(getContext().getClangModuleLoader());
       return clangImporter->getImportedHeaderModule();
     }
-    case NUM_SPECIAL_MODULES:
+    case SUBSCRIPT_ID:
+      llvm_unreachable("Modules cannot be named with special names");
+    case NUM_SPECIAL_IDS:
       llvm_unreachable("implementation detail only");
     }
   }
@@ -2776,7 +2793,7 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
       return nullptr;
     }
 
-    param->setInterfaceType(paramTy);
+    param->setInterfaceType(paramTy->getInOutObjectType());
     break;
   }
 
@@ -3380,7 +3397,7 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
     SmallVector<Identifier, 2> argNames;
     for (auto argNameID : argNameAndDependencyIDs.slice(0, numArgNames))
       argNames.push_back(getIdentifier(argNameID));
-    DeclName name(ctx, ctx.Id_subscript, argNames);
+    DeclName name(ctx, DeclBaseName::createSubscript(), argNames);
 
     Expected<Decl *> overridden = getDeclChecked(overriddenID);
     if (!overridden) {
@@ -3788,7 +3805,7 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
       return underlyingTy.takeError();
     
     typeOrOffset = ParenType::get(
-        ctx, underlyingTy.get(),
+        ctx, underlyingTy.get()->getInOutObjectType(),
         ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping, isInOut));
     break;
   }
@@ -3818,7 +3835,7 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
         return elementTy.takeError();
       
       elements.emplace_back(
-          elementTy.get(), getIdentifier(nameID),
+          elementTy.get()->getInOutObjectType(), getIdentifier(nameID),
           ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping, isInOut));
     }
 

@@ -25,6 +25,7 @@
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/KnownProtocols.h"
 #include "swift/AST/LazyResolver.h"
+#include "swift/AST/NameLookup.h"
 #include "swift/AST/TypeRefinementContext.h"
 #include "swift/Parse/Lexer.h"
 #include "swift/Basic/OptionSet.h"
@@ -81,36 +82,32 @@ enum class DeclTypeCheckingSemantics {
 
 /// The result of name lookup.
 class LookupResult {
-public:
-  struct Result {
-    /// The declaration we found.
-    ValueDecl *Decl;
-
-    /// The base declaration through which we found the declaration.
-    ValueDecl *Base;
-
-    operator ValueDecl*() const { return Decl; }
-    ValueDecl *operator->() const { return Decl; }
-  };
-
 private:
   /// The set of results found.
-  SmallVector<Result, 4> Results;
+  SmallVector<LookupResultEntry, 4> Results;
 
 public:
-  typedef SmallVectorImpl<Result>::iterator iterator;
+  LookupResult() {}
+
+  explicit
+  LookupResult(const SmallVectorImpl<LookupResultEntry> &Results)
+    : Results(Results.begin(), Results.end()) {}
+
+  typedef SmallVectorImpl<LookupResultEntry>::iterator iterator;
   iterator begin() { return Results.begin(); }
   iterator end() { return Results.end(); }
   unsigned size() const { return Results.size(); }
   bool empty() const { return Results.empty(); }
 
-  const Result& operator[](unsigned index) const { return Results[index]; }
+  const LookupResultEntry& operator[](unsigned index) const {
+    return Results[index];
+  }
 
-  Result front() const { return Results.front(); }
-  Result back() const { return Results.back(); }
+  LookupResultEntry front() const { return Results.front(); }
+  LookupResultEntry back() const { return Results.back(); }
 
   /// Add a result to the set of results.
-  void add(Result result) { Results.push_back(result); }
+  void add(LookupResultEntry result) { Results.push_back(result); }
 
   void clear() { Results.clear(); }
 
@@ -123,11 +120,11 @@ public:
     if (size() != 1)
       return nullptr;
 
-    return dyn_cast<TypeDecl>(front().Decl);
+    return dyn_cast<TypeDecl>(front().getValueDecl());
   }
 
   /// Filter out any results that aren't accepted by the given predicate.
-  void filter(const std::function<bool(Result)> &pred);
+  void filter(const std::function<bool(LookupResultEntry)> &pred);
 };
 
 /// The result of name lookup for types.
@@ -747,6 +744,9 @@ private:
   llvm::DenseMap<AbstractFunctionDecl *, llvm::DenseSet<ApplyExpr *>>
     FunctionAsEscapingArg;
 
+  /// The # of times we have performed typo correction.
+  unsigned NumTypoCorrections = 0;
+
 public:
   /// Record an occurrence of a function that captures inout values as an
   /// argument.
@@ -1049,7 +1049,9 @@ public:
   /// \param resolver The resolver for generic types.
   ///
   /// \returns the resolved type.
-  Type resolveTypeInContext(TypeDecl *typeDecl, DeclContext *fromDC,
+  Type resolveTypeInContext(TypeDecl *typeDecl,
+                            DeclContext *foundDC,
+                            DeclContext *fromDC,
                             TypeResolutionOptions options,
                             bool isSpecialized,
                             GenericTypeResolver *resolver = nullptr);
@@ -1270,6 +1272,10 @@ public:
     addImplicitConstructors(nominal);
   }
 
+  virtual void resolveImplicitMember(NominalTypeDecl *nominal, DeclName member) override {
+    synthesizeMemberForLookup(nominal, member);
+  }
+
   virtual void
   resolveExternalDeclImplicitMembers(NominalTypeDecl *nominal) override {
     handleExternalDecl(nominal);
@@ -1444,6 +1450,11 @@ public:
   /// enum with a raw type.
   void addImplicitEnumConformances(EnumDecl *ED);
 
+  /// Synthesize the member with the given name on the target if applicable,
+  /// i.e. if the member is synthesizable and has not yet been added to the
+  /// target.
+  void synthesizeMemberForLookup(NominalTypeDecl *target, DeclName member);
+
   /// The specified AbstractStorageDecl \c storage was just found to satisfy
   /// the protocol property \c requirement.  Ensure that it has the full
   /// complement of accessors.
@@ -1481,8 +1492,15 @@ public:
                                      SubstitutionList SelfInterfaceSubs,
                                      SubstitutionList SelfContextSubs);
 
+  /// Pre-check the expression, validating any types that occur in the
+  /// expression and folding sequence expressions.
+  bool preCheckExpression(Expr *&expr, DeclContext *dc);
+
   /// Sets up and solves the constraint system \p cs to type check the given
   /// expression.
+  ///
+  /// The expression should have already been pre-checked with
+  /// preCheckExpression().
   ///
   /// \returns true if an error occurred, false otherwise.
   ///
@@ -1542,15 +1560,17 @@ public:
   /// another constraint system, set the original constraint system. \c null
   /// otherwise
   ///
-  /// \returns true if an error occurred, false otherwise.
-  bool typeCheckExpression(Expr *&expr, DeclContext *dc,
-                           TypeLoc convertType = TypeLoc(),
-                           ContextualTypePurpose convertTypePurpose =CTP_Unused,
-                           TypeCheckExprOptions options =TypeCheckExprOptions(),
-                           ExprTypeCheckListener *listener = nullptr,
-                           constraints::ConstraintSystem *baseCS = nullptr);
+  /// \returns The type of the top-level expression, or Type() if an
+  ///          error occurred.
+  Type
+  typeCheckExpression(Expr *&expr, DeclContext *dc,
+                      TypeLoc convertType = TypeLoc(),
+                      ContextualTypePurpose convertTypePurpose = CTP_Unused,
+                      TypeCheckExprOptions options = TypeCheckExprOptions(),
+                      ExprTypeCheckListener *listener = nullptr,
+                      constraints::ConstraintSystem *baseCS = nullptr);
 
-  bool typeCheckExpression(Expr *&expr, DeclContext *dc,
+  Type typeCheckExpression(Expr *&expr, DeclContext *dc,
                            ExprTypeCheckListener *listener) {
     return typeCheckExpression(expr, dc, TypeLoc(), CTP_Unused,
                                TypeCheckExprOptions(), listener);
@@ -1572,9 +1592,9 @@ public:
   /// events in the type checking of this expression, and which can introduce
   /// additional constraints.
   ///
-  /// \returns the type of \p expr on success, None otherwise.
+  /// \returns the type of \p expr on success, Type() otherwise.
   /// FIXME: expr may still be modified...
-  Optional<Type> getTypeOfExpressionWithoutApplying(
+  Type getTypeOfExpressionWithoutApplying(
       Expr *&expr, DeclContext *dc,
       ConcreteDeclRef &referencedDecl,
       FreeTypeVariableBinding allowFreeTypeVariables =
@@ -1713,7 +1733,8 @@ public:
   bool coercePatternToType(Pattern *&P, DeclContext *dc, Type type,
                            TypeResolutionOptions options,
                            GenericTypeResolver *resolver = nullptr,
-                           TypeLoc tyLoc = TypeLoc());
+                           TypeLoc tyLoc = TypeLoc(),
+                           bool forceInOut = false);
   bool typeCheckExprPattern(ExprPattern *EP, DeclContext *DC,
                             Type type);
 
@@ -2000,7 +2021,7 @@ public:
   /// \param name The name of the entity to look for.
   /// \param loc The source location at which name lookup occurs.
   /// \param options Options that control name lookup.
-  SmallVector<TypeDecl *, 1>
+  LookupResult
   lookupUnqualifiedType(DeclContext *dc, DeclName name, SourceLoc loc,
                         NameLookupOptions options
                           = defaultUnqualifiedLookupOptions);
@@ -2376,7 +2397,7 @@ public:
                              unsigned maxResults = 4);
 
   void noteTypoCorrection(DeclName name, DeclNameLoc nameLoc,
-                          const LookupResult::Result &suggestion);
+                          ValueDecl *decl);
   
   /// Check if the given decl has a @_semantics attribute that gives it
   /// special case type-checking behavior.

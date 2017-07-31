@@ -181,15 +181,16 @@ static int _addImageCallback(struct _swift_dl_phdr_info *info,
     unsigned long conformancesSize;
     const uint8_t *conformances =
     _swift_getSectionDataPE(handle, inspectArgs->sectionName,
-                            &conformancesSize);
-    
-    if (conformances)
-        inspectArgs->fnAddImageBlock(conformances, conformancesSize);
-    
-#if defined(_WIN32)
-    FreeLibrary(handle);
-#else
-    dlclose(handle);
+                           &conformancesSize);
+
+  if (conformances)
+    inspectArgs->fnAddImageBlock(conformances, conformancesSize);
+
+  // There is no close function or free function for GetModuleHandle(),
+  // especially we should not pass a handle returned by GetModuleHandle to the 
+  // FreeLibrary function.
+#if defined(__CYGWIN__)
+  dlclose(handle);
 #endif
     return 0;
 }

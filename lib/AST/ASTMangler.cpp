@@ -540,8 +540,15 @@ void ASTMangler::appendDeclName(const ValueDecl *decl) {
         break;
     }
   } else if (decl->hasName()) {
-    // TODO: Handle special names
-    appendIdentifier(decl->getBaseName().getIdentifier().str());
+    // FIXME: Should a mangled subscript name contain the string "subscript"?
+    switch (decl->getBaseName().getKind()) {
+    case DeclBaseName::Kind::Normal:
+      appendIdentifier(decl->getBaseName().getIdentifier().str());
+      break;
+    case DeclBaseName::Kind::Subscript:
+      appendIdentifier("subscript");
+      break;
+    }
   } else {
     assert(AllowNamelessEntities && "attempt to mangle unnamed decl");
     // Fall back to an unlikely name, so that we still generate a valid
@@ -885,9 +892,8 @@ void ASTMangler::appendType(Type type) {
       for (auto &field : layout->getFields()) {
         auto fieldTy = field.getLoweredType();
         // Use the `inout` mangling to represent a mutable field.
-        if (field.isMutable())
-          fieldTy = CanInOutType::get(fieldTy);
-        fieldsList.push_back(TupleTypeElt(fieldTy));
+        auto fieldFlag = ParameterTypeFlags().withInOut(field.isMutable());
+        fieldsList.push_back(TupleTypeElt(fieldTy, Identifier(), fieldFlag));
       }
       appendTypeList(TupleType::get(fieldsList, tybase->getASTContext())
                        ->getCanonicalType());

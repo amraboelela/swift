@@ -237,10 +237,13 @@ static void printValueDecl(ValueDecl *Decl, raw_ostream &OS) {
   printFullContext(Decl->getDeclContext(), OS);
   assert(Decl->hasName());
 
-  if (Decl->isOperator())
+  if (Decl->isOperator()) {
     OS << '"' << Decl->getBaseName() << '"';
-  else
+  } else if (Decl->getBaseName() == "subscript") {
+    OS << '`' << Decl->getBaseName() << '`';
+  } else {
     OS << Decl->getBaseName();
+  }
 }
 
 /// SILDeclRef uses sigil "#" and prints the fully qualified dotted path.
@@ -1522,14 +1525,17 @@ public:
   void visitOpenExistentialBoxInst(OpenExistentialBoxInst *OI) {
     *this << getIDAndType(OI->getOperand()) << " to " << OI->getType();
   }
-  void visitOpenExistentialOpaqueInst(OpenExistentialOpaqueInst *OI) {
+  void visitOpenExistentialBoxValueInst(OpenExistentialBoxValueInst *OI) {
+    *this << getIDAndType(OI->getOperand()) << " to " << OI->getType();
+  }
+  void visitOpenExistentialValueInst(OpenExistentialValueInst *OI) {
     *this << getIDAndType(OI->getOperand()) << " to " << OI->getType();
   }
   void visitInitExistentialAddrInst(InitExistentialAddrInst *AEI) {
     *this << getIDAndType(AEI->getOperand()) << ", $"
           << AEI->getFormalConcreteType();
   }
-  void visitInitExistentialOpaqueInst(InitExistentialOpaqueInst *AEI) {
+  void visitInitExistentialValueInst(InitExistentialValueInst *AEI) {
     *this << getIDAndType(AEI->getOperand()) << ", $"
           << AEI->getFormalConcreteType() << ", " << AEI->getType();
   }
@@ -1547,7 +1553,7 @@ public:
   void visitDeinitExistentialAddrInst(DeinitExistentialAddrInst *DEI) {
     *this << getIDAndType(DEI->getOperand());
   }
-  void visitDeinitExistentialOpaqueInst(DeinitExistentialOpaqueInst *DEI) {
+  void visitDeinitExistentialValueInst(DeinitExistentialValueInst *DEI) {
     *this << getIDAndType(DEI->getOperand());
   }
   void visitDeallocExistentialBoxInst(DeallocExistentialBoxInst *DEI) {
@@ -2122,6 +2128,9 @@ void SILGlobalVariable::print(llvm::raw_ostream &OS, bool Verbose) const {
 
 void SILGlobalVariable::dump(bool Verbose) const {
   print(llvm::errs(), Verbose);
+}
+void SILGlobalVariable::dump() const {
+   dump(false);
 }
 
 void SILGlobalVariable::printName(raw_ostream &OS) const {

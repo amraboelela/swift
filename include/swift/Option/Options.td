@@ -256,6 +256,10 @@ def solver_memory_threshold : Separate<["-"], "solver-memory-threshold">,
   Flags<[FrontendOption, HelpHidden, DoesNotAffectIncrementalBuild]>,
   HelpText<"Set the upper bound for memory consumption, in bytes, by the constraint solver">;
 
+def solver_shrink_unsolved_threshold : Separate<["-"], "solver-shrink-unsolved-threshold">,
+Flags<[FrontendOption, HelpHidden, DoesNotAffectIncrementalBuild]>,
+HelpText<"Set The upper bound to number of sub-expressions unsolved before termination of the shrink phrase">;
+
 def value_recursion_threshold : Separate<["-"], "value-recursion-threshold">,
   Flags<[FrontendOption, HelpHidden, DoesNotAffectIncrementalBuild]>,
   HelpText<"Set the maximum depth for direct recursion in value types">;
@@ -294,6 +298,11 @@ def warn_swift3_objc_inference_minimal :
   Flag<["-"], "warn-swift3-objc-inference-minimal">,
   Flags<[FrontendOption, DoesNotAffectIncrementalBuild]>,
   HelpText<"Warn about deprecated @objc inference in Swift 3 based on direct uses of the Objective-C entrypoint">;
+
+def typo_correction_limit : Separate<["-"], "typo-correction-limit">,
+  Flags<[FrontendOption, HelpHidden]>,
+  MetaVarName<"<n>">,
+  HelpText<"Limit the number of times the compiler will attempt typo correction to <n>">;
 
 def warn_swift3_objc_inference : Flag<["-"], "warn-swift3-objc-inference">,
   Alias<warn_swift3_objc_inference_complete>,

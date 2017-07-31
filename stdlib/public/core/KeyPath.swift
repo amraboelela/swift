@@ -239,10 +239,10 @@ public class WritableKeyPath<Root, Value>: KeyPath<Root, Value> {
   // `base` is assumed to be undergoing a formal access for the duration of the
   // call, so must not be mutated by an alias
   func projectMutableAddress(from base: UnsafePointer<Root>)
-      -> (pointer: UnsafeMutablePointer<Value>, owner: Builtin.NativeObject) {
+      -> (pointer: UnsafeMutablePointer<Value>, owner: AnyObject?) {
     var p = UnsafeRawPointer(base)
     var type: Any.Type = Root.self
-    var keepAlive: [AnyObject] = []
+    var keepAlive: AnyObject?
     
     return withBuffer {
       var buffer = $0
@@ -270,11 +270,11 @@ public class WritableKeyPath<Root, Value>: KeyPath<Root, Value> {
         type = nextType
       }
       // TODO: With coroutines, it would be better to yield here, so that
-      // we don't need the hack of the keepAlive array to manage closing
+      // we don't need the hack of the keepAlive reference to manage closing
       // accesses.
       let typedPointer = p.assumingMemoryBound(to: Value.self)
       return (pointer: UnsafeMutablePointer(mutating: typedPointer),
-              owner: keepAlive._getOwner_native())
+              owner: keepAlive)
     }
   }
 
@@ -288,15 +288,15 @@ public class ReferenceWritableKeyPath<Root, Value>: WritableKeyPath<Root, Value>
   final override class var kind: Kind { return .reference }
   
   final override func projectMutableAddress(from base: UnsafePointer<Root>)
-      -> (pointer: UnsafeMutablePointer<Value>, owner: Builtin.NativeObject) {
+      -> (pointer: UnsafeMutablePointer<Value>, owner: AnyObject?) {
     // Since we're a ReferenceWritableKeyPath, we know we don't mutate the base in
     // practice.
     return projectMutableAddress(from: base.pointee)
   }
   
   final func projectMutableAddress(from origBase: Root)
-      -> (pointer: UnsafeMutablePointer<Value>, owner: Builtin.NativeObject) {
-    var keepAlive: [AnyObject] = []
+      -> (pointer: UnsafeMutablePointer<Value>, owner: AnyObject?) {
+    var keepAlive: AnyObject?
     var address: UnsafeMutablePointer<Value> = withBuffer {
       var buffer = $0
       // Project out the reference prefix.
@@ -351,7 +351,7 @@ public class ReferenceWritableKeyPath<Root, Value>: WritableKeyPath<Root, Value>
       return _openExistential(base, do: formalMutation)
     }
     
-    return (address, keepAlive._getOwner_native())
+    return (address, keepAlive)
   }
 }
 
@@ -540,8 +540,21 @@ internal enum KeyPathComponent: Hashable {
   }
 }
 
+// A class that maintains ownership of another object while a mutable projection
+// into it is underway.
+internal final class ClassHolder {
+  let previous: AnyObject?
+  let instance: AnyObject
+
+  init(previous: AnyObject?, instance: AnyObject) {
+    self.previous = previous
+    self.instance = instance
+  }
+}
+
 // A class that triggers writeback to a pointer when destroyed.
 internal final class MutatingWritebackBuffer<CurValue, NewValue> {
+  let previous: AnyObject?
   let base: UnsafeMutablePointer<CurValue>
   let set: @convention(thin) (NewValue, inout CurValue, UnsafeRawPointer) -> ()
   let argument: UnsafeRawPointer
@@ -551,10 +564,12 @@ internal final class MutatingWritebackBuffer<CurValue, NewValue> {
     set(value, &base.pointee, argument)
   }
 
-  init(base: UnsafeMutablePointer<CurValue>,
+  init(previous: AnyObject?,
+       base: UnsafeMutablePointer<CurValue>,
        set: @escaping @convention(thin) (NewValue, inout CurValue, UnsafeRawPointer) -> (),
        argument: UnsafeRawPointer,
        value: NewValue) {
+    self.previous = previous
     self.base = base
     self.set = set
     self.argument = argument
@@ -564,6 +579,7 @@ internal final class MutatingWritebackBuffer<CurValue, NewValue> {
 
 // A class that triggers writeback to a non-mutated value when destroyed.
 internal final class NonmutatingWritebackBuffer<CurValue, NewValue> {
+  let previous: AnyObject?
   let base: CurValue
   let set: @convention(thin) (NewValue, CurValue, UnsafeRawPointer) -> ()
   let argument: UnsafeRawPointer
@@ -573,10 +589,12 @@ internal final class NonmutatingWritebackBuffer<CurValue, NewValue> {
     set(value, base, argument)
   }
 
-  init(base: CurValue,
+  init(previous: AnyObject?,
+       base: CurValue,
        set: @escaping @convention(thin) (NewValue, CurValue, UnsafeRawPointer) -> (),
        argument: UnsafeRawPointer,
        value: NewValue) {
+    self.previous = previous
     self.base = base
     self.set = set
     self.argument = argument
@@ -1002,7 +1020,9 @@ internal struct RawKeyPathComponent {
       return .continue(get(base, argument?.data.baseAddress ?? rawGet))
 
     case .optionalChain:
-      _sanityCheck(CurValue.self == Optional<NewValue>.self,
+      // TODO: IUO shouldn't be a first class type
+      _sanityCheck(CurValue.self == Optional<NewValue>.self
+                   || CurValue.self == ImplicitlyUnwrappedOptional<NewValue>.self,
                    "should be unwrapping optional value")
       _sanityCheck(_isOptional(LeafValue.self),
                    "leaf result should be optional")
@@ -1015,12 +1035,16 @@ internal struct RawKeyPathComponent {
       }
 
     case .optionalForce:
-      _sanityCheck(CurValue.self == Optional<NewValue>.self,
+      // TODO: IUO shouldn't be a first class type
+      _sanityCheck(CurValue.self == Optional<NewValue>.self
+                   || CurValue.self == ImplicitlyUnwrappedOptional<NewValue>.self,
                    "should be unwrapping optional value")
       return .continue(unsafeBitCast(base, to: Optional<NewValue>.self)!)
 
     case .optionalWrap:
-      _sanityCheck(NewValue.self == Optional<CurValue>.self,
+      // TODO: IUO shouldn't be a first class type
+      _sanityCheck(NewValue.self == Optional<CurValue>.self
+                   || CurValue.self == ImplicitlyUnwrappedOptional<CurValue>.self,
                    "should be wrapping optional value")
       return .continue(
         unsafeBitCast(base as Optional<CurValue>, to: NewValue.self))
@@ -1032,7 +1056,7 @@ internal struct RawKeyPathComponent {
     from _: CurValue.Type,
     to _: NewValue.Type,
     isRoot: Bool,
-    keepAlive: inout [AnyObject]
+    keepAlive: inout AnyObject?
   ) -> UnsafeRawPointer {
     switch value {
     case .struct(let offset):
@@ -1046,7 +1070,9 @@ internal struct RawKeyPathComponent {
       // assume type here
       let object = base.assumingMemoryBound(to: AnyObject.self).pointee
       // The base ought to be kept alive for the duration of the derived access
-      keepAlive.append(object)
+      keepAlive = keepAlive == nil
+        ? object
+        : ClassHolder(previous: keepAlive, instance: object)
       return UnsafeRawPointer(Builtin.bridgeToRawPointer(object))
             .advanced(by: offset)
     
@@ -1063,11 +1089,12 @@ internal struct RawKeyPathComponent {
         mutating: base.assumingMemoryBound(to: CurValue.self))
 
       let argValue = argument?.data.baseAddress ?? rawGet
-      let writeback = MutatingWritebackBuffer(base: baseTyped,
+      let writeback = MutatingWritebackBuffer(previous: keepAlive,
+                                       base: baseTyped,
                                        set: set,
                                        argument: argValue,
                                        value: get(baseTyped.pointee, argValue))
-      keepAlive.append(writeback)
+      keepAlive = writeback
       // A maximally-abstracted, final, stored class property should have
       // a stable address.
       return UnsafeRawPointer(Builtin.addressof(&writeback.value))
@@ -1089,17 +1116,20 @@ internal struct RawKeyPathComponent {
 
       let baseValue = base.assumingMemoryBound(to: CurValue.self).pointee
       let argValue = argument?.data.baseAddress ?? rawGet
-      let writeback = NonmutatingWritebackBuffer(base: baseValue,
-                                               set: set,
-                                               argument: argValue,
-                                               value: get(baseValue, argValue))
-      keepAlive.append(writeback)
+      let writeback = NonmutatingWritebackBuffer(previous: keepAlive,
+                                             base: baseValue,
+                                             set: set,
+                                             argument: argValue,
+                                             value: get(baseValue, argValue))
+      keepAlive = writeback
       // A maximally-abstracted, final, stored class property should have
       // a stable address.
       return UnsafeRawPointer(Builtin.addressof(&writeback.value))
 
     case .optionalForce:
-      _sanityCheck(CurValue.self == Optional<NewValue>.self,
+      // TODO: ImplicitlyUnwrappedOptional should not be a first-class type
+      _sanityCheck(CurValue.self == Optional<NewValue>.self
+                   || CurValue.self == ImplicitlyUnwrappedOptional<NewValue>.self,
                    "should be unwrapping an optional value")
       // Optional's layout happens to always put the payload at the start
       // address of the Optional value itself, if a value is present at all.
@@ -1297,7 +1327,7 @@ public // COMPILER_INTRINSIC
 func _projectKeyPathWritable<Root, Value>(
   root: UnsafeMutablePointer<Root>,
   keyPath: WritableKeyPath<Root, Value>
-) -> (UnsafeMutablePointer<Value>, Builtin.NativeObject) {
+) -> (UnsafeMutablePointer<Value>, AnyObject?) {
   return keyPath.projectMutableAddress(from: root)
 }
 
@@ -1305,7 +1335,7 @@ public // COMPILER_INTRINSIC
 func _projectKeyPathReferenceWritable<Root, Value>(
   root: Root,
   keyPath: ReferenceWritableKeyPath<Root, Value>
-) -> (UnsafeMutablePointer<Value>, Builtin.NativeObject) {
+) -> (UnsafeMutablePointer<Value>, AnyObject?) {
   return keyPath.projectMutableAddress(from: root)
 }
 

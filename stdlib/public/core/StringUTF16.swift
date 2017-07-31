@@ -321,7 +321,7 @@ extension String {
     {
         return nil
     }
-    self = wholeString[start..<end]
+    self = String(wholeString[start..<end])
   }
 
   /// The index type for subscripting a string's `utf16` view.
@@ -487,7 +487,7 @@ extension String.UTF16View {
     swift, obsoleted: 4.0,
     message: "Any String view index conversion can fail in Swift 4; please unwrap the optional index")
   public func index(after i: Index?) -> Index {
-    return index(after: i)
+    return index(after: i!)
   }
   @available(
     swift, obsoleted: 4.0,

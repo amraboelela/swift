@@ -1788,11 +1788,12 @@ public:
 
       /// Retrieve the ith element type from the resulting tuple type.
       auto getOuterElementType = [&](unsigned i) -> Type {
-        if (!TT) {
+        if (E->isResultScalar()) {
+          assert(i == 0);
           return E->getType()->getWithoutParens();
+        } else {
+          return TT->getElementType(i);
         }
-
-        return TT->getElementType(i);
       };
 
       Type varargsType;
@@ -2075,7 +2076,7 @@ public:
 
       // Variables must have materializable type, unless they are parameters,
       // in which case they must either have l-value type or be anonymous.
-      if (!var->getInterfaceType()->isMaterializable()) {
+      if (!var->getInterfaceType()->isMaterializable() || var->isInOut()) {
         if (!isa<ParamDecl>(var)) {
           Out << "Non-parameter VarDecl has non-materializable type: ";
           var->getType().print(Out);

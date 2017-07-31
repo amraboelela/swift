@@ -148,8 +148,8 @@ Type CompleteGenericTypeResolver::resolveDependentMemberType(
                              corrections, &Builder);
 
     // Filter out non-types.
-    corrections.filter([](const LookupResult::Result &result) {
-      return isa<TypeDecl>(result.Decl);
+    corrections.filter([](const LookupResultEntry &result) {
+      return isa<TypeDecl>(result.getValueDecl());
     });
 
     // Check whether we have a single type result.
@@ -162,7 +162,8 @@ Type CompleteGenericTypeResolver::resolveDependentMemberType(
       TC.diagnose(nameLoc, diag::invalid_member_type, name, baseTy)
         .highlight(baseRange);
       for (const auto &suggestion : corrections)
-        TC.noteTypoCorrection(name, DeclNameLoc(nameLoc), suggestion);
+        TC.noteTypoCorrection(name, DeclNameLoc(nameLoc),
+                              suggestion.getValueDecl());
 
       return ErrorType::get(TC.Context);
     }
@@ -176,12 +177,12 @@ Type CompleteGenericTypeResolver::resolveDependentMemberType(
 
     // Correct to the single type result.
     ref->overwriteIdentifier(singleType->getBaseName().getIdentifier());
-    ref->setValue(singleType);
+    ref->setValue(singleType, nullptr);
   } else if (auto assocType = nestedPA->getResolvedAssociatedType()) {
-    ref->setValue(assocType);
+    ref->setValue(assocType, nullptr);
   } else {
     assert(nestedPA->getConcreteTypeDecl());
-    ref->setValue(nestedPA->getConcreteTypeDecl());
+    ref->setValue(nestedPA->getConcreteTypeDecl(), nullptr);
   }
 
   // If the nested type has been resolved to an associated type, use it.
@@ -484,6 +485,26 @@ static bool checkGenericFuncSignature(TypeChecker &tc,
         builder->inferRequirements(*func->getParentModule(),
                                    fn->getBodyResultTypeLoc(),
                                    source);
+      }
+    }
+
+    // If this is a materializeForSet, infer requirements from the
+    // storage type instead, since it's not part of the accessor's
+    // type signature.
+    if (fn->getAccessorKind() == AccessorKind::IsMaterializeForSet) {
+      if (builder) {
+        auto *storage = fn->getAccessorStorageDecl();
+        if (auto *subscriptDecl = dyn_cast<SubscriptDecl>(storage)) {
+          auto source =
+            GenericSignatureBuilder::FloatingRequirementSource::forInferred(
+                subscriptDecl->getElementTypeLoc().getTypeRepr(),
+                /*quietly=*/true);
+
+          TypeLoc type(nullptr, subscriptDecl->getElementInterfaceType());
+          assert(type.getType());
+          builder->inferRequirements(*func->getParentModule(),
+                                     type, source);
+        }
       }
     }
   }
@@ -796,7 +817,7 @@ TypeChecker::validateGenericFuncSignature(AbstractFunctionDecl *func) {
 void TypeChecker::configureInterfaceType(AbstractFunctionDecl *func,
                                          GenericSignature *sig) {
   Type funcTy;
-  Type initFuncTy;
+  Type initFuncTy = Type();
 
   if (auto fn = dyn_cast<FuncDecl>(func)) {
     funcTy = fn->getBodyResultTypeLoc().getType();
@@ -834,21 +855,28 @@ void TypeChecker::configureInterfaceType(AbstractFunctionDecl *func,
 
   bool hasSelf = func->getDeclContext()->isTypeContext();
   for (unsigned i = 0, e = paramLists.size(); i != e; ++i) {
-    Type argTy;
-    Type initArgTy;
-
-    Type selfTy;
+    SmallVector<AnyFunctionType::Param, 4> argTy;
+    SmallVector<AnyFunctionType::Param, 4> initArgTy;
+    
     if (i == e-1 && hasSelf) {
-      selfTy = ParenType::get(Context, func->computeInterfaceSelfType());
-
+      auto ifTy = func->computeInterfaceSelfType();
+      auto selfTy = AnyFunctionType::Param(ifTy->getInOutObjectType(),
+                                           Identifier(),
+                                           ParameterTypeFlags().withInOut(ifTy->is<InOutType>()));
+      
       // Substitute in our own 'self' parameter.
-
-      argTy = selfTy;
+      
+      argTy.push_back(selfTy);
       if (initFuncTy) {
-        initArgTy = func->computeInterfaceSelfType(/*isInitializingCtor=*/true);
+        auto ifTy = func->computeInterfaceSelfType(/*isInitializingCtor=*/true);
+
+        initArgTy.push_back(
+          AnyFunctionType::Param(
+            ifTy->getInOutObjectType(),
+            Identifier(), ParameterTypeFlags().withInOut(ifTy->is<InOutType>())));
       }
     } else {
-      argTy = paramLists[e - i - 1]->getInterfaceType(Context);
+      AnyFunctionType::decomposeInput(paramLists[e - i - 1]->getInterfaceType(Context), argTy);
 
       if (initFuncTy)
         initArgTy = argTy;
@@ -858,8 +886,10 @@ void TypeChecker::configureInterfaceType(AbstractFunctionDecl *func,
     AnyFunctionType::ExtInfo info;
     if (i == 0 && func->hasThrows())
       info = info.withThrows();
-
-    assert(!argTy->hasArchetype());
+    
+    assert(std::all_of(argTy.begin(), argTy.end(), [](const AnyFunctionType::Param &aty){
+      return !aty.getType()->hasArchetype();
+    }));
     assert(!funcTy->hasArchetype());
     if (initFuncTy)
       assert(!initFuncTy->hasArchetype());

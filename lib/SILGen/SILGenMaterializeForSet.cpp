@@ -171,16 +171,15 @@
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILUndef.h"
 #include "swift/SIL/TypeLowering.h"
+#include "swift/SILGen/SILGenMaterializeForSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include "ASTVisitor.h"
 using namespace swift;
 using namespace Lowering;
 
-namespace {
-
-static std::string
-getMaterializeForSetCallbackName(ProtocolConformance *conformance,
-                                 FuncDecl *requirement) {
+std::string
+Lowering::getMaterializeForSetCallbackName(ProtocolConformance *conformance,
+                                           FuncDecl *requirement) {
 
   DeclContext *dc = requirement;
   ClosureExpr closure(/*patterns*/ nullptr,
@@ -208,6 +207,8 @@ getMaterializeForSetCallbackName(ProtocolConformance *conformance,
   return Mangler.mangleClosureEntity(&closure,
                                  Mangle::ASTMangler::SymbolKind::Default);
 }
+
+namespace {
 
 /// A helper class for emitting materializeForSet.
 ///
@@ -426,7 +427,6 @@ public:
     // substituted type isn't a reference type, then we can't have a
     // class-bounded protocol or inheritance, and the simple case just
     // works.
-    AbstractionPattern selfPattern(SubstSelfType);
 
     // Metatypes and bases of non-mutating setters on value types
     //  are always rvalues.
@@ -438,10 +438,20 @@ public:
       Witness->computeInterfaceSelfType()->getCanonicalType(
         GenericSig, *SGM.M.getSwiftModule());
     witnessSelfType = getSubstWitnessInterfaceType(witnessSelfType);
-    witnessSelfType = witnessSelfType->getInOutObjectType()
-      ->getCanonicalType();
 
-    // Eagerly loading here could cause an unnecessary
+    // Get the inout object type, but remember whether we needed to.
+    auto witnessSelfInOutType = dyn_cast<InOutType>(witnessSelfType);
+    if (witnessSelfInOutType)
+      witnessSelfType = witnessSelfInOutType.getObjectType();
+
+    // If the witness wants an inout and the types match, just use
+    // this value.
+    if (witnessSelfInOutType && witnessSelfType == SubstSelfType) {
+      return LValue::forValue(self, witnessSelfType);
+    }
+
+    // Otherwise, load and do a derived-to-base conversion.
+    // It's possible that this could cause an unnecessary
     // load+materialize in some cases, but it's not really important.
     if (self.getType().isAddress()) {
       self = gen.B.createLoadBorrow(loc, self);
@@ -451,6 +461,11 @@ public:
     if (witnessSelfType != SubstSelfType) {
       auto selfSILType = gen.getLoweredType(witnessSelfType);
       self = gen.B.createUpcast(loc, self, selfSILType);
+    }
+
+    // Put the object back in memory if necessary.
+    if (witnessSelfInOutType) {
+      self = self.materialize(gen, loc);
     }
 
     // Recreate as a borrowed value.

@@ -47,7 +47,7 @@ public typealias Codable = Encodable & Decodable
 //===----------------------------------------------------------------------===//
 
 /// A type that can be used as a key for encoding and decoding.
-public protocol CodingKey {
+public protocol CodingKey: CustomStringConvertible, CustomDebugStringConvertible {
     /// The string to use in a named collection (e.g. a string-keyed dictionary).
     var stringValue: String { get }
 
@@ -65,6 +65,19 @@ public protocol CodingKey {
     /// - parameter intValue: The integer value of the desired key.
     /// - returns: An instance of `Self` from the given integer, or `nil` if the given integer does not correspond to any instance of `Self`.
     init?(intValue: Int)
+}
+
+extension CodingKey {
+    /// A textual representation of this key.
+    public var description: String {
+        let intValue = self.intValue?.description ?? "nil"
+        return "\(type(of: self))(stringValue: \"\(stringValue)\", intValue: \(intValue))"
+    }
+
+    /// A textual representation of this key, suitable for debugging.
+    public var debugDescription: String {
+        return description
+    }
 }
 
 //===----------------------------------------------------------------------===//
@@ -260,16 +273,14 @@ public protocol KeyedEncodingContainerProtocol {
     /// - throws: `EncodingError.invalidValue` if the given value is invalid in the current context for this format.
     mutating func encode<T : Encodable>(_ value: T, forKey key: Key) throws
 
-    /// Encodes the given object weakly for the given key.
+    /// Encodes a reference to the given object only if it is encoded unconditionally elsewhere in the payload (previously, or in the future).
     ///
-    /// For `Encoder`s that implement this functionality, this will only encode the given object and associate it with the given key if it is encoded unconditionally elsewhere in the payload (either previously or in the future).
-    ///
-    /// For formats which don't support this feature, the default implementation encodes the given object unconditionally.
+    /// For `Encoder`s which don't support this feature, the default implementation encodes the given object unconditionally.
     ///
     /// - parameter object: The object to encode.
     /// - parameter key: The key to associate the object with.
     /// - throws: `EncodingError.invalidValue` if the given value is invalid in the current context for this format.
-    mutating func encodeWeak<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws
+    mutating func encodeConditional<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws
 
     /// Encodes the given value for the given key if it is not `nil`.
     ///
@@ -570,15 +581,15 @@ public struct KeyedEncodingContainer<K : CodingKey> : KeyedEncodingContainerProt
         try _box.encode(value, forKey: key)
     }
 
-    /// Encodes the given object weakly for the given key.
+    /// Encodes a reference to the given object only if it is encoded unconditionally elsewhere in the payload (previously, or in the future).
     ///
-    /// For `Encoder`s that implement this functionality, this will only encode the given object and associate it with the given key if it is encoded unconditionally elsewhere in the payload (either previously or in the future).
+    /// For `Encoder`s which don't support this feature, the default implementation encodes the given object unconditionally.
     ///
     /// - parameter object: The object to encode.
     /// - parameter key: The key to associate the object with.
     /// - throws: `EncodingError.invalidValue` if the given value is invalid in the current context for this format.
-    public mutating func encodeWeak<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
-        try _box.encodeWeak(object, forKey: key)
+    public mutating func encodeConditional<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
+        try _box.encodeConditional(object, forKey: key)
     }
 
     /// Encodes the given value for the given key if it is not `nil`.
@@ -1678,15 +1689,15 @@ public protocol UnkeyedEncodingContainer {
     /// - throws: `EncodingError.invalidValue` if the given value is invalid in the current context for this format.
     mutating func encode<T : Encodable>(_ value: T) throws
 
-    /// Encodes the given object weakly.
+    /// Encodes a reference to the given object only if it is encoded unconditionally elsewhere in the payload (previously, or in the future).
     ///
-    /// For `Encoder`s that implement this functionality, this will only encode the given object if it is encoded unconditionally elsewhere in the payload (either previously or in the future).
+    /// For `Encoder`s which don't support this feature, the default implementation encodes the given object unconditionally.
     ///
     /// For formats which don't support this feature, the default implementation encodes the given object unconditionally.
     ///
     /// - parameter object: The object to encode.
     /// - throws: `EncodingError.invalidValue` if the given value is invalid in the current context for this format.
-    mutating func encodeWeak<T : AnyObject & Encodable>(_ object: T) throws
+    mutating func encodeConditional<T : AnyObject & Encodable>(_ object: T) throws
 
     /// Encodes the elements of the given sequence.
     ///
@@ -2715,7 +2726,7 @@ internal class _KeyedEncodingContainerBase<Key : CodingKey> {
 
     @_inlineable
     @_versioned
-    internal func encodeWeak<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
+    internal func encodeConditional<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
         fatalError("_KeyedEncodingContainerBase cannot be used directly.")
     }
 
@@ -2952,8 +2963,8 @@ internal final class _KeyedEncodingContainerBox<Concrete : KeyedEncodingContaine
 
     @_inlineable
     @_versioned
-    override internal func encodeWeak<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
-        try concrete.encodeWeak(object, forKey: key)
+    override internal func encodeConditional<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
+        try concrete.encodeConditional(object, forKey: key)
     }
 
     @_inlineable
@@ -4201,9 +4212,9 @@ extension Dictionary : Decodable /* where Key : Decodable, Value : Decodable */ 
 // Convenience Default Implementations
 //===----------------------------------------------------------------------===//
 
-// Default implementation of encodeWeak(_:forKey:) in terms of encode(_:forKey:)
+// Default implementation of encodeConditional(_:forKey:) in terms of encode(_:forKey:)
 public extension KeyedEncodingContainerProtocol {
-    public mutating func encodeWeak<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
+    public mutating func encodeConditional<T : AnyObject & Encodable>(_ object: T, forKey key: Key) throws {
         try encode(object, forKey: key)
     }
 }
@@ -4364,9 +4375,9 @@ public extension KeyedDecodingContainerProtocol {
     }
 }
 
-// Default implementation of encodeWeak(_:) in terms of encode(_:), and encode(contentsOf:) in terms of encode(_:) loop.
+// Default implementation of encodeConditional(_:) in terms of encode(_:), and encode(contentsOf:) in terms of encode(_:) loop.
 public extension UnkeyedEncodingContainer {
-    public mutating func encodeWeak<T : AnyObject & Encodable>(_ object: T) throws {
+    public mutating func encodeConditional<T : AnyObject & Encodable>(_ object: T) throws {
         try self.encode(object)
     }
 
