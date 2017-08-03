@@ -4336,6 +4336,7 @@ public:
     
     Owned  = Let,
     InOut = 2,
+    Shared = 3,
   };
   
 protected:
@@ -4486,6 +4487,8 @@ public:
 
   /// Is this an immutable 'let' property?
   bool isLet() const { return getSpecifier() == Specifier::Let; }
+  /// Is this an immutable 'shared' property?
+  bool isShared() const { return getSpecifier() == Specifier::Shared; }
   
   /// Is this an element in a capture list?
   bool isCaptureList() const { return VarDeclBits.IsCaptureList; }
@@ -4863,8 +4866,6 @@ protected:
   }
 
 public:
-  Identifier getName() const { return getFullName().getBaseIdentifier(); }
-
   /// Returns the string for the base name, or "_" if this is unnamed.
   StringRef getNameStr() const {
     assert(!getFullName().isSpecial() && "Cannot get string for special names");
@@ -5045,21 +5046,6 @@ public:
     return getParameterLists()[i];
   }
 
-  /// \brief If this is a method in a type or extension thereof, compute
-  /// and return the type to be used for the 'self' argument of the interface
-  /// type, or an empty Type() if no 'self' argument should exist.  This can
-  /// only be used after name binding has resolved types.
-  ///
-  /// \param isInitializingCtor Specifies whether we're computing the 'self'
-  /// type of an initializing constructor, which accepts an instance 'self'
-  /// rather than a metatype 'self'.
-  ///
-  /// \param wantDynamicSelf Specifies whether the 'self' type should be
-  /// wrapped in a DynamicSelfType, which is the case for the 'self' parameter
-  /// type inside a class method returning 'Self'.
-  Type computeInterfaceSelfType(bool isInitializingCtor=false,
-                                bool wantDynamicSelf=false);
-
   /// \brief This method returns the implicit 'self' decl.
   ///
   /// Note that some functions don't have an implicit 'self' decl, for example,
@@ -5211,6 +5197,8 @@ public:
                           ArrayRef<ParameterList *> ParameterLists,
                           TypeLoc FnRetType, DeclContext *Parent,
                           ClangNode ClangN = ClangNode());
+
+  Identifier getName() const { return getFullName().getBaseIdentifier(); }
 
   bool isStatic() const {
     return FuncDeclBits.IsStatic;
@@ -5660,6 +5648,8 @@ public:
                   GenericParamList *GenericParams, 
                   DeclContext *Parent);
 
+  Identifier getName() const { return getFullName().getBaseIdentifier(); }
+
   void setParameterLists(ParamDecl *selfParam, ParameterList *bodyParams);
 
   SourceLoc getConstructorLoc() const { return getNameLoc(); }
@@ -5851,8 +5841,8 @@ public:
 class DestructorDecl : public AbstractFunctionDecl {
   ParameterList *SelfParameter;
 public:
-  DestructorDecl(Identifier NameHack, SourceLoc DestructorLoc,
-                 ParamDecl *selfDecl, DeclContext *Parent);
+  DestructorDecl(SourceLoc DestructorLoc, ParamDecl *selfDecl,
+                 DeclContext *Parent);
   
   void setSelfDecl(ParamDecl *selfDecl);
 

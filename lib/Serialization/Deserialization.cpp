@@ -15,13 +15,15 @@
 #include "swift/Serialization/ModuleFormat.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/DiagnosticsSema.h"
+#include "swift/AST/Expr.h"
 #include "swift/AST/ForeignErrorConvention.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/Initializer.h"
+#include "swift/AST/Pattern.h"
+#include "swift/AST/ParameterList.h"
 #include "swift/AST/PrettyStackTrace.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/ClangImporter/ClangImporter.h"
-#include "swift/Parse/Parser.h"
 #include "swift/Serialization/BCReadingExtras.h"
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "swift/Basic/Defer.h"
@@ -611,7 +613,7 @@ NormalProtocolConformance *ModuleFile::readNormalConformance(
 
   DeclID protoID;
   DeclContextID contextID;
-  unsigned valueCount, typeCount;
+  unsigned valueCount, typeCount, conformanceCount;
   ArrayRef<uint64_t> rawIDs;
   SmallVector<uint64_t, 16> scratch;
 
@@ -622,7 +624,7 @@ NormalProtocolConformance *ModuleFile::readNormalConformance(
   }
   NormalProtocolConformanceLayout::readRecord(scratch, protoID,
                                               contextID, valueCount,
-                                              typeCount,
+                                              typeCount, conformanceCount,
                                               rawIDs);
 
   ASTContext &ctx = getContext();
@@ -1621,6 +1623,8 @@ DeclBaseName ModuleFile::getDeclBaseName(IdentifierID IID) {
         llvm_unreachable("Cannot get DeclBaseName of special module id");
     case SUBSCRIPT_ID:
       return DeclBaseName::createSubscript();
+    case serialization::DESTRUCTOR_ID:
+      return DeclBaseName::createDestructor();
     case NUM_SPECIAL_IDS:
       llvm_unreachable("implementation detail only");
     }
@@ -1803,6 +1807,7 @@ ModuleDecl *ModuleFile::getModule(ModuleID MID) {
       return clangImporter->getImportedHeaderModule();
     }
     case SUBSCRIPT_ID:
+    case DESTRUCTOR_ID:
       llvm_unreachable("Modules cannot be named with special names");
     case NUM_SPECIAL_IDS:
       llvm_unreachable("implementation detail only");
@@ -2651,15 +2656,15 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
 
     // Set the initializer interface type of the constructor.
     auto allocType = ctor->getInterfaceType();
-    auto selfTy = ctor->computeInterfaceSelfType(/*isInitializingCtor=*/true);
+    auto selfParam = computeSelfParam(ctor, /*isInitializingCtor=*/true);
     if (auto polyFn = allocType->getAs<GenericFunctionType>()) {
       ctor->setInitializerInterfaceType(
               GenericFunctionType::get(polyFn->getGenericSignature(),
-                                       selfTy, polyFn->getResult(),
+                                       {selfParam}, polyFn->getResult(),
                                        polyFn->getExtInfo()));
     } else {
       auto fn = allocType->castTo<FunctionType>();
-      ctor->setInitializerInterfaceType(FunctionType::get(selfTy,
+      ctor->setInitializerInterfaceType(FunctionType::get({selfParam},
                                                           fn->getResult(),
                                                           fn->getExtInfo()));
     }
@@ -3548,8 +3553,7 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
     if (declOrOffset.isComplete())
       return declOrOffset;
 
-    auto dtor = createDecl<DestructorDecl>(ctx.Id_deinit, SourceLoc(),
-                                           /*selfpat*/nullptr, DC);
+    auto dtor = createDecl<DestructorDecl>(SourceLoc(), /*selfpat*/nullptr, DC);
     declOrOffset = dtor;
 
     configureGenericEnvironment(dtor, genericEnvID);
@@ -3796,9 +3800,10 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
 
   case decls_block::PAREN_TYPE: {
     TypeID underlyingID;
-    bool isVariadic, isAutoClosure, isEscaping, isInOut;
+    bool isVariadic, isAutoClosure, isEscaping, isInOut, isShared;
     decls_block::ParenTypeLayout::readRecord(scratch, underlyingID, isVariadic,
-                                             isAutoClosure, isEscaping, isInOut);
+                                             isAutoClosure, isEscaping,
+                                             isInOut, isShared);
 
     auto underlyingTy = getTypeChecked(underlyingID);
     if (!underlyingTy)
@@ -3806,7 +3811,8 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
     
     typeOrOffset = ParenType::get(
         ctx, underlyingTy.get()->getInOutObjectType(),
-        ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping, isInOut));
+        ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping,
+                           isInOut, isShared));
     break;
   }
 
@@ -3826,9 +3832,10 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
 
       IdentifierID nameID;
       TypeID typeID;
-      bool isVariadic, isAutoClosure, isEscaping, isInOut;
+      bool isVariadic, isAutoClosure, isEscaping, isInOut, isShared;
       decls_block::TupleTypeEltLayout::readRecord(
-          scratch, nameID, typeID, isVariadic, isAutoClosure, isEscaping, isInOut);
+          scratch, nameID, typeID, isVariadic, isAutoClosure, isEscaping,
+          isInOut, isShared);
 
       auto elementTy = getTypeChecked(typeID);
       if (!elementTy)
@@ -3836,7 +3843,8 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
       
       elements.emplace_back(
           elementTy.get()->getInOutObjectType(), getIdentifier(nameID),
-          ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping, isInOut));
+          ParameterTypeFlags(isVariadic, isAutoClosure, isEscaping,
+                             isInOut, isShared));
     }
 
     typeOrOffset = TupleType::get(elements, ctx);
@@ -4581,7 +4589,7 @@ void ModuleFile::finishNormalConformance(NormalProtocolConformance *conformance,
 
   DeclID protoID;
   DeclContextID contextID;
-  unsigned valueCount, typeCount;
+  unsigned valueCount, typeCount, conformanceCount;
   ArrayRef<uint64_t> rawIDs;
   SmallVector<uint64_t, 16> scratch;
 
@@ -4591,17 +4599,60 @@ void ModuleFile::finishNormalConformance(NormalProtocolConformance *conformance,
          "registered lazy loader incorrectly");
   NormalProtocolConformanceLayout::readRecord(scratch, protoID,
                                               contextID, valueCount,
-                                              typeCount,
+                                              typeCount, conformanceCount,
                                               rawIDs);
 
   // Read requirement signature conformances.
   const ProtocolDecl *proto = conformance->getProtocol();
   SmallVector<ProtocolConformanceRef, 4> reqConformances;
-  for (const auto &req : proto->getRequirementSignature()) {
-    if (req.getKind() == RequirementKind::Conformance) {
-      auto reqConformance = readConformance(DeclTypeCursor);
-      reqConformances.push_back(reqConformance);
+
+  if (proto->isObjC() && getContext().LangOpts.EnableDeserializationRecovery) {
+    // Don't crash if inherited protocols are added or removed.
+    // This is limited to Objective-C protocols because we know their only
+    // conformance requirements are on Self. This isn't actually a /safe/ change
+    // even in Objective-C, but we mostly just don't want to crash.
+
+    // FIXME: DenseMap requires that its value type be default-constructible,
+    // which ProtocolConformanceRef is not, hence the extra Optional.
+    llvm::SmallDenseMap<ProtocolDecl *, Optional<ProtocolConformanceRef>, 16>
+        conformancesForProtocols;
+    while (conformanceCount--) {
+      ProtocolConformanceRef nextConformance = readConformance(DeclTypeCursor);
+      ProtocolDecl *confProto = nextConformance.getRequirement();
+      conformancesForProtocols[confProto] = nextConformance;
     }
+
+    for (const auto &req : proto->getRequirementSignature()) {
+      if (req.getKind() != RequirementKind::Conformance)
+        continue;
+      ProtocolDecl *proto =
+          req.getSecondType()->castTo<ProtocolType>()->getDecl();
+      auto iter = conformancesForProtocols.find(proto);
+      if (iter != conformancesForProtocols.end()) {
+        reqConformances.push_back(iter->getSecond().getValue());
+      } else {
+        // Put in an abstract conformance as a placeholder. This is a lie, but
+        // there's not much better we can do. We're relying on the fact that
+        // the rest of the compiler doesn't actually need to check the
+        // conformance to an Objective-C protocol for anything important.
+        // There are no associated types and we don't emit a Swift conformance
+        // record.
+        reqConformances.push_back(ProtocolConformanceRef(proto));
+      }
+    }
+
+  } else {
+    auto isConformanceReq = [](const Requirement &req) {
+      return req.getKind() == RequirementKind::Conformance;
+    };
+    if (conformanceCount != llvm::count_if(proto->getRequirementSignature(),
+                                           isConformanceReq)) {
+      fatal(llvm::make_error<llvm::StringError>(
+          "serialized conformances do not match requirement signature",
+          llvm::inconvertibleErrorCode()));
+    }
+    while (conformanceCount--)
+      reqConformances.push_back(readConformance(DeclTypeCursor));
   }
   conformance->setSignatureConformances(reqConformances);
 

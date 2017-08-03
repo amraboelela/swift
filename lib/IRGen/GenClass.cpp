@@ -50,6 +50,7 @@
 #include "GenHeap.h"
 #include "HeapTypeInfo.h"
 #include "MemberAccessStrategy.h"
+#include "MetadataLayout.h"
 
 
 using namespace swift;
@@ -607,7 +608,7 @@ irgen::getPhysicalClassMemberAccessStrategy(IRGenModule &IGM,
   }
 
   case FieldAccess::ConstantIndirect: {
-    Size indirectOffset = getClassFieldOffset(IGM, baseClass, field);
+    Size indirectOffset = getClassFieldOffsetOffset(IGM, baseClass, field);
     return MemberAccessStrategy::getIndirectFixed(indirectOffset,
                                  MemberAccessStrategy::OffsetKind::Bytes_Word);
   }
@@ -1159,14 +1160,23 @@ namespace {
     ClassDataBuilder(IRGenModule &IGM, ProtocolDecl *theProtocol)
       : IGM(IGM), TheEntity(theProtocol), TheExtension(nullptr)
     {
-      // Gather protocol references for all of the explicitly-specified
+      llvm::SmallSetVector<ProtocolDecl *, 2> protocols;
+
+      // Gather protocol references for all of the directly inherited
       // Objective-C protocol conformances.
-      // FIXME: We can't use visitConformances() because there are no
-      // conformances for protocols to protocols right now.
       for (ProtocolDecl *p : theProtocol->getInheritedProtocols()) {
-        if (!p->isObjC())
-          continue;
-        Protocols.push_back(p);
+        getObjCProtocols(p, protocols);
+      }
+
+      // Add any restated Objective-C protocol conformances.
+      for (auto *attr :
+             theProtocol
+               ->getAttrs().getAttributes<RestatedObjCConformanceAttr>()) {
+        getObjCProtocols(attr->Proto, protocols);
+      }
+
+      for (ProtocolDecl *proto : protocols) {
+        Protocols.push_back(proto);
       }
 
       for (Decl *member : theProtocol->getMembers())

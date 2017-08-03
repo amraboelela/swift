@@ -48,6 +48,7 @@ namespace swift {
   class DeclContext;
   class ClangNode;
   class ClangImporter;
+  class Token;
 
 namespace ide {
 struct SourceCompleteResult {
@@ -270,7 +271,8 @@ struct ReturnInfo {
 struct ResolvedRangeInfo {
   RangeKind Kind;
   ReturnInfo ExitInfo;
-  CharSourceRange Content;
+  ArrayRef<Token> TokensInRange;
+  CharSourceRange ContentRange;
   bool HasSingleEntry;
   bool ThrowingUnhandledError;
   OrphanKind Orphan;
@@ -283,13 +285,16 @@ struct ResolvedRangeInfo {
   Expr* CommonExprParent;
 
   ResolvedRangeInfo(RangeKind Kind, ReturnInfo ExitInfo,
-                    CharSourceRange Content, DeclContext* RangeContext,
+                    ArrayRef<Token> TokensInRange,
+                    DeclContext* RangeContext,
                     Expr *CommonExprParent, bool HasSingleEntry,
                     bool ThrowingUnhandledError,
                     OrphanKind Orphan, ArrayRef<ASTNode> ContainedNodes,
                     ArrayRef<DeclaredDecl> DeclaredDecls,
                     ArrayRef<ReferencedDecl> ReferencedDecls): Kind(Kind),
-                      ExitInfo(ExitInfo), Content(Content),
+                      ExitInfo(ExitInfo),
+                      TokensInRange(TokensInRange),
+                      ContentRange(calculateContentRange(TokensInRange)),
                       HasSingleEntry(HasSingleEntry),
                       ThrowingUnhandledError(ThrowingUnhandledError),
                       Orphan(Orphan), ContainedNodes(ContainedNodes),
@@ -297,15 +302,17 @@ struct ResolvedRangeInfo {
                       ReferencedDecls(ReferencedDecls),
                       RangeContext(RangeContext),
                       CommonExprParent(CommonExprParent) {}
-  ResolvedRangeInfo(CharSourceRange Content) :
-  ResolvedRangeInfo(RangeKind::Invalid, {nullptr, ExitState::Unsure}, Content,
-                    nullptr, /*Commom Expr Parent*/nullptr,
+  ResolvedRangeInfo(ArrayRef<Token> TokensInRange) :
+  ResolvedRangeInfo(RangeKind::Invalid, {nullptr, ExitState::Unsure},
+                    TokensInRange, nullptr, /*Commom Expr Parent*/nullptr,
                     /*Single entry*/true, /*unhandled error*/false,
                     OrphanKind::None, {}, {}, {}) {}
-  ResolvedRangeInfo(): ResolvedRangeInfo(CharSourceRange()) {}
   void print(llvm::raw_ostream &OS);
   ExitState exit() const { return ExitInfo.Exit; }
   Type getType() const { return ExitInfo.ReturnType; }
+
+private:
+  static CharSourceRange calculateContentRange(ArrayRef<Token> Tokens);
 };
 
 class RangeResolver : public SourceEntityWalker {

@@ -91,6 +91,8 @@ namespace {
           return llvm::HashString(key.getIdentifier().str());
         case DeclBaseName::Kind::Subscript:
           return static_cast<uint8_t>(DeclNameKind::Subscript);
+        case DeclBaseName::Kind::Destructor:
+          return static_cast<uint8_t>(DeclNameKind::Destructor);
       }
     }
 
@@ -118,6 +120,9 @@ namespace {
         break;
       case DeclBaseName::Kind::Subscript:
         writer.write<uint8_t>(static_cast<uint8_t>(DeclNameKind::Subscript));
+        break;
+      case DeclBaseName::Kind::Destructor:
+        writer.write<uint8_t>(static_cast<uint8_t>(DeclNameKind::Destructor));
         break;
       }
     }
@@ -509,6 +514,8 @@ IdentifierID Serializer::addDeclBaseNameRef(DeclBaseName ident) {
   }
   case DeclBaseName::Kind::Subscript:
     return SUBSCRIPT_ID;
+  case DeclBaseName::Kind::Destructor:
+    return DESTRUCTOR_ID;
   }
 }
 
@@ -1361,6 +1368,9 @@ void Serializer::writeNormalConformance(
     return false;
   });
 
+  unsigned numSignatureConformances =
+      conformance->getSignatureConformances().size();
+
   unsigned abbrCode
     = DeclTypeAbbrCodes[NormalProtocolConformanceLayout::Code];
   auto ownerID = addDeclContextRef(conformance->getDeclContext());
@@ -1368,6 +1378,7 @@ void Serializer::writeNormalConformance(
                                               addDeclRef(protocol), ownerID,
                                               numValueWitnesses,
                                               numTypeWitnesses,
+                                              numSignatureConformances,
                                               data);
 
   // Write requirement signature conformances.
@@ -1780,7 +1791,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
     bool isProtocolExt = fn->getDeclContext()->getAsProtocolExtensionContext();
     XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                          addTypeRef(ty),
-                                         addDeclBaseNameRef(fn->getName()),
+                                         addDeclBaseNameRef(fn->getBaseName()),
                                          isProtocolExt,
                                          fn->isStatic());
 
@@ -1975,6 +1986,7 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
   case DAK_SynthesizedProtocol:
   case DAK_Implements:
   case DAK_ObjCRuntimeName:
+  case DAK_RestatedObjCConformance:
     llvm_unreachable("cannot serialize attribute");
 
   case DAK_Count:
@@ -2310,6 +2322,8 @@ static uint8_t getRawStableVarDeclSpecifier(swift::VarDecl::Specifier sf) {
     return uint8_t(serialization::VarDeclSpecifier::Var);
   case swift::VarDecl::Specifier::InOut:
     return uint8_t(serialization::VarDeclSpecifier::InOut);
+  case swift::VarDecl::Specifier::Shared:
+    return uint8_t(serialization::VarDeclSpecifier::Shared);
   }
   llvm_unreachable("bad variable decl specifier kind");
 }
@@ -3271,7 +3285,7 @@ void Serializer::writeType(Type ty) {
     ParenTypeLayout::emitRecord(
         Out, ScratchRecord, abbrCode, addTypeRef(parenTy->getUnderlyingType()),
         paramFlags.isVariadic(), paramFlags.isAutoClosure(),
-        paramFlags.isEscaping(), paramFlags.isInOut());
+        paramFlags.isEscaping(), paramFlags.isInOut(), paramFlags.isShared());
     break;
   }
 
@@ -3288,7 +3302,7 @@ void Serializer::writeType(Type ty) {
           Out, ScratchRecord, abbrCode, addDeclBaseNameRef(elt.getName()),
           addTypeRef(elt.getType()), paramFlags.isVariadic(),
           paramFlags.isAutoClosure(), paramFlags.isEscaping(),
-          paramFlags.isInOut());
+          paramFlags.isInOut(), paramFlags.isShared());
     }
 
     break;

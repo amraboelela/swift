@@ -434,9 +434,6 @@ bool SILParser::parseSILIdentifier(Identifier &Result, SourceLoc &Loc,
     // A binary operator can be part of a SILDeclRef.
     Result = P.Context.getIdentifier(P.Tok.getText());
     break;
-  case tok::kw_deinit:
-    Result = P.Context.Id_deinit;
-    break;
   case tok::kw_init:
     Result = P.Context.Id_init;
     break;
@@ -1059,9 +1056,10 @@ bool SILParser::parseSILType(SILType &Result,
   }
 
   // Parse attributes.
-  SourceLoc inoutLoc;
+  VarDecl::Specifier specifier;
+  SourceLoc specifierLoc;
   TypeAttributes attrs;
-  P.parseTypeAttributeList(inoutLoc, attrs);
+  P.parseTypeAttributeList(specifier, specifierLoc, attrs);
 
   // Global functions are implicitly @convention(thin) if not specified otherwise.
   if (IsFuncDecl && !attrs.has(TAK_convention)) {
@@ -1113,7 +1111,7 @@ bool SILParser::parseSILType(SILType &Result,
       GenericEnv = env;
   
   // Apply attributes to the type.
-  TypeLoc Ty = P.applyAttributeToType(TyR.get(), inoutLoc, attrs);
+  TypeLoc Ty = P.applyAttributeToType(TyR.get(), attrs, specifier, specifierLoc);
 
   if (performTypeLocChecking(Ty, /*IsSILType=*/true, nullptr))
     return true;
@@ -1146,6 +1144,10 @@ bool SILParser::parseSILDottedPathWithoutPound(ValueDecl *&Decl,
     case tok::kw_subscript:
       P.consumeToken();
       FullName.push_back(DeclBaseName::createSubscript());
+      break;
+    case tok::kw_deinit:
+      P.consumeToken();
+      FullName.push_back(DeclBaseName::createDestructor());
       break;
     default:
       if (parseSILIdentifier(Id, diag::expected_sil_constant))

@@ -420,7 +420,7 @@ bool Decl::isPrivateStdlibDecl(bool whitelistProtocols) const {
   if (auto AFD = dyn_cast<AbstractFunctionDecl>(D)) {
     // Hide '~>' functions (but show the operator, because it defines
     // precedence).
-    if (AFD->getNameStr() == "~>")
+    if (isa<FuncDecl>(AFD) && AFD->getNameStr() == "~>")
       return true;
 
     // If it's a function with a parameter with leading underscore, it's a
@@ -2403,14 +2403,19 @@ void TypeAliasDecl::setUnderlyingType(Type underlying) {
     underlying = mapTypeOutOfContext(underlying);
   UnderlyingTy.setType(underlying);
 
-  // Create a NameAliasType which will resolve to the underlying type.
-  ASTContext &Ctx = getASTContext();
-  auto aliasTy = new (Ctx, AllocationArena::Permanent) NameAliasType(this);
-  aliasTy->setRecursiveProperties(getUnderlyingTypeLoc().getType()
-      ->getRecursiveProperties());
+  // FIXME -- if we already have an interface type, we're changing the
+  // underlying type. See the comment in the ProtocolDecl case of
+  // validateDecl().
+  if (!hasInterfaceType()) {
+    // Create a NameAliasType which will resolve to the underlying type.
+    ASTContext &Ctx = getASTContext();
+    auto aliasTy = new (Ctx, AllocationArena::Permanent) NameAliasType(this);
+    aliasTy->setRecursiveProperties(getUnderlyingTypeLoc().getType()
+        ->getRecursiveProperties());
 
-  // Set the interface type of this declaration.
-  setInterfaceType(MetatypeType::get(aliasTy, Ctx));
+    // Set the interface type of this declaration.
+    setInterfaceType(MetatypeType::get(aliasTy, Ctx));
+  }
 }
 
 UnboundGenericType *TypeAliasDecl::getUnboundGenericType() const {
@@ -2552,8 +2557,7 @@ ClassDecl::ClassDecl(SourceLoc ClassLoc, Identifier Name, SourceLoc NameLoc,
 }
 
 DestructorDecl *ClassDecl::getDestructor() {
-  auto name = getASTContext().Id_deinit;
-  auto results = lookupDirect(name);
+  auto results = lookupDirect(DeclBaseName::createDestructor());
   assert(!results.empty() && "Class without destructor?");
   assert(results.size() == 1 && "More than one destructor?");
   return cast<DestructorDecl>(results.front());
@@ -3872,7 +3876,7 @@ bool VarDecl::isSettable(const DeclContext *UseDC,
                          const DeclRefExpr *base) const {
   // If this is a 'var' decl, then we're settable if we have storage or a
   // setter.
-  if (!isLet())
+  if (!isLet() && !isShared())
     return ::isSettable(this);
 
   // If the decl has a value bound to it but has no PBD, then it is
@@ -4248,7 +4252,7 @@ ParamDecl *ParamDecl::createSelf(SourceLoc loc, DeclContext *DC,
 }
 
 ParameterTypeFlags ParamDecl::getParameterFlags() const {
-  return ParameterTypeFlags::fromParameterType(getType(), isVariadic())
+  return ParameterTypeFlags::fromParameterType(getType(), isVariadic(), isShared())
             .withInOut(isInOut());
 }
 
@@ -4412,61 +4416,6 @@ SourceRange SubscriptDecl::getSourceRange() const {
   return { getSubscriptLoc(), ElementTy.getSourceRange().End };
 }
 
-Type AbstractFunctionDecl::computeInterfaceSelfType(bool isInitializingCtor,
-                                                    bool wantDynamicSelf) {
-  auto *dc = getDeclContext();
-  auto &Ctx = dc->getASTContext();
-  
-  // Determine the type of the container.
-  auto containerTy = dc->getDeclaredInterfaceType();
-  if (!containerTy || containerTy->hasError())
-    return ErrorType::get(Ctx);
-
-  // Determine the type of 'self' inside the container.
-  auto selfTy = dc->getSelfInterfaceType();
-  if (!selfTy || selfTy->hasError())
-    return ErrorType::get(Ctx);
-
-  bool isStatic = false;
-  bool isMutating = false;
-
-  if (auto *FD = dyn_cast<FuncDecl>(this)) {
-    isStatic = FD->isStatic();
-    isMutating = FD->isMutating();
-
-    if (wantDynamicSelf && FD->hasDynamicSelf())
-      selfTy = DynamicSelfType::get(selfTy, Ctx);
-  } else if (isa<ConstructorDecl>(this)) {
-    if (isInitializingCtor) {
-      // initializing constructors of value types always have an implicitly
-      // inout self.
-      isMutating = true;
-    } else {
-      // allocating constructors have metatype 'self'.
-      isStatic = true;
-    }
-  } else if (isa<DestructorDecl>(this)) {
-    // destructors of value types always have an implicitly inout self.
-    isMutating = true;
-  }
-
-  // 'static' functions have 'self' of type metatype<T>.
-  if (isStatic)
-    return MetatypeType::get(selfTy, Ctx);
-
-  // Reference types have 'self' of type T.
-  if (containerTy->hasReferenceSemantics())
-    return selfTy;
-
-  // Mutating methods are always passed inout so we can receive the side
-  // effect.
-  if (isMutating)
-    return InOutType::get(selfTy);
-
-  // Nonmutating methods on structs and enums pass the receiver by value.
-  return selfTy;
-}
-
 DeclName AbstractFunctionDecl::getEffectiveFullName() const {
   if (getFullName())
     return getFullName();
@@ -4622,7 +4571,20 @@ ObjCSelector AbstractFunctionDecl::getObjCSelector(
   }
 
   auto &ctx = getASTContext();
-  auto baseName = getName();
+
+  Identifier baseName;
+  if (isa<DestructorDecl>(this)) {
+    // Deinitializers are always called "dealloc".
+    return ObjCSelector(ctx, 0, ctx.Id_dealloc);
+  } else if (auto func = dyn_cast<FuncDecl>(this)) {
+    // Otherwise cast this to be able to access getName()
+    baseName = func->getName();
+  } else if (auto ctor = dyn_cast<ConstructorDecl>(this)) {
+    baseName = ctor->getName();
+  } else {
+    llvm_unreachable("Unknown subclass of AbstractFunctionDecl");
+  }
+
   auto argNames = getFullName().getArgumentNames();
 
   // Use the preferred name if specified
@@ -4644,11 +4606,6 @@ ObjCSelector AbstractFunctionDecl::getObjCSelector(
         asd->getObjCGetterSelector(resolver, baseName) :
         asd->getObjCSetterSelector(resolver, baseName);
     }
-  }
-
-  // Deinitializers are always called "dealloc".
-  if (isa<DestructorDecl>(this)) {
-    return ObjCSelector(ctx, 0, ctx.Id_dealloc);
   }
 
 
@@ -5010,9 +4967,10 @@ bool ConstructorDecl::isObjCZeroParameterWithLongSelector() const {
   return params->get(0)->getInterfaceType()->isVoid();
 }
 
-DestructorDecl::DestructorDecl(Identifier NameHack, SourceLoc DestructorLoc,
-                               ParamDecl *selfDecl, DeclContext *Parent)
-  : AbstractFunctionDecl(DeclKind::Destructor, Parent, NameHack, DestructorLoc,
+DestructorDecl::DestructorDecl(SourceLoc DestructorLoc, ParamDecl *selfDecl,
+                               DeclContext *Parent)
+  : AbstractFunctionDecl(DeclKind::Destructor, Parent,
+                         DeclBaseName::createDestructor(), DestructorLoc,
                          /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
                          /*NumParameterLists=*/1, nullptr) {
   setSelfDecl(selfDecl);

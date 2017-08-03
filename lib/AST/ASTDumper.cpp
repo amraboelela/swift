@@ -941,8 +941,12 @@ namespace {
         PrintWithColorRAII(OS, InterfaceTypeColor) << "'";
       }
 
-      if (!P->isLet())
+      if (P->getSpecifier() == VarDecl::Specifier::Var)
         OS << " mutable";
+      if (P->getSpecifier() == VarDecl::Specifier::InOut)
+        OS << " inout";
+      if (P->isShared())
+        OS << " shared";
 
       if (P->isVariadic())
         OS << " variadic";
@@ -2126,12 +2130,14 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitInOutToPointerExpr(InOutToPointerExpr *E) {
-    printCommon(E, "inout_to_pointer") << '\n';
+    printCommon(E, "inout_to_pointer")
+      << (E->isNonAccessing() ? " nonaccessing" : "") << '\n';
     printRec(E->getSubExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitArrayToPointerExpr(ArrayToPointerExpr *E) {
-    printCommon(E, "array_to_pointer") << '\n';
+    printCommon(E, "array_to_pointer")
+      << (E->isNonAccessing() ? " nonaccessing" : "") << '\n';
     printRec(E->getSubExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
@@ -2678,6 +2684,12 @@ public:
 
   void visitInOutTypeRepr(InOutTypeRepr *T) {
     printCommon("type_inout") << '\n';
+    printRec(T->getBase());
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+  }
+  
+  void visitSharedTypeRepr(SharedTypeRepr *T) {
+    printCommon("type_shared") << '\n';
     printRec(T->getBase());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
