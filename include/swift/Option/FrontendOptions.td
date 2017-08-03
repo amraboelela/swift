@@ -40,6 +40,10 @@ def emit_module_doc_path
   : Separate<["-"], "emit-module-doc-path">, MetaVarName<"<path>">,
     HelpText<"Output module documentation file <path>">;
 
+def merge_modules
+  : Flag<["-"], "merge-modules">, ModeOpt,
+    HelpText<"Merge the input modules without otherwise processing them">;
+
 def emit_dependencies_path
   : Separate<["-"], "emit-dependencies-path">, MetaVarName<"<path>">,
     HelpText<"Output basic Make-compatible dependencies file to <path>">;
@@ -57,6 +61,13 @@ def serialize_diagnostics_path
 def emit_fixits_path
   : Separate<["-"], "emit-fixits-path">, MetaVarName<"<path>">,
     HelpText<"Output compiler fixits as source edits to <path>">;
+
+def tbd_install_name
+  : Separate<["-"], "tbd-install_name">, MetaVarName<"<path>">,
+    HelpText<"The install_name to use in an emitted TBD file">;
+
+def tbd_install_name_EQ : Joined<["-"], "tbd-install_name=">,
+  Alias<tbd_install_name>;
 
 def verify : Flag<["-"], "verify">,
   HelpText<"Verify diagnostics against expected-{error|warning|note} "
@@ -283,9 +294,6 @@ def disable_deserialization_recovery :
   Flag<["-"], "disable-deserialization-recovery">,
   HelpText<"Don't attempt to recover from missing xrefs (etc) in swiftmodules">;
 
-def enable_cow_existentials : Flag<["-"], "enable-cow-existentials">,
-  HelpText<"Enable the copy-on-write existential implementation">;
-
 def disable_availability_checking : Flag<["-"],
   "disable-availability-checking">,
   HelpText<"Disable checking for potentially unavailable APIs">;
@@ -293,6 +301,9 @@ def disable_availability_checking : Flag<["-"],
 def disable_tsan_inout_instrumentation : Flag<["-"],
   "disable-tsan-inout-instrumentation">,
   HelpText<"Disable treatment of inout parameters as Thread Sanitizer accesses">;
+
+def report_errors_to_debugger : Flag<["-"], "report-errors-to-debugger">,
+  HelpText<"Invoke the debugger hook on fatalError calls">;
 
 def enable_infer_import_as_member :
   Flag<["-"], "enable-infer-import-as-member">,
@@ -319,6 +330,14 @@ def warn_long_function_bodies : Separate<["-"], "warn-long-function-bodies">,
   HelpText<"Warns when type-checking a function takes longer than <n> ms">;
 def warn_long_function_bodies_EQ : Joined<["-"], "warn-long-function-bodies=">,
   Alias<warn_long_function_bodies>;
+
+def warn_long_expression_type_checking : Separate<["-"], "warn-long-expression-type-checking">,
+  MetaVarName<"<n>">,
+  HelpText<"Warns when type-checking a function takes longer than <n> ms">;
+def warn_long_expression_type_checking_EQ : Joined<["-"], "warn-long-expression-type-checking=">,
+  Alias<warn_long_expression_type_checking>;
+
+def solver_expression_time_threshold_EQ : Joined<["-"], "solver-expression-time-threshold=">;
 
 def enable_source_import : Flag<["-"], "enable-source-import">,
   HelpText<"Enable importing of Swift source files">;
@@ -360,6 +379,9 @@ def sil_link_all : Flag<["-"], "sil-link-all">,
 def sil_serialize_all : Flag<["-"], "sil-serialize-all">,
   HelpText<"Serialize all generated SIL">;
 
+def sil_serialize_witness_tables : Flag<["-"], "sil-serialize-witness-tables">,
+  HelpText<"Serialize eligible SIL witness tables">;
+
 def sil_verify_all : Flag<["-"], "sil-verify-all">,
   HelpText<"Verify SIL after each transform">;
 
@@ -386,6 +408,9 @@ def emit_sorted_sil : Flag<["-"], "emit-sorted-sil">,
   HelpText<"When printing SIL, print out all sil entities sorted by name to "
            "ease diffing">;
 
+def emit_syntax : Flag<["-"], "emit-syntax">,
+  HelpText<"Parse input file(s) and emit the Syntax tree(s) as JSON">, ModeOpt;
+
 def use_malloc : Flag<["-"], "use-malloc">,
   HelpText<"Allocate internal data structures using malloc "
            "(for memory debugging)">;
@@ -399,6 +424,9 @@ def verify_type_layout : JoinedOrSeparate<["-"], "verify-type-layout">,
 def external_pass_pipeline_filename : Separate<["-"], "external-pass-pipeline-filename">,
     HelpText<"Use the pass pipeline defined by <pass_pipeline_file>">,
     MetaVarName<"<pass_pipeline_file>">;
+
+def index_system_modules : Flag<["-"], "index-system-modules">,
+  HelpText<"Emit index data for imported serialized swift system modules">;
 
 def dump_interface_hash : Flag<["-"], "dump-interface-hash">,
    HelpText<"Parse input file(s) and dump interface token hash(es)">,

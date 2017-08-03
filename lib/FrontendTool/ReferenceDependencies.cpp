@@ -150,8 +150,7 @@ bool swift::emitReferenceDependencies(DiagnosticEngine &diags,
   }
 
   auto escape = [](DeclBaseName name) -> std::string {
-    // TODO: Handle special names
-    return llvm::yaml::escape(name.getIdentifier().str());
+    return llvm::yaml::escape(name.userFacingName());
   };
 
   out << "### Swift dependencies file v0 ###\n";
@@ -256,7 +255,8 @@ bool swift::emitReferenceDependencies(DiagnosticEngine &diags,
     case DeclKind::Destructor:
     case DeclKind::EnumElement:
     case DeclKind::MissingMember:
-      llvm_unreachable("cannot appear at the top level of a file");
+      // These can occur in malformed ASTs.
+      break;
     }
   }
 

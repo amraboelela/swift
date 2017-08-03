@@ -123,7 +123,12 @@ void SILOpenedArchetypesTracker::unregisterOpenedArchetypes(
   assert(I->getFunction() == &F &&
          "Instruction does not belong to a proper SILFunction");
   auto Archetype = getOpenedArchetypeOf(I);
-  if (Archetype)
+  // Remove the archetype definition if it was registered before.
+  // It may happen that this archetype was not registered in the
+  // SILOpenedArchetypesTracker, because the tracker was created
+  // without scanning the whole function and thus may not aware
+  // of all opened archetypes of the function.
+  if (Archetype && getOpenedArchetypeDef(Archetype))
     removeOpenedArchetypeDef(Archetype, I);
 }
 
@@ -138,8 +143,8 @@ void SILOpenedArchetypesTracker::handleDeleteNotification(
 /// \returns The found archetype or empty type otherwise.
 CanArchetypeType swift::getOpenedArchetypeOf(const SILInstruction *I) {
   if (isa<OpenExistentialAddrInst>(I) || isa<OpenExistentialRefInst>(I) ||
-      isa<OpenExistentialBoxInst>(I) || isa<OpenExistentialMetatypeInst>(I) ||
-      isa<OpenExistentialOpaqueInst>(I)) {
+      isa<OpenExistentialBoxInst>(I) || isa<OpenExistentialBoxValueInst>(I) ||
+      isa<OpenExistentialMetatypeInst>(I) || isa<OpenExistentialValueInst>(I)) {
     auto Ty = getOpenedArchetypeOf(I->getType().getSwiftRValueType());
     assert(Ty && Ty->isOpenedExistential() &&
            "Type should be an opened archetype");

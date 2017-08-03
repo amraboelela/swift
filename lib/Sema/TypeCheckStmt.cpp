@@ -442,12 +442,11 @@ public:
                                        RS->isImplicit());
     }
 
-    auto hadTypeError = TC.typeCheckExpression(E, DC,
-                                               TypeLoc::withoutLoc(ResultTy),
-                                               CTP_ReturnStmt);
+    auto exprTy = TC.typeCheckExpression(E, DC, TypeLoc::withoutLoc(ResultTy),
+                                         CTP_ReturnStmt);
     RS->setResult(E);
-    
-    if (hadTypeError) {
+
+    if (!exprTy) {
       tryDiagnoseUnnecessaryCastOverOptionSet(TC.Context, E, ResultTy,
                                               DC->getParentModule());
     }
@@ -463,7 +462,7 @@ public:
 
     Type exnType = TC.getExceptionType(DC, TS->getThrowLoc());
     if (!exnType) return TS;
-    
+
     TC.typeCheckExpression(E, DC, TypeLoc::withoutLoc(exnType), CTP_ThrowStmt);
     TS->setSubExpr(E);
     
@@ -510,14 +509,6 @@ public:
     typeCheckStmt(S);
     GS->setBody(S);
     return GS;
-  }
-
-  Stmt *visitIfConfigStmt(IfConfigStmt *ICS) {
-    
-    // Active members are attached to the enclosing declaration, so there's no
-    // need to walk anything within.
-    
-    return ICS;
   }
 
   Stmt *visitDoStmt(DoStmt *DS) {
@@ -672,7 +663,7 @@ public:
         name = "$"+np->getBoundName().str().str();
       name += "$generator";
       generator = new (TC.Context)
-        VarDecl(/*IsStatic*/false, /*IsLet*/false, /*IsCaptureList*/false,
+        VarDecl(/*IsStatic*/false, VarDecl::Specifier::Var, /*IsCaptureList*/false,
                 S->getInLoc(), TC.Context.getIdentifier(name), generatorTy, DC);
       generator->setInterfaceType(DC->mapTypeOutOfContext(generatorTy));
       generator->setImplicit();
@@ -857,12 +848,11 @@ public:
   }
   
   Stmt *visitSwitchStmt(SwitchStmt *S) {
-    bool hadError = false;
-
     // Type-check the subject expression.
     Expr *subjectExpr = S->getSubjectExpr();
-    hadError |= TC.typeCheckExpression(subjectExpr, DC);
-    if (Expr *newSubjectExpr = TC.coerceToMaterializable(subjectExpr))
+    auto resultTy = TC.typeCheckExpression(subjectExpr, DC);
+    auto hadError = !resultTy;
+    if (Expr *newSubjectExpr = TC.coerceToRValue(subjectExpr))
       subjectExpr = newSubjectExpr;
     S->setSubjectExpr(subjectExpr);
     Type subjectType = S->getSubjectExpr()->getType();
@@ -871,11 +861,12 @@ public:
     AddSwitchNest switchNest(*this);
     AddLabeledStmt labelNest(*this, S);
 
-    for (unsigned i = 0, e = S->getCases().size(); i < e; ++i) {
-      auto *caseBlock = S->getCases()[i];
+    auto cases = S->getCases();
+    for (auto i = cases.begin(), e = cases.end(); i != e; ++i) {
+      auto *caseBlock = *i;
       // Fallthrough transfers control to the next case block. In the
       // final case block, it is invalid.
-      FallthroughDest = i+1 == e ? nullptr : S->getCases()[i+1];
+      FallthroughDest = std::next(i) == e ? nullptr : *std::next(i);
 
       for (auto &labelItem : caseBlock->getMutableCaseLabelItems()) {
         // Resolve the pattern in the label.
@@ -1080,7 +1071,7 @@ void TypeChecker::checkIgnoredExpr(Expr *E) {
   }
 
   // Complain about l-values that are neither loaded nor stored.
-  if (E->getType()->isLValueType()) {
+  if (E->getType()->hasLValueType()) {
     diagnose(E->getLoc(), diag::expression_unused_lvalue)
       .highlight(E->getSourceRange());
     return;
@@ -1268,8 +1259,8 @@ Stmt *StmtChecker::visitBraceStmt(BraceStmt *BS) {
       if (isDiscarded)
         options |= TypeCheckExprFlags::IsDiscarded;
 
-      bool hadTypeError = TC.typeCheckExpression(SubExpr, DC, TypeLoc(),
-                                                 CTP_Unused, options);
+      auto resultTy =
+          TC.typeCheckExpression(SubExpr, DC, TypeLoc(), CTP_Unused, options);
 
       // If a closure expression is unused, the user might have intended
       // to write "do { ... }".
@@ -1282,7 +1273,7 @@ Stmt *StmtChecker::visitBraceStmt(BraceStmt *BS) {
           TC.diagnose(CE->getStartLoc(), diag::brace_stmt_suggest_do)
             .fixItInsert(CE->getStartLoc(), "do ");
         }
-      } else if (isDiscarded && !hadTypeError)
+      } else if (isDiscarded && resultTy)
         TC.checkIgnoredExpr(SubExpr);
 
       elem = SubExpr;
@@ -1338,10 +1329,10 @@ static void checkDefaultArguments(TypeChecker &tc,
         ->changeResilienceExpansion(expansion);
 
     // Type-check the initializer, then flag that we did so.
-    bool hadError = tc.typeCheckExpression(e, initContext,
-                                           TypeLoc::withoutLoc(param->getType()),
-                                           CTP_DefaultParameter);
-    if (!hadError) {
+    auto resultTy = tc.typeCheckExpression(
+        e, initContext, TypeLoc::withoutLoc(param->getType()),
+        CTP_DefaultParameter);
+    if (resultTy) {
       param->setDefaultValue(e);
     } else {
       param->setDefaultValue(nullptr);
@@ -1429,9 +1420,11 @@ Expr* TypeChecker::constructCallToSuperInit(ConstructorDecl *ctor,
   if (ctor->hasThrows())
     r = new (Context) TryExpr(SourceLoc(), r, Type(), /*implicit=*/true);
 
-  if (typeCheckExpression(r, ctor, TypeLoc(), CTP_Unused,
-                          TypeCheckExprFlags::IsDiscarded | 
-                          TypeCheckExprFlags::SuppressDiagnostics))
+  auto resultTy =
+      typeCheckExpression(r, ctor, TypeLoc(), CTP_Unused,
+                          TypeCheckExprFlags::IsDiscarded |
+                              TypeCheckExprFlags::SuppressDiagnostics);
+  if (!resultTy)
     return nullptr;
   
   return r;
@@ -1477,7 +1470,7 @@ static bool checkSuperInit(TypeChecker &tc, ConstructorDecl *fromCtor,
 
     for (auto member : tc.lookupConstructors(fromCtor, superclassTy,
                                              lookupOptions)) {
-      auto superclassCtor = dyn_cast<ConstructorDecl>(member.Decl);
+      auto superclassCtor = dyn_cast<ConstructorDecl>(member.getValueDecl());
       if (!superclassCtor || !superclassCtor->isDesignatedInit() ||
           superclassCtor == ctor)
         continue;

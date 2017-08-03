@@ -1,3 +1,5 @@
+// A similar struct with Codable properties adopting Codable should get a
+// synthesized init(from:), along with the memberwise initializer.
 //===--- TypeCheckDecl.cpp - Type Checking for Declarations ---------------===//
 //
 // This source file is part of the Swift.org open source project
@@ -243,7 +245,7 @@ void TypeChecker::resolveRawType(EnumDecl *enumDecl) {
 }
 
 void TypeChecker::validateWhereClauses(ProtocolDecl *protocol) {
-  ProtocolRequirementTypeResolver resolver(protocol);
+  ProtocolRequirementTypeResolver resolver;
   TypeResolutionOptions options;
 
   if (auto whereClause = protocol->getTrailingWhereClause()) {
@@ -829,7 +831,7 @@ static bool isDefaultInitializable(TypeRepr *typeRepr) {
       return false;
 
     for (auto elt : tuple->getElements()) {
-      if (!isDefaultInitializable(elt))
+      if (!isDefaultInitializable(elt.Type))
         return false;
     }
 
@@ -1245,12 +1247,14 @@ static void validatePatternBindingEntries(TypeChecker &tc,
 
 void swift::makeFinal(ASTContext &ctx, ValueDecl *D) {
   if (D && !D->isFinal()) {
+    assert(!D->isDynamic());
     D->getAttrs().add(new (ctx) FinalAttr(/*IsImplicit=*/true));
   }
 }
 
 void swift::makeDynamic(ASTContext &ctx, ValueDecl *D) {
   if (D && !D->isDynamic()) {
+    assert(!D->isFinal());
     D->getAttrs().add(new (ctx) DynamicAttr(/*IsImplicit=*/true));
   }
 }
@@ -1264,25 +1268,32 @@ static void configureImplicitSelf(TypeChecker &tc,
   auto selfDecl = func->getImplicitSelfDecl();
 
   // Compute the type of self.
-  Type selfIfaceTy = func->computeInterfaceSelfType(/*isInitializingCtor*/true,
-                                                    /*wantDynamicSelf*/true);
-  assert(selfDecl && selfIfaceTy && "Not a method");
+  auto selfParam = computeSelfParam(func, /*isInitializingCtor*/true,
+                                    /*wantDynamicSelf*/true);
+  assert(selfDecl && selfParam.getPlainType() && "Not a method");
 
   // 'self' is 'let' for reference types (i.e., classes) or when 'self' is
   // neither inout.
-  selfDecl->setLet(!selfIfaceTy->is<InOutType>());
+  auto specifier = selfParam.getParameterFlags().isInOut()
+                 ? VarDecl::Specifier::InOut
+                 : VarDecl::Specifier::Owned;
+  selfDecl->setSpecifier(specifier);
 
-  selfDecl->setInterfaceType(selfIfaceTy);
+  selfDecl->setInterfaceType(selfParam.getPlainType());
 }
 
 /// Record the context type of 'self' after the generic environment of
 /// the function has been determined.
 static void recordSelfContextType(AbstractFunctionDecl *func) {
   auto selfDecl = func->getImplicitSelfDecl();
-  Type selfTy = func->computeInterfaceSelfType(/*isInitializingCtor*/true,
-                                               /*wantDynamicSelf*/true);
-  selfTy = func->mapTypeIntoContext(selfTy);
-  selfDecl->setType(selfTy);
+  auto selfParam = computeSelfParam(func, /*isInitializingCtor*/true,
+                                    /*wantDynamicSelf*/true);
+
+  auto selfTy = func->mapTypeIntoContext(selfParam.getType());
+  if (selfParam.getParameterFlags().isInOut()) {
+    selfDecl->setSpecifier(VarDecl::Specifier::InOut);
+  }
+  selfDecl->setType(selfTy->getInOutObjectType());
 }
 
 namespace {
@@ -1751,11 +1762,12 @@ static void checkTypeAccessibility(
 
   AccessScope contextAccessScope = context->getFormalAccessScope();
   checkTypeAccessibilityImpl(TC, TL, contextAccessScope, DC,
-                             [=](AccessScope requiredAccessScope,
-                                 const TypeRepr *offendingTR,
-                                 DowngradeToWarning downgradeToWarning) {
+                             [=, &TC](AccessScope requiredAccessScope,
+                                      const TypeRepr *offendingTR,
+                                      DowngradeToWarning downgradeToWarning) {
     if (!contextAccessScope.isPublic() &&
-        !isa<ModuleDecl>(contextAccessScope.getDeclContext())) {
+        !isa<ModuleDecl>(contextAccessScope.getDeclContext()) &&
+        TC.getLangOpts().isSwiftVersion3()) {
       // Swift 3.0.0 mistakenly didn't diagnose any issues when the context
       // access scope represented a private or fileprivate level.
       downgradeToWarning = DowngradeToWarning::Yes;
@@ -1868,10 +1880,10 @@ static void checkGenericParamAccessibility(TypeChecker &TC,
 
   // Swift 3.0.0 mistakenly didn't diagnose any issues when the context access
   // scope represented a private or fileprivate level.
-  // FIXME: Conditionalize this on Swift 3 mode.
   if (downgradeToWarning == DowngradeToWarning::No) {
     if (!accessScope.isPublic() &&
-        !isa<ModuleDecl>(accessScope.getDeclContext())) {
+        !isa<ModuleDecl>(accessScope.getDeclContext()) &&
+        TC.getLangOpts().isSwiftVersion3()) {
       downgradeToWarning = DowngradeToWarning::Yes;
     }
   }
@@ -2555,14 +2567,28 @@ static void inferDynamic(ASTContext &ctx, ValueDecl *D) {
 
   // Variables declared with 'let' cannot be 'dynamic'.
   if (auto VD = dyn_cast<VarDecl>(D)) {
-    if (VD->isLet() && !isNSManaged) return;
+    auto staticSpelling = VD->getParentPatternBinding()->getStaticSpelling();
+
+    // The presence of 'static' blocks the inference of 'dynamic'.
+    if (staticSpelling == StaticSpellingKind::KeywordStatic)
+      return;
+
+    if (VD->isLet() && !isNSManaged)
+      return;
   }
 
   // Accessors should not infer 'dynamic' on their own; they can get it from
   // their storage decls.
-  if (auto FD = dyn_cast<FuncDecl>(D))
+  if (auto FD = dyn_cast<FuncDecl>(D)) {
     if (FD->isAccessor())
       return;
+
+    auto staticSpelling = FD->getStaticSpelling();
+
+    // The presence of 'static' bocks the inference of 'dynamic'.
+    if (staticSpelling == StaticSpellingKind::KeywordStatic)
+      return;
+  }
 
   // The presence of 'final' on a class prevents 'dynamic'.
   auto classDecl = D->getDeclContext()->getAsClassOrClassExtensionContext();
@@ -2624,6 +2650,9 @@ static void checkBridgedFunctions(TypeChecker &TC) {
 
 /// Infer the Objective-C name for a given declaration.
 static void inferObjCName(TypeChecker &tc, ValueDecl *decl) {
+  if (isa<DestructorDecl>(decl))
+    return;
+
   // If this declaration overrides an @objc declaration, use its name.
   if (auto overridden = decl->getOverriddenDecl()) {
     if (overridden->isObjC()) {
@@ -3083,9 +3112,10 @@ static void checkEnumRawValues(TypeChecker &TC, EnumDecl *ED) {
     // Check the raw value expr, if we have one.
     if (auto *rawValue = elt->getRawValueExpr()) {
       Expr *typeCheckedExpr = rawValue;
-      if (!TC.typeCheckExpression(typeCheckedExpr, ED, 
-                                  TypeLoc::withoutLoc(rawTy),
-                                  CTP_EnumCaseRawValue)) {
+      auto resultTy = TC.typeCheckExpression(typeCheckedExpr, ED,
+                                             TypeLoc::withoutLoc(rawTy),
+                                             CTP_EnumCaseRawValue);
+      if (resultTy) {
         elt->setTypeCheckedRawValueExpr(typeCheckedExpr);
       }
       lastExplicitValueElt = elt;
@@ -3100,9 +3130,9 @@ static void checkEnumRawValues(TypeChecker &TC, EnumDecl *ED) {
       }
       elt->setRawValueExpr(nextValue);
       Expr *typeChecked = nextValue;
-      if (!TC.typeCheckExpression(typeChecked, ED, 
-                                  TypeLoc::withoutLoc(rawTy),
-                                  CTP_EnumCaseRawValue))
+      auto resultTy = TC.typeCheckExpression(
+          typeChecked, ED, TypeLoc::withoutLoc(rawTy), CTP_EnumCaseRawValue);
+      if (resultTy)
         elt->setTypeCheckedRawValueExpr(typeChecked);
     }
     prevValue = elt->getRawValueExpr();
@@ -3383,7 +3413,7 @@ static void checkVarBehavior(VarDecl *decl, TypeChecker &TC) {
         FuncDecl *defaultInitStorageDecl = nullptr;
         FuncDecl *parameterizedInitStorageDecl = nullptr;
         for (auto found : lookup) {
-          if (auto foundFunc = dyn_cast<FuncDecl>(found.Decl)) {
+          if (auto foundFunc = dyn_cast<FuncDecl>(found.getValueDecl())) {
             if (!foundFunc->isStatic())
               continue;
             auto methodTy = foundFunc->getInterfaceType()
@@ -3416,7 +3446,7 @@ static void checkVarBehavior(VarDecl *decl, TypeChecker &TC) {
                       expectedDefaultInitStorageTy,
                       expectedParameterizedInitStorageTy);
           for (auto found : lookup)
-            TC.diagnose(found.Decl->getLoc(),
+            TC.diagnose(found.getValueDecl()->getLoc(),
                         diag::found_candidate);
           conformance->setInvalid();
           continue;
@@ -3882,9 +3912,10 @@ public:
           VD->getNameLoc().isValid() &&
           Context.SourceMgr.extractText({VD->getNameLoc(), 1}) != "`") {
         TC.diagnose(VD->getNameLoc(), diag::reserved_member_name,
-                    VD->getFullName(), VD->getNameStr());
+                    VD->getFullName(), VD->getBaseName().getIdentifier().str());
         TC.diagnose(VD->getNameLoc(), diag::backticks_to_escape)
-          .fixItReplace(VD->getNameLoc(), "`"+VD->getNameStr().str()+"`");
+            .fixItReplace(VD->getNameLoc(),
+                          "`" + VD->getBaseName().userFacingName().str() + "`");
       }
     }
 
@@ -4306,7 +4337,7 @@ public:
           TC.diagnose(NTD->getLoc(),
                       diag::unsupported_type_nested_in_generic_function,
                       NTD->getName(),
-                      AFD->getName());
+                      AFD->getFullName());
         } else {
           TC.diagnose(NTD->getLoc(),
                       diag::unsupported_type_nested_in_generic_closure,
@@ -4691,7 +4722,9 @@ public:
     TC.checkDeclAttributes(PD);
 
     if (TC.Context.LangOpts.DebugGenericSignatures) {
-      auto requirementsSig = PD->getRequirementSignature();
+      auto requirementsSig =
+        GenericSignature::get({PD->getProtocolSelfType()},
+                              PD->getRequirementSignature());
 
       llvm::errs() << "Protocol requirement signature:\n";
       PD->dumpRef(llvm::errs());
@@ -4913,7 +4946,7 @@ public:
     // Look through parentheses.
     if (auto parenRepr = dyn_cast<TupleTypeRepr>(typeRepr)) {
       if (!parenRepr->isParenType()) return false;
-      return checkDynamicSelfReturn(func, parenRepr->getElement(0),
+      return checkDynamicSelfReturn(func, parenRepr->getElementType(0),
                                     optionalDepth);
     }
 
@@ -5036,6 +5069,12 @@ public:
       FD->setMutating(true);
     else if (FD->getAttrs().hasAttribute<NonMutatingAttr>())
       FD->setMutating(false);
+
+    if (FD->isMutating()) {
+      Type contextTy = FD->getDeclContext()->getDeclaredInterfaceType();
+      if (contextTy->hasReferenceSemantics())
+        FD->setMutating(false);
+    }
 
     // Check whether the return type is dynamic 'Self'.
     if (checkDynamicSelfReturn(FD))
@@ -5169,8 +5208,7 @@ public:
 
         // If the storage is dynamic or final, propagate to this accessor.
         if (isObjC &&
-            storage->isDynamic() &&
-            !storage->isFinal())
+            storage->isDynamic())
           makeDynamic(TC.Context, FD);
 
         if (storage->isFinal())
@@ -5697,7 +5735,7 @@ public:
       }
 
       for (auto memberResult : members) {
-        auto member = memberResult.Decl;
+        auto member = memberResult.getValueDecl();
 
         if (member->isInvalid())
           continue;
@@ -5795,6 +5833,8 @@ public:
           matchMode |= TypeMatchFlags::AllowTopLevelOptionalMismatch;
         } else if (parentDecl->isObjC()) {
           matchMode |= TypeMatchFlags::AllowNonOptionalForIUOParam;
+          matchMode |=
+              TypeMatchFlags::IgnoreNonEscapingForOptionalFunctionParam;
         }
 
         if (declTy->matches(parentDeclTy, matchMode, &TC)) {
@@ -6122,9 +6162,6 @@ public:
     UNINTERESTING_ATTR(Specialize)
 
     // These can't appear on overridable declarations.
-    UNINTERESTING_ATTR(AutoClosure)
-    UNINTERESTING_ATTR(NoEscape)
-
     UNINTERESTING_ATTR(Prefix)
     UNINTERESTING_ATTR(Postfix)
     UNINTERESTING_ATTR(Infix)
@@ -6141,6 +6178,7 @@ public:
 
     UNINTERESTING_ATTR(ObjCMembers)
     UNINTERESTING_ATTR(ObjCRuntimeName)
+    UNINTERESTING_ATTR(RestatedObjCConformance)
     UNINTERESTING_ATTR(Implements)
     UNINTERESTING_ATTR(StaticInitializeObjCMetadata)
     UNINTERESTING_ATTR(DowngradeExhaustivityCheck)
@@ -6339,7 +6377,7 @@ public:
       // Make sure that the overriding property doesn't have storage.
       if (overrideASD->hasStorage() && !overrideASD->hasObservers()) {
         TC.diagnose(overrideASD, diag::override_with_stored_property,
-                    overrideASD->getBaseName());
+                    overrideASD->getBaseName().getIdentifier());
         TC.diagnose(baseASD, diag::property_override_here);
         return true;
       }
@@ -6354,7 +6392,7 @@ public:
       }
       if (overrideASD->hasObservers() && !baseIsSettable) {
         TC.diagnose(overrideASD, diag::observing_readonly_property,
-                    overrideASD->getBaseName());
+                    overrideASD->getBaseName().getIdentifier());
         TC.diagnose(baseASD, diag::property_override_here);
         return true;
       }
@@ -6364,7 +6402,7 @@ public:
       // setter but override the getter, and that would be surprising at best.
       if (baseIsSettable && !override->isSettable(override->getDeclContext())) {
         TC.diagnose(overrideASD, diag::override_mutable_with_readonly_property,
-                    overrideASD->getBaseName());
+                    overrideASD->getBaseName().getIdentifier());
         TC.diagnose(baseASD, diag::property_override_here);
         return true;
       }
@@ -6373,11 +6411,13 @@ public:
       // Make sure a 'let' property is only overridden by 'let' properties.  A
       // let property provides more guarantees than the getter of a 'var'
       // property.
-      if (isa<VarDecl>(baseASD) && cast<VarDecl>(baseASD)->isLet()) {
-        TC.diagnose(overrideASD, diag::override_let_property,
-                    overrideASD->getBaseName());
-        TC.diagnose(baseASD, diag::property_override_here);
-        return true;
+      if (auto VD = dyn_cast<VarDecl>(baseASD)) {
+        if (VD->isLet()) {
+          TC.diagnose(overrideASD, diag::override_let_property,
+                      VD->getName());
+          TC.diagnose(baseASD, diag::property_override_here);
+          return true;
+        }
       }
     }
     
@@ -6570,11 +6610,14 @@ public:
       return;
 
     // Require the carried type to be materializable.
-    auto IFacTy = EED->getArgumentInterfaceType();
-    if (IFacTy && !IFacTy->isMaterializable()) {
-      TC.diagnose(EED->getLoc(), diag::enum_element_not_materializable, IFacTy);
-      EED->setInterfaceType(ErrorType::get(TC.Context));
-      EED->setInvalid();
+    if (auto argTy = EED->getArgumentInterfaceType()) {
+      assert(!argTy->hasLValueType() && "enum element cannot carry @lvalue");
+      
+      if (!argTy->isMaterializable()) {
+        TC.diagnose(EED->getLoc(), diag::enum_element_not_materializable, argTy);
+        EED->setInterfaceType(ErrorType::get(TC.Context));
+        EED->setInvalid();
+      }
     }
     TC.checkDeclAttributes(EED);
   }
@@ -7049,6 +7092,27 @@ static Optional<ObjCReason> shouldMarkClassAsObjC(TypeChecker &TC,
   return None;
 }
 
+/// Validate the underlying type of the given typealias.
+static void validateTypealiasType(TypeChecker &tc, TypeAliasDecl *typeAlias) {
+  TypeResolutionOptions options = TR_TypeAliasUnderlyingType;
+  if (typeAlias->getFormalAccess() <= Accessibility::FilePrivate)
+    options |= TR_KnownNonCascadingDependency;
+
+  if (typeAlias->getDeclContext()->isModuleScopeContext() &&
+      typeAlias->getGenericParams() == nullptr) {
+    IterativeTypeChecker ITC(tc);
+    ITC.satisfy(requestResolveTypeDecl(typeAlias));
+  } else {
+    if (tc.validateType(typeAlias->getUnderlyingTypeLoc(),
+                        typeAlias, options)) {
+      typeAlias->setInvalid();
+      typeAlias->getUnderlyingTypeLoc().setInvalidType(tc.Context);
+    }
+
+    typeAlias->setUnderlyingType(typeAlias->getUnderlyingTypeLoc().getType());
+  }
+}
+
 void TypeChecker::validateDecl(ValueDecl *D) {
   // Generic parameters are validated as part of their context.
   if (isa<GenericTypeParamDecl>(D))
@@ -7156,25 +7220,7 @@ void TypeChecker::validateDecl(ValueDecl *D) {
     SWIFT_DEFER { typeAlias->setIsBeingValidated(false); };
 
     validateGenericTypeSignature(typeAlias);
-
-    TypeResolutionOptions options = TR_TypeAliasUnderlyingType;
-    if (typeAlias->getFormalAccess() <= Accessibility::FilePrivate)
-      options |= TR_KnownNonCascadingDependency;
-
-    if (typeAlias->getDeclContext()->isModuleScopeContext() &&
-        typeAlias->getGenericParams() == nullptr) {
-      IterativeTypeChecker ITC(*this);
-      ITC.satisfy(requestResolveTypeDecl(typeAlias));
-    } else {
-      if (validateType(typeAlias->getUnderlyingTypeLoc(),
-                       typeAlias, options)) {
-        typeAlias->setInvalid();
-        typeAlias->getUnderlyingTypeLoc().setInvalidType(Context);
-      }
-
-      typeAlias->setUnderlyingType(typeAlias->getUnderlyingTypeLoc().getType());
-    }
-
+    validateTypealiasType(*this, typeAlias);
     break;
   }
 
@@ -7241,8 +7287,28 @@ void TypeChecker::validateDecl(ValueDecl *D) {
     // FIXME: Hopefully this can all go away with the ITC.
     for (auto member : proto->getMembers()) {
       if (auto *aliasDecl = dyn_cast<TypeAliasDecl>(member)) {
-        if (!aliasDecl->isGeneric())
+        if (!aliasDecl->isGeneric()) {
           aliasDecl->setGenericEnvironment(proto->getGenericEnvironment());
+
+          // If the underlying alias declaration has a type parameter,
+          // we have unresolved dependent member types we will need to deal
+          // with. Wipe out the types and validate them again.
+          // FIXME: We never should have recorded such a type in the first
+          // place.
+          if (!aliasDecl->getUnderlyingTypeLoc().getType() ||
+              aliasDecl->getUnderlyingTypeLoc().getType()
+                ->findUnresolvedDependentMemberType()) {
+            aliasDecl->getUnderlyingTypeLoc().setType(Type(),
+                                                      /*validated=*/false);
+            validateAccessibility(aliasDecl);
+
+            // Check generic parameters, if needed.
+            aliasDecl->setIsBeingValidated();
+            SWIFT_DEFER { aliasDecl->setIsBeingValidated(false); };
+
+            validateTypealiasType(*this, aliasDecl);
+          }
+        }
       }
     }
 
@@ -7250,9 +7316,6 @@ void TypeChecker::validateDecl(ValueDecl *D) {
     resolveInheritedProtocols(proto);
 
     validateAttributes(*this, D);
-
-    if (!proto->isRequirementSignatureComputed())
-      proto->computeRequirementSignature();
 
     // If the protocol is @objc, it may only refine other @objc protocols.
     // FIXME: Revisit this restriction.
@@ -7492,9 +7555,9 @@ void TypeChecker::validateDeclForNameLookup(ValueDecl *D) {
       return;
 
     // Perform earlier validation of typealiases in protocols.
-    if (auto proto = dyn_cast<ProtocolDecl>(dc)) {
+    if (isa<ProtocolDecl>(dc)) {
       if (!typealias->getGenericParams()) {
-        ProtocolRequirementTypeResolver resolver(proto);
+        ProtocolRequirementTypeResolver resolver;
         TypeResolutionOptions options;
 
         if (typealias->isBeingValidated()) return;
@@ -7678,7 +7741,8 @@ checkExtensionGenericParams(TypeChecker &tc, ExtensionDecl *ext, Type type,
   // Local function used to infer requirements from the extended type.
   auto inferExtendedTypeReqs = [&](GenericSignatureBuilder &builder) {
     auto source =
-      GenericSignatureBuilder::FloatingRequirementSource::forInferred(nullptr);
+      GenericSignatureBuilder::FloatingRequirementSource::forInferred(
+                                          nullptr, /*quietly=*/false);
 
     builder.inferRequirements(*ext->getModuleContext(),
                               TypeLoc::withoutLoc(extInterfaceType),
@@ -7772,18 +7836,6 @@ void TypeChecker::validateExtension(ExtensionDecl *ext) {
   // FIXME: Probably the above comes up elsewhere, perhaps getAs<>()
   // should be fixed.
   if (auto proto = extendedType->getCanonicalType()->getAs<ProtocolType>()) {
-    if (!isa<ProtocolType>(extendedType.getPointer()) &&
-        proto->getDecl()->getParentModule() == ext->getParentModule()) {
-      // Protocols in the same module cannot be extended via a typealias;
-      // we could end up being unable to resolve the generic signature.
-      diagnose(ext->getLoc(), diag::extension_protocol_via_typealias, proto)
-        .fixItReplace(ext->getExtendedTypeLoc().getSourceRange(),
-                      proto->getDecl()->getName().str());
-      ext->setInvalid();
-      ext->getExtendedTypeLoc().setInvalidType(Context);
-      return;
-    }
-
     GenericEnvironment *env;
     std::tie(env, extendedType) =
         checkExtensionGenericParams(*this, ext, proto, ext->getGenericParams());
@@ -7892,6 +7944,67 @@ static void diagnoseClassWithoutInitializers(TypeChecker &tc,
                                              ClassDecl *classDecl) {
   tc.diagnose(classDecl, diag::class_without_init,
               classDecl->getDeclaredType());
+
+  // HACK: We've got a special case to look out for and diagnose specifically to
+  // improve the experience of seeing this, and mitigate some confusion.
+  //
+  // For a class A which inherits from Decodable class B, class A may have
+  // additional members which prevent default initializer synthesis (and
+  // inheritance of other initializers). The user may have assumed that this
+  // case would synthesize Encodable/Decodable conformance for class A the same
+  // way it may have for class B, or other classes.
+  //
+  // It is helpful to suggest here that the user may have forgotten to override
+  // init(from:) (and encode(to:), if applicable) in a note, before we start
+  // listing the members that prevented initializer synthesis.
+  // TODO: Add a fixit along with this suggestion.
+  if (auto *superclassDecl = classDecl->getSuperclassDecl()) {
+    ASTContext &C = tc.Context;
+    auto *decodableProto = C.getProtocol(KnownProtocolKind::Decodable);
+    auto superclassType = superclassDecl->getDeclaredInterfaceType();
+    if (auto ref = tc.conformsToProtocol(superclassType, decodableProto,
+                                         superclassDecl,
+                                         ConformanceCheckOptions(),
+                                         SourceLoc())) {
+      // super conforms to Decodable, so we've failed to inherit init(from:).
+      // Let's suggest overriding it here.
+      //
+      // We're going to diagnose on the concrete init(from:) decl if it exists
+      // and isn't implicit; otherwise, on the subclass itself.
+      ValueDecl *diagDest = classDecl;
+      auto initFrom = DeclName(C, C.Id_init, C.Id_from);
+      auto result = tc.lookupMember(superclassDecl, superclassType, initFrom,
+                                    NameLookupFlags::ProtocolMembers |
+                                    NameLookupFlags::IgnoreAccessibility);
+
+      if (!result.empty() && !result.front().getValueDecl()->isImplicit())
+        diagDest = result.front().getValueDecl();
+
+      auto diagName = diag::decodable_suggest_overriding_init_here;
+
+      // This is also a bit of a hack, but the best place we've got at the
+      // moment to suggest this.
+      //
+      // If the superclass also conforms to Encodable, it's quite
+      // likely that the user forgot to override its encode(to:). In this case,
+      // we can produce a slightly different diagnostic to suggest doing so.
+      auto *encodableProto = C.getProtocol(KnownProtocolKind::Encodable);
+      if ((ref = tc.conformsToProtocol(superclassType, encodableProto,
+                                       superclassDecl,
+                                       ConformanceCheckOptions(),
+                                       SourceLoc()))) {
+        // We only want to produce this version of the diagnostic if the
+        // subclass doesn't directly implement encode(to:).
+        // The direct lookup here won't see an encode(to:) if it is inherited
+        // from the superclass.
+        auto encodeTo = DeclName(C, C.Id_encode, C.Id_to);
+        if (classDecl->lookupDirect(encodeTo).empty())
+          diagName = diag::codable_suggest_overriding_init_here;
+      }
+
+      tc.diagnose(diagDest, diagName);
+    }
+  }
 
   for (auto member : classDecl->getMembers()) {
     auto pbd = dyn_cast<PatternBindingDecl>(member);
@@ -8080,14 +8193,49 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
   bool FoundMemberwiseInitializedProperty = false;
   bool SuppressDefaultInitializer = false;
   bool SuppressMemberwiseInitializer = false;
+  bool FoundSynthesizedInit = false;
   bool FoundDesignatedInit = false;
   decl->setAddedImplicitInitializers();
+
+  // Before we look for constructors, we need to make sure that all synthesized
+  // initializers are properly synthesized.
+  //
+  // NOTE: Lookups of synthesized initializers MUST come after
+  //       decl->setAddedImplicitInitializers() in case synthesis requires
+  //       protocol conformance checking, which might be recursive here.
+  // FIXME: Disable this code and prevent _any_ implicit constructors from doing
+  //        this. Investigate why this hasn't worked otherwise.
+  DeclName synthesizedInitializers[1] = {
+    // init(from:) is synthesized by derived conformance to Decodable.
+    DeclName(Context, DeclBaseName(Context.Id_init), Context.Id_from)
+  };
+
+  auto initializerIsSynthesized = [=](ConstructorDecl *initializer) {
+    if (!initializer->isImplicit())
+      return false;
+
+    for (auto &name : synthesizedInitializers)
+      if (initializer->getFullName() == name)
+        return true;
+
+    return false;
+  };
+
+  for (auto &name : synthesizedInitializers) {
+    synthesizeMemberForLookup(decl, name);
+  }
+
   SmallPtrSet<CanType, 4> initializerParamTypes;
   llvm::SmallPtrSet<ConstructorDecl *, 4> overriddenInits;
   for (auto member : decl->getMembers()) {
     if (auto ctor = dyn_cast<ConstructorDecl>(member)) {
-      if (ctor->isDesignatedInit())
+      // Synthesized initializers others than the default initializer should
+      // not prevent default initializer synthesis.
+      if (initializerIsSynthesized(ctor)) {
+        FoundSynthesizedInit = true;
+      } else if (ctor->isDesignatedInit()) {
         FoundDesignatedInit = true;
+      }
 
       if (!ctor->isInvalid())
         initializerParamTypes.insert(getInitializerParamType(ctor));
@@ -8182,7 +8330,8 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
 
     // We can't define these overrides if we have any uninitialized
     // stored properties.
-    if (SuppressDefaultInitializer && !FoundDesignatedInit) {
+    if (SuppressDefaultInitializer && !FoundDesignatedInit
+        && !FoundSynthesizedInit) {
       diagnoseClassWithoutInitializers(*this, classDecl);
       return;
     }
@@ -8197,7 +8346,7 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
                                     NameLookupFlags::IgnoreAccessibility);
 
     for (auto memberResult : ctors) {
-      auto member = memberResult.Decl;
+      auto member = memberResult.getValueDecl();
 
       // Skip unavailable superclass initializers.
       if (AvailableAttr::isUnavailable(member))
@@ -8274,11 +8423,103 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
 
     // ... unless there are uninitialized stored properties.
     if (SuppressDefaultInitializer) {
-      diagnoseClassWithoutInitializers(*this, classDecl);
+      if (!FoundSynthesizedInit)
+        diagnoseClassWithoutInitializers(*this, classDecl);
+
       return;
     }
 
     defineDefaultConstructor(decl);
+  }
+}
+
+void TypeChecker::synthesizeMemberForLookup(NominalTypeDecl *target,
+                                            DeclName member) {
+  auto baseName = member.getBaseName();
+  if (baseName.isSpecial())
+    return;
+
+  // Checks whether the target conforms to the given protocol. If the
+  // conformance is incomplete, check the conformance to force synthesis, if
+  // possible.
+  //
+  // Swallows diagnostics if conformance checking is already in progress (so we
+  // don't display diagnostics twice).
+  //
+  // Returns whether the target conforms to the protocol and the conformance is
+  // complete.
+  auto evaluateTargetConformanceTo = [&](ProtocolDecl *protocol) {
+    auto targetType = target->getDeclaredInterfaceType();
+    if (auto ref = conformsToProtocol(targetType, protocol, target,
+                                      ConformanceCheckFlags::Used,
+                                      SourceLoc())) {
+      if (auto *conformance =
+          dyn_cast_or_null<NormalProtocolConformance>(ref->getConcrete())) {
+        if (conformance->isIncomplete()) {
+          // Check conformance, forcing synthesis.
+          //
+          // If synthesizing conformance fails, this will produce diagnostics.
+          // If conformance checking was already in progress elsewhere, though,
+          // this could produce diagnostics twice.
+          //
+          // To prevent this duplication, we swallow the diagnostics if the
+          // state of the conformance is not Incomplete.
+          DiagnosticTransaction transaction(Context.Diags);
+          auto shouldSwallowDiagnostics =
+            conformance->getState() != ProtocolConformanceState::Incomplete;
+
+          checkConformance(conformance);
+          if (shouldSwallowDiagnostics)
+            transaction.abort();
+
+          return conformance->isComplete();
+        }
+      }
+    }
+
+    return false;
+  };
+
+  if (member.isSimpleName()) {
+    if (baseName.getIdentifier() == Context.Id_CodingKeys) {
+      // CodingKeys is a special type which may be synthesized as part of
+      // Encodable/Decodable conformance. If the target conforms to either
+      // protocol and would derive conformance to either, the type may be
+      // synthesized.
+      // If the target conforms to either and the conformance has not yet been
+      // evaluated, then we should do that here.
+      //
+      // Try to synthesize Decodable first. If that fails, try to synthesize
+      // Encodable. If either succeeds and CodingKeys should have been
+      // synthesized, it will be synthesized.
+      auto *decodableProto = Context.getProtocol(KnownProtocolKind::Decodable);
+      auto *encodableProto = Context.getProtocol(KnownProtocolKind::Encodable);
+      if (!evaluateTargetConformanceTo(decodableProto))
+        (void)evaluateTargetConformanceTo(encodableProto);
+    }
+  } else {
+    auto argumentNames = member.getArgumentNames();
+    if (argumentNames.size() != 1)
+      return;
+
+    auto argumentName = argumentNames.front();
+    if (baseName.getIdentifier() == Context.Id_init &&
+        argumentName == Context.Id_from) {
+      // init(from:) may be synthesized as part of derived conformance to the
+      // Decodable protocol.
+      // If the target should conform to the Decodable protocol, check the
+      // conformance here to attempt synthesis.
+      auto *decodableProto = Context.getProtocol(KnownProtocolKind::Decodable);
+      (void)evaluateTargetConformanceTo(decodableProto);
+    } else if (baseName.getIdentifier() == Context.Id_encode &&
+               argumentName == Context.Id_to) {
+      // encode(to:) may be synthesized as part of derived conformance to the
+      // Encodable protocol.
+      // If the target should conform to the Encodable protocol, check the
+      // conformance here to attempt synthesis.
+      auto *encodableProto = Context.getProtocol(KnownProtocolKind::Encodable);
+      (void)evaluateTargetConformanceTo(encodableProto);
+    }
   }
 }
 
@@ -8295,10 +8536,10 @@ void TypeChecker::addImplicitEnumConformances(EnumDecl *ED) {
     if (elt->getTypeCheckedRawValueExpr()) continue;
     Expr *typeChecked = elt->getRawValueExpr();
     Type rawTy = ED->mapTypeIntoContext(ED->getRawType());
-    bool error = typeCheckExpression(typeChecked, ED, 
-                                     TypeLoc::withoutLoc(rawTy),
-                                     CTP_EnumCaseRawValue);
-    assert(!error); (void)error;
+    auto resultTy = typeCheckExpression(
+        typeChecked, ED, TypeLoc::withoutLoc(rawTy), CTP_EnumCaseRawValue);
+    assert(resultTy);
+    (void)resultTy;
     elt->setTypeCheckedRawValueExpr(typeChecked);
     checkEnumElementErrorHandling(elt);
   }
@@ -8331,7 +8572,7 @@ void TypeChecker::defineDefaultConstructor(NominalTypeDecl *decl) {
       // tuple.
       bool foundDefaultConstructor = false;
       for (auto memberResult : ctors) {
-        auto member = memberResult.Decl;
+        auto member = memberResult.getValueDecl();
 
         // Dig out the parameter tuple for this constructor.
         auto ctor = dyn_cast<ConstructorDecl>(member);

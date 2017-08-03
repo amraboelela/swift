@@ -72,6 +72,10 @@ Lowering::TypeConverter &IRGenFunction::getSILTypes() const {
   return IGM.getSILTypes();
 }
 
+const IRGenOptions &IRGenFunction::getOptions() const {
+  return IGM.getOptions();
+}
+
 // Returns the default atomicity of the module.
 Atomicity IRGenFunction::getDefaultAtomicity() {
   return getSILModule().isDefaultAtomic() ? Atomicity::Atomic : Atomicity::NonAtomic;
@@ -100,8 +104,8 @@ void IRGenFunction::emitMemCpy(Address dest, Address src, llvm::Value *size) {
 }
 
 static llvm::Value *emitAllocatingCall(IRGenFunction &IGF,
-                                       llvm::Value *fn,
-                                       std::initializer_list<llvm::Value*> args,
+                                       llvm::Constant *fn,
+                                       ArrayRef<llvm::Value*> args,
                                        const llvm::Twine &name) {
   auto allocAttrs = IGF.IGM.getAllocAttrs();
   llvm::CallInst *call =
@@ -209,6 +213,20 @@ llvm::Value *IRGenFunction::emitProjectBoxCall(llvm::Value *box,
   return call;
 }
 
+llvm::Value *IRGenFunction::emitAllocEmptyBoxCall() {
+  llvm::Attribute::AttrKind attrKinds[] = {
+    llvm::Attribute::NoUnwind,
+  };
+  auto attrs = llvm::AttributeSet::get(IGM.LLVMContext,
+                                       llvm::AttributeSet::FunctionIndex,
+                                       attrKinds);
+  llvm::CallInst *call =
+    Builder.CreateCall(IGM.getAllocEmptyBoxFn(), {});
+  call->setCallingConv(IGM.DefaultCC);
+  call->setAttributes(attrs);
+  return call;
+}
+
 static void emitDeallocatingCall(IRGenFunction &IGF, llvm::Constant *fn,
                                  std::initializer_list<llvm::Value *> args) {
   auto cc = IGF.IGM.DefaultCC;
@@ -236,7 +254,18 @@ void IRGenFunction::emitTSanInoutAccessCall(llvm::Value *address) {
   llvm::Function *fn = cast<llvm::Function>(IGM.getTSanInoutAccessFn());
 
   llvm::Value *castAddress = Builder.CreateBitCast(address, IGM.Int8PtrTy);
-  Builder.CreateCall(fn, {castAddress});
+
+  // Passing 0 as the caller PC causes compiler-rt to get our PC.
+  llvm::Value *callerPC = llvm::ConstantPointerNull::get(IGM.Int8PtrTy);
+
+  // A magic number agreed upon with compiler-rt to indicate a modifying
+  // access.
+  const unsigned kExternalTagSwiftModifyingAccess = 0x1;
+  llvm::Value *tagValue =
+      llvm::ConstantInt::get(IGM.SizeTy, kExternalTagSwiftModifyingAccess);
+  llvm::Value *castTag = Builder.CreateIntToPtr(tagValue, IGM.Int8PtrTy);
+
+  Builder.CreateCall(fn, {castAddress, callerPC, castTag});
 }
 
 
@@ -342,4 +371,49 @@ void Explosion::print(llvm::raw_ostream &OS) {
 
 void Explosion::dump() {
   print(llvm::errs());
+}
+
+llvm::Value *Offset::getAsValue(IRGenFunction &IGF) const {
+  if (isStatic()) {
+    return IGF.IGM.getSize(getStatic());
+  } else {
+    return getDynamic();
+  }
+}
+
+Offset Offset::offsetBy(IRGenFunction &IGF, Offset other) const {
+  if (isStatic() && other.isStatic()) {
+    return Offset(getStatic() + other.getStatic());
+  }
+  return Offset(IGF.Builder.CreateAdd(getDynamic(), other.getDynamic()));
+}
+
+Address IRGenFunction::emitAddressAtOffset(llvm::Value *base, Offset offset,
+                                           llvm::Type *objectTy,
+                                           Alignment objectAlignment,
+                                           const llvm::Twine &name) {
+  // Use a slightly more obvious IR pattern if it's a multiple of the type
+  // size.  I'll confess that this is partly just to avoid updating tests.
+  if (offset.isStatic()) {
+    auto byteOffset = offset.getStatic();
+    Size objectSize(IGM.DataLayout.getTypeAllocSize(objectTy));
+    if (byteOffset.isMultipleOf(objectSize)) {
+      // Cast to T*.
+      auto objectPtrTy = objectTy->getPointerTo();
+      base = Builder.CreateBitCast(base, objectPtrTy);
+
+      // GEP to the slot, computing the index as a signed number.
+      auto scaledIndex =
+        int64_t(byteOffset.getValue()) / int64_t(objectSize.getValue());
+      auto indexValue = IGM.getSize(Size(scaledIndex));
+      auto slotPtr = Builder.CreateInBoundsGEP(base, indexValue);
+
+      return Address(slotPtr, objectAlignment);
+    }
+  }
+
+  // GEP to the slot.
+  auto offsetValue = offset.getAsValue(*this);
+  auto slotPtr = emitByteOffsetGEP(base, offsetValue, objectTy);
+  return Address(slotPtr, objectAlignment);
 }

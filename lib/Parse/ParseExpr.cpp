@@ -1474,8 +1474,10 @@ ParserResult<Expr> Parser::parseExprPostfix(Diag<> ID, bool isExprBasic) {
         peekToken().isNot(tok::period, tok::period_prefix, tok::l_paren)) {
       Identifier name;
       SourceLoc loc = consumeIdentifier(&name);
-      auto pattern = createBindingFromPattern(loc, name,
-                                              InVarOrLetPattern != IVOLP_InVar);
+      auto specifier = (InVarOrLetPattern != IVOLP_InVar)
+                     ? VarDecl::Specifier::Let
+                     : VarDecl::Specifier::Var;
+      auto pattern = createBindingFromPattern(loc, name, specifier);
       Result = makeParserResult(new (Context) UnresolvedPatternExpr(pattern));
       break;
     }
@@ -2065,7 +2067,14 @@ Expr *Parser::parseExprIdentifier() {
     auto refKind = DeclRefKind::Ordinary;
     E = new (Context) UnresolvedDeclRefExpr(name, refKind, loc);
   } else if (auto TD = dyn_cast<TypeDecl>(D)) {
-    E = TypeExpr::createForDecl(loc.getBaseNameLoc(), TD, /*implicit*/false);
+    // When parsing default argument expressions for generic functions,
+    // we haven't built a FuncDecl or re-parented the GenericTypeParamDecls
+    // to the FuncDecl yet. Other than that, we should only ever find
+    // global or local declarations here.
+    assert(!TD->getDeclContext()->isTypeContext() ||
+           isa<GenericTypeParamDecl>(TD));
+    E = TypeExpr::createForDecl(loc.getBaseNameLoc(), TD, /*DC*/nullptr,
+                                /*implicit*/false);
   } else {
     E = new (Context) DeclRefExpr(D, loc, /*Implicit=*/false);
   }
@@ -2131,6 +2140,42 @@ Expr *Parser::parseExprEditorPlaceholder(Token PlaceholderTok,
   return new (Context) EditorPlaceholderExpr(PlaceholderId,
                                              PlaceholderTok.getLoc(),
                                              TyLoc, ExpansionTyR);
+}
+
+// Extract names of the tuple elements and preserve the structure
+// of the tuple (with any nested tuples inside) to be able to use
+// it in the fix-it without any type information provided by user.
+static void printTupleNames(const TypeRepr *typeRepr, llvm::raw_ostream &OS) {
+  if (!typeRepr)
+    return;
+  
+  auto tupleRepr = dyn_cast<TupleTypeRepr>(typeRepr);
+  if (!tupleRepr)
+    return;
+  
+  OS << "(";
+  unsigned elementIndex = 0;
+  llvm::SmallVector<TypeRepr *, 10> elementTypes;
+  tupleRepr->getElementTypes(elementTypes);
+  interleave(elementTypes,
+             [&](const TypeRepr *element) {
+               if (isa<TupleTypeRepr>(element)) {
+                 printTupleNames(element, OS);
+               } else {
+                 auto name = tupleRepr->getElementName(elementIndex);
+                 // If there is no label from the element
+                 // it means that it's malformed and we can
+                 // use the type instead.
+                 if (name.empty())
+                   element->print(OS);
+                 else
+                   OS << name;
+               }
+               
+               ++elementIndex;
+             },
+             [&] { OS << ", "; });
+  OS << ")";
 }
 
 bool Parser::
@@ -2234,7 +2279,7 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
           if (!consumeIf(tok::r_paren))
             diagnose(Tok, diag::attr_unowned_expected_rparen);
         }
-      } else if (Tok.is(tok::identifier) &&
+      } else if (Tok.isAny(tok::identifier, tok::kw_self) &&
                  peekToken().isAny(tok::equal, tok::comma, tok::r_square)) {
         // "x = 42", "x," and "x]" are all strong captures of x.
         loc = Tok.getLoc();
@@ -2283,8 +2328,11 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
       // Create the VarDecl and the PatternBindingDecl for the captured
       // expression.  This uses the parent declcontext (not the closure) since
       // the initializer expression is evaluated before the closure is formed.
+      auto specifierKind = (ownershipKind != Ownership::Weak)
+                         ? VarDecl::Specifier::Let
+                         : VarDecl::Specifier::Var;
       auto *VD = new (Context) VarDecl(/*isStatic*/false,
-                                       /*isLet*/ownershipKind !=Ownership::Weak,
+                                       specifierKind,
                                        /*isCaptureList*/true,
                                        nameLoc, name, Type(), CurDeclContext);
 
@@ -2332,7 +2380,7 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
 
         Identifier name = Tok.is(tok::identifier) ?
             Context.getIdentifier(Tok.getText()) : Identifier();
-        auto var = new (Context) ParamDecl(/*IsLet*/ true, SourceLoc(),
+        auto var = new (Context) ParamDecl(VarDecl::Specifier::Owned, SourceLoc(),
                                            SourceLoc(), Identifier(),
                                            Tok.getLoc(), name, Type(), nullptr);
         elements.push_back(var);
@@ -2417,46 +2465,6 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
     return false;
   };
 
-  // Extract names of the tuple elements and preserve the structure
-  // of the tuple (with any nested tuples inside) to be able to use
-  // it in the fix-it without any type information provided by user.
-  std::function<StringRef(const TypeRepr *)> getTupleNames =
-      [&](const TypeRepr *typeRepr) -> StringRef {
-    if (!typeRepr)
-      return "";
-
-    auto tupleRepr = dyn_cast<TupleTypeRepr>(typeRepr);
-    if (!tupleRepr)
-      return "";
-
-    SmallString<32> names;
-    llvm::raw_svector_ostream OS(names);
-
-    OS << "(";
-    unsigned elementIndex = 0;
-    interleave(tupleRepr->getElements(),
-               [&](const TypeRepr *element) {
-                 if (isa<TupleTypeRepr>(element)) {
-                   OS << getTupleNames(element);
-                 } else {
-                   auto name = tupleRepr->getElementName(elementIndex);
-                   // If there is no label from the element
-                   // it means that it's malformed and we can
-                   // use the type instead.
-                   if (name.empty())
-                     element->print(OS);
-                   else
-                     OS << name;
-                 }
-
-                 ++elementIndex;
-               },
-               [&] { OS << ", "; });
-    OS << ")";
-
-    return OS.str();
-  };
-
   for (unsigned i = 0, e = params->size(); i != e; ++i) {
     auto *param = params->get(i);
     if (!isTupleDestructuring(param))
@@ -2472,8 +2480,9 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
     if (isMultiLine)
       OS << '\n' << indent;
 
-    OS << "let " << getTupleNames(typeLoc.getTypeRepr()) << " = " << argName
-       << (isMultiLine ? "\n" + indent : "; ");
+    OS << "let ";
+    printTupleNames(typeLoc.getTypeRepr(), OS);
+    OS << " = " << argName << (isMultiLine ? "\n" + indent : "; ");
 
     diagnose(param->getStartLoc(), diag::anon_closure_tuple_param_destructuring)
         .fixItReplace(param->getSourceRange(), argName)
@@ -2670,7 +2679,7 @@ Expr *Parser::parseExprAnonClosureArg() {
     StringRef varName = ("$" + Twine(nextIdx)).toStringRef(StrBuf);
     Identifier ident = Context.getIdentifier(varName);
     SourceLoc varLoc = leftBraceLoc;
-    auto *var = new (Context) ParamDecl(/*IsLet*/ true, SourceLoc(),SourceLoc(),
+    auto *var = new (Context) ParamDecl(VarDecl::Specifier::Owned, SourceLoc(),SourceLoc(),
                                         Identifier(), varLoc, ident, Type(),
                                         closure);
     var->setImplicit();

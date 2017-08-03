@@ -113,7 +113,7 @@ static ValueDecl *importNumericLiteral(ClangImporter::Implementation &Impl,
     auto clangTy = parsed->getType();
     auto literalType = Impl.importType(clangTy, ImportTypeKind::Value,
                                        isInSystemModule(DC),
-                                       /*isFullyBridgeable*/false);
+                                       Bridgeability::None);
     if (!literalType)
       return nullptr;
 
@@ -123,7 +123,7 @@ static ValueDecl *importNumericLiteral(ClangImporter::Implementation &Impl,
     } else {
       constantType = Impl.importType(castType, ImportTypeKind::Value,
                                      isInSystemModule(DC),
-                                     /*isFullyBridgeable*/false);
+                                     Bridgeability::None);
       if (!constantType)
         return nullptr;
     }
@@ -190,10 +190,6 @@ static ValueDecl *importStringLiteral(ClangImporter::Implementation &Impl,
                                       const clang::Token &tok,
                                       MappedStringLiteralKind kind,
                                       const clang::MacroInfo *ClangN) {
-  DeclContext *dc = Impl.getClangModuleForMacro(MI);
-  if (!dc)
-    return nullptr;
-
   assert(isStringToken(tok));
 
   clang::ActionResult<clang::Expr*> result =
@@ -209,7 +205,7 @@ static ValueDecl *importStringLiteral(ClangImporter::Implementation &Impl,
   if (!importTy)
     return nullptr;
 
-  return Impl.createConstant(name, dc, importTy, parsed->getString(),
+  return Impl.createConstant(name, DC, importTy, parsed->getString(),
                              ConstantConvertKind::Coerce, /*static*/ false,
                              ClangN);
 }
@@ -304,7 +300,7 @@ static Optional<std::pair<llvm::APSInt, Type>>
       auto type  = impl.importType(literal->getType(),
                                    ImportTypeKind::Value,
                                    isInSystemModule(DC),
-                                   /*isFullyBridgeable*/false);
+                                   Bridgeability::None);
       return {{ value, type }};
     }
 

@@ -21,11 +21,30 @@
 #include "swift/Basic/Statistic.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Format.h"
 
 using namespace swift;
 using namespace constraints;
 
 #define DEBUG_TYPE "ConstraintSystem"
+
+ExpressionTimer::~ExpressionTimer() {
+  auto elapsed = getElapsedProcessTimeInFractionalSeconds();
+  unsigned elapsedMS = static_cast<unsigned>(elapsed * 1000);
+
+  if (ShouldDump) {
+    // Round up to the nearest 100th of a millisecond.
+    llvm::errs() << llvm::format("%0.2f", ceil(elapsed * 100000) / 100)
+                 << "ms\t";
+    E->getLoc().print(llvm::errs(), Context.SourceMgr);
+    llvm::errs() << "\n";
+  }
+
+  if (WarnLimit != 0 && elapsedMS >= WarnLimit && E->getLoc().isValid())
+    Context.Diags.diagnose(E->getLoc(), diag::debug_long_expression,
+                           elapsedMS, WarnLimit)
+      .highlight(E->getSourceRange());
+}
 
 ConstraintSystem::ConstraintSystem(TypeChecker &tc, DeclContext *dc,
                                    ConstraintSystemOptions options)
@@ -109,7 +128,9 @@ bool ConstraintSystem::typeVarOccursInType(TypeVariableType *typeVar,
 
 void ConstraintSystem::assignFixedType(TypeVariableType *typeVar, Type type,
                                        bool updateState) {
-  
+  assert(!type->hasError() &&
+         "Should not be assigning a type involving ErrorType!");
+
   typeVar->getImpl().assignFixedType(type, getSavedBindings());
 
   if (!updateState)
@@ -228,7 +249,9 @@ LookupResult &ConstraintSystem::lookupMember(Type base, DeclName name) {
 
   // We are performing dynamic lookup. Filter out redundant results early.
   llvm::DenseSet<std::tuple<char, ObjCSelector, CanType>> known;
-  result->filter([&](ValueDecl *decl) -> bool {
+  result->filter([&](LookupResultEntry entry) -> bool {
+    auto *decl = entry.getValueDecl();
+
     if (decl->isInvalid())
       return false;
 
@@ -561,7 +584,8 @@ Type ConstraintSystem::getFixedTypeRecursive(Type type,
     if (auto parenTy = dyn_cast<ParenType>(type.getPointer())) {
       type = getFixedTypeRecursive(parenTy->getUnderlyingType(), flags,
                                    wantRValue, retainParens);
-      return ParenType::get(getASTContext(), type);
+      auto flags = parenTy->getParameterFlags().withInOut(type->is<InOutType>());
+      return ParenType::get(getASTContext(), type->getInOutObjectType(), flags);
     }
   }
 
@@ -653,7 +677,7 @@ Type TypeChecker::getUnopenedTypeOfReference(VarDecl *value, Type baseType,
                         ? value->getInterfaceType()
                         : value->getType());
 
-  requestedType = requestedType->getLValueOrInOutObjectType()
+  requestedType = requestedType->getWithoutSpecifierType()
     ->getReferenceStorageReferent();
 
   // If we're dealing with contextual types, and we referenced this type from
@@ -836,7 +860,7 @@ ConstraintSystem::getTypeOfReference(ValueDecl *value,
   // Unqualified reference to a type.
   if (auto typeDecl = dyn_cast<TypeDecl>(value)) {
     // Resolve the reference to this type declaration in our current context.
-    auto type = TC.resolveTypeInContext(typeDecl, DC,
+    auto type = TC.resolveTypeInContext(typeDecl, nullptr, DC,
                                         TR_InExpression,
                                         /*isSpecialized=*/false);
 
@@ -1027,6 +1051,9 @@ void ConstraintSystem::openGeneric(
       auto subjectTy = openType(req.getFirstType(), replacements);
       auto boundTy = openType(req.getSecondType(), replacements);
       addConstraint(ConstraintKind::Subtype, subjectTy, boundTy, locatorPtr);
+      addConstraint(ConstraintKind::ConformsTo, subjectTy,
+                    TC.Context.getAnyObjectType(),
+                    locatorPtr);
       break;
     }
 
@@ -1182,17 +1209,19 @@ ConstraintSystem::getTypeOfMemberReference(
 
     // If self is a value type and the base type is an lvalue, wrap it in an
     // inout type.
+    auto selfFlags = ParameterTypeFlags();
     if (!outerDC->getDeclaredTypeOfContext()->hasReferenceSemantics() &&
         baseTy->is<LValueType>() &&
         !selfTy->hasError())
-      selfTy = InOutType::get(selfTy);
+      selfFlags = selfFlags.withInOut(true);
 
     // If the storage is generic, add a generic signature.
+    auto selfParam = AnyFunctionType::Param(selfTy, Identifier(), selfFlags);
     if (auto *sig = innerDC->getGenericSignatureOfContext()) {
-      funcType = GenericFunctionType::get(sig, selfTy, refType,
+      funcType = GenericFunctionType::get(sig, {selfParam}, refType,
                                           AnyFunctionType::ExtInfo());
     } else {
-      funcType = FunctionType::get(selfTy, refType,
+      funcType = FunctionType::get({selfParam}, refType,
                                    AnyFunctionType::ExtInfo());
     }
   }
@@ -1250,16 +1279,11 @@ ConstraintSystem::getTypeOfMemberReference(
     // For a static member referenced through a metatype or an instance
     // member referenced through an instance, strip off the 'self'.
     type = openedFnType->getResult();
-  } else if (isDynamicResult && isa<AbstractFunctionDecl>(value)) {
-    // For a dynamic result referring to an instance function through
-    // an object of metatype type, replace the 'Self' parameter with
-    // a AnyObject member.
-    auto anyObjectTy = TC.Context.getAnyObjectType();
-    type = openedFnType->replaceSelfParameterType(anyObjectTy);
   } else {
     // For an unbound instance method reference, replace the 'Self'
     // parameter with the base type.
-    type = openedFnType->replaceSelfParameterType(baseObjTy);
+    openedType = openedFnType->replaceSelfParameterType(baseObjTy);
+    type = openedType;
   }
 
   // When accessing protocol members with an existential base, replace
@@ -1683,7 +1707,7 @@ Type simplifyTypeImpl(ConstraintSystem &cs, Type type, Fn getFixedTypeFn) {
 
       // FIXME: It's kind of weird in general that we have to look
       // through lvalue, inout and IUO types here
-      Type lookupBaseType = newBase->getLValueOrInOutObjectType();
+      Type lookupBaseType = newBase->getWithoutSpecifierType();
 
       auto *module = cs.DC->getParentModule();
 
@@ -1753,15 +1777,13 @@ Type Solution::simplifyType(Type type) const {
 }
 
 size_t Solution::getTotalMemory() const {
-  return sizeof(*this) +
-    typeBindings.getMemorySize() +
-    overloadChoices.getMemorySize() +
-    ConstraintRestrictions.getMemorySize() +
-    llvm::capacity_in_bytes(Fixes) +
-    DisjunctionChoices.getMemorySize() +
-    OpenedTypes.getMemorySize() +
-    OpenedExistentialTypes.getMemorySize() +
-    (DefaultedConstraints.size() * sizeof(void*));
+  return sizeof(*this) + typeBindings.getMemorySize() +
+         overloadChoices.getMemorySize() +
+         ConstraintRestrictions.getMemorySize() +
+         llvm::capacity_in_bytes(Fixes) + DisjunctionChoices.getMemorySize() +
+         OpenedTypes.getMemorySize() + OpenedExistentialTypes.getMemorySize() +
+         (DefaultedConstraints.size() * sizeof(void *)) +
+         llvm::capacity_in_bytes(Conformances);
 }
 
 DeclName OverloadChoice::getName() const {
@@ -1777,8 +1799,7 @@ DeclName OverloadChoice::getName() const {
       // don't currently pre-filter subscript overload sets by argument
       // keywords, so "subscript" is still the name that keypath subscripts
       // are looked up by.
-      auto &C = getBaseType()->getASTContext();
-      return DeclName(C.Id_subscript);
+      return DeclBaseName::createSubscript();
     }
     case OverloadChoiceKind::BaseType:
     case OverloadChoiceKind::TupleIndex:

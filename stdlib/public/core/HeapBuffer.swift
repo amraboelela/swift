@@ -13,12 +13,14 @@
 import SwiftShims
 typealias _HeapObject = SwiftShims.HeapObject
 
+@_versioned
 internal protocol _HeapBufferHeader_ {
   associatedtype Value
   init(_ value: Value)
   var value: Value { get set }
 }
 
+@_versioned
 internal struct _HeapBufferHeader<T> : _HeapBufferHeader_ {
   typealias Value = T
   init(_ value: T) { self.value = value }

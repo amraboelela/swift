@@ -1027,10 +1027,8 @@ namespace {
       auto intType = getDiscriminatorType();
 
       APInt intValue = IntegerLiteralExpr::getValue(intExpr->getDigitsText(),
-                                                    intType->getBitWidth());
-
-      if (intExpr->isNegative())
-        intValue = -intValue;
+                                                    intType->getBitWidth(),
+                                                    intExpr->isNegative());
 
       return intValue.getZExtValue();
     }
@@ -2921,7 +2919,7 @@ namespace {
     llvm::Function *emitConsumeEnumFunction(IRGenModule &IGM,
                                             EnumDecl *theEnum) {
       IRGenMangler Mangler;
-      std::string name = Mangler.mangleOutlinedCopyFunction(theEnum);
+      std::string name = Mangler.mangleOutlinedConsumeFunction(theEnum);
       auto func = createOutlineLLVMFunction(IGM, name, PayloadTypesAndTagType);
 
       IRGenFunction IGF(IGM, func);

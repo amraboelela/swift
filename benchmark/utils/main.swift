@@ -45,6 +45,7 @@ import DictTest
 import DictTest2
 import DictTest3
 import DictionaryBridge
+import DictionaryGroup
 import DictionaryLiteral
 import DictionaryRemove
 import DictionarySwap
@@ -52,9 +53,9 @@ import DropFirst
 import DropLast
 import DropWhile
 import ErrorHandling
+import Exclusivity
 import ExistentialPerformance
 import Fibonacci
-import GlobalClass
 import Hanoi
 import Hash
 import HashQuadratic
@@ -94,6 +95,7 @@ import RC4
 import RGBHistogram
 import RangeAssignment
 import RecursiveOwnedParameter
+import ReduceInto
 import ReversedCollections
 import SetTests
 import SevenBoom
@@ -170,6 +172,42 @@ addTo(&precommitTests, "CStringLongNonAscii", run_CStringLongNonAscii)
 addTo(&precommitTests, "CStringShortAscii", run_CStringShortAscii)
 addTo(&precommitTests, "Calculator", run_Calculator)
 addTo(&precommitTests, "CaptureProp", run_CaptureProp)
+addTo(&precommitTests, "CharIndexing_ascii_unicodeScalars", run_CharIndexing_ascii_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_ascii_unicodeScalars_Backwards", run_CharIndexing_ascii_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_chinese_unicodeScalars", run_CharIndexing_chinese_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_chinese_unicodeScalars_Backwards", run_CharIndexing_chinese_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_japanese_unicodeScalars", run_CharIndexing_japanese_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_japanese_unicodeScalars_Backwards", run_CharIndexing_japanese_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_korean_unicodeScalars", run_CharIndexing_korean_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_korean_unicodeScalars_Backwards", run_CharIndexing_korean_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_punctuatedJapanese_unicodeScalars", run_CharIndexing_punctuatedJapanese_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_punctuatedJapanese_unicodeScalars_Backwards", run_CharIndexing_punctuatedJapanese_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_punctuated_unicodeScalars", run_CharIndexing_punctuated_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_punctuated_unicodeScalars_Backwards", run_CharIndexing_punctuated_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_russian_unicodeScalars", run_CharIndexing_russian_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_russian_unicodeScalars_Backwards", run_CharIndexing_russian_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_tweet_unicodeScalars", run_CharIndexing_tweet_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_tweet_unicodeScalars_Backwards", run_CharIndexing_tweet_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIndexing_utf16_unicodeScalars", run_CharIndexing_utf16_unicodeScalars)
+addTo(&precommitTests, "CharIndexing_utf16_unicodeScalars_Backwards", run_CharIndexing_utf16_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_ascii_unicodeScalars", run_CharIteration_ascii_unicodeScalars)
+addTo(&precommitTests, "CharIteration_ascii_unicodeScalars_Backwards", run_CharIteration_ascii_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_chinese_unicodeScalars", run_CharIteration_chinese_unicodeScalars)
+addTo(&precommitTests, "CharIteration_chinese_unicodeScalars_Backwards", run_CharIteration_chinese_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_japanese_unicodeScalars", run_CharIteration_japanese_unicodeScalars)
+addTo(&precommitTests, "CharIteration_japanese_unicodeScalars_Backwards", run_CharIteration_japanese_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_korean_unicodeScalars", run_CharIteration_korean_unicodeScalars)
+addTo(&precommitTests, "CharIteration_korean_unicodeScalars_Backwards", run_CharIteration_korean_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_punctuatedJapanese_unicodeScalars", run_CharIteration_punctuatedJapanese_unicodeScalars)
+addTo(&precommitTests, "CharIteration_punctuatedJapanese_unicodeScalars_Backwards", run_CharIteration_punctuatedJapanese_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_punctuated_unicodeScalars", run_CharIteration_punctuated_unicodeScalars)
+addTo(&precommitTests, "CharIteration_punctuated_unicodeScalars_Backwards", run_CharIteration_punctuated_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_russian_unicodeScalars", run_CharIteration_russian_unicodeScalars)
+addTo(&precommitTests, "CharIteration_russian_unicodeScalars_Backwards", run_CharIteration_russian_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_tweet_unicodeScalars", run_CharIteration_tweet_unicodeScalars)
+addTo(&precommitTests, "CharIteration_tweet_unicodeScalars_Backwards", run_CharIteration_tweet_unicodeScalars_Backwards)
+addTo(&precommitTests, "CharIteration_utf16_unicodeScalars", run_CharIteration_utf16_unicodeScalars)
+addTo(&precommitTests, "CharIteration_utf16_unicodeScalars_Backwards", run_CharIteration_utf16_unicodeScalars_Backwards)
 addTo(&precommitTests, "CharacterLiteralsLarge", run_CharacterLiteralsLarge)
 addTo(&precommitTests, "CharacterLiteralsSmall", run_CharacterLiteralsSmall)
 addTo(&precommitTests, "Chars", run_Chars)
@@ -181,6 +219,8 @@ addTo(&precommitTests, "Dictionary2OfObjects", run_Dictionary2OfObjects)
 addTo(&precommitTests, "Dictionary3", run_Dictionary3)
 addTo(&precommitTests, "Dictionary3OfObjects", run_Dictionary3OfObjects)
 addTo(&precommitTests, "DictionaryBridge", run_DictionaryBridge)
+addTo(&precommitTests, "DictionaryGroup", run_DictionaryGroup)
+addTo(&precommitTests, "DictionaryGroupOfObjects", run_DictionaryGroupOfObjects)
 addTo(&precommitTests, "DictionaryLiteral", run_DictionaryLiteral)
 addTo(&precommitTests, "DictionaryOfObjects", run_DictionaryOfObjects)
 addTo(&precommitTests, "DictionaryRemove", run_DictionaryRemove)
@@ -234,7 +274,10 @@ addTo(&precommitTests, "EqualSubstringString", run_EqualSubstringString)
 addTo(&precommitTests, "EqualSubstringSubstring", run_EqualSubstringSubstring)
 addTo(&precommitTests, "EqualSubstringSubstringGenericEquatable", run_EqualSubstringSubstringGenericEquatable)
 addTo(&precommitTests, "ErrorHandling", run_ErrorHandling)
-addTo(&precommitTests, "GlobalClass", run_GlobalClass)
+addTo(&precommitTests, "FilterEvenUsingReduce", run_FilterEvenUsingReduce)
+addTo(&precommitTests, "FilterEvenUsingReduceInto", run_FilterEvenUsingReduceInto)
+addTo(&precommitTests, "FrequenciesUsingReduce", run_FrequenciesUsingReduce)
+addTo(&precommitTests, "FrequenciesUsingReduceInto", run_FrequenciesUsingReduceInto)
 addTo(&precommitTests, "Hanoi", run_Hanoi)
 addTo(&precommitTests, "HashTest", run_HashTest)
 addTo(&precommitTests, "Histogram", run_Histogram)
@@ -405,12 +448,17 @@ addTo(&precommitTests, "SuffixCountableRange", run_SuffixCountableRange)
 addTo(&precommitTests, "SuffixCountableRangeLazy", run_SuffixCountableRangeLazy)
 addTo(&precommitTests, "SuffixSequence", run_SuffixSequence)
 addTo(&precommitTests, "SuffixSequenceLazy", run_SuffixSequenceLazy)
+addTo(&precommitTests, "SumUsingReduce", run_SumUsingReduce)
+addTo(&precommitTests, "SumUsingReduceInto", run_SumUsingReduceInto)
 addTo(&precommitTests, "SuperChars", run_SuperChars)
 addTo(&precommitTests, "TwoSum", run_TwoSum)
 addTo(&precommitTests, "TypeFlood", run_TypeFlood)
 addTo(&precommitTests, "UTF8Decode", run_UTF8Decode)
 addTo(&precommitTests, "Walsh", run_Walsh)
 addTo(&precommitTests, "XorLoop", run_XorLoop)
+addTo(&precommitTests, "accessGlobal", run_accessGlobal)
+addTo(&precommitTests, "accessInMatSet", run_accessInMatSet)
+addTo(&precommitTests, "accessIndependent", run_accessIndependent)
 
 // Other tests
 addTo(&otherTests, "Ackermann", run_Ackermann)
@@ -534,6 +582,14 @@ addTo(&stringTests, "StringWalk_korean_characters", run_StringWalk_korean_charac
 addTo(&stringTests, "StringWalk_korean_characters_Backwards", run_StringWalk_korean_characters_Backwards)
 addTo(&stringTests, "StringWalk_korean_unicodeScalars", run_StringWalk_korean_unicodeScalars)
 addTo(&stringTests, "StringWalk_korean_unicodeScalars_Backwards", run_StringWalk_korean_unicodeScalars_Backwards)
+addTo(&stringTests, "StringWalk_punctuatedJapanese_characters", run_StringWalk_punctuatedJapanese_characters)
+addTo(&stringTests, "StringWalk_punctuatedJapanese_characters_Backwards", run_StringWalk_punctuatedJapanese_characters_Backwards)
+addTo(&stringTests, "StringWalk_punctuatedJapanese_unicodeScalars", run_StringWalk_punctuatedJapanese_unicodeScalars)
+addTo(&stringTests, "StringWalk_punctuatedJapanese_unicodeScalars_Backwards", run_StringWalk_punctuatedJapanese_unicodeScalars_Backwards)
+addTo(&stringTests, "StringWalk_punctuated_characters", run_StringWalk_punctuated_characters)
+addTo(&stringTests, "StringWalk_punctuated_characters_Backwards", run_StringWalk_punctuated_characters_Backwards)
+addTo(&stringTests, "StringWalk_punctuated_unicodeScalars", run_StringWalk_punctuated_unicodeScalars)
+addTo(&stringTests, "StringWalk_punctuated_unicodeScalars_Backwards", run_StringWalk_punctuated_unicodeScalars_Backwards)
 addTo(&stringTests, "StringWalk_russian_characters", run_StringWalk_russian_characters)
 addTo(&stringTests, "StringWalk_russian_characters_Backwards", run_StringWalk_russian_characters_Backwards)
 addTo(&stringTests, "StringWalk_russian_unicodeScalars", run_StringWalk_russian_unicodeScalars)

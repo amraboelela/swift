@@ -48,6 +48,7 @@ namespace llvm {
   class Function;
   class FunctionType;
   class GlobalVariable;
+  class InlineAsm;
   class IntegerType;
   class LLVMContext;
   class MDNode;
@@ -77,21 +78,12 @@ namespace swift {
   class ASTContext;
   class BraceStmt;
   class CanType;
-  class ClassDecl;
-  class ConstructorDecl;
-  class Decl;
-  class DestructorDecl;
-  class ExtensionDecl;
-  class FuncDecl;
   class LinkLibrary;
   class SILFunction;
-  class EnumElementDecl;
-  class EnumDecl;
   class IRGenOptions;
   class NormalProtocolConformance;
   class ProtocolConformance;
   class ProtocolCompositionType;
-  class ProtocolDecl;
   struct SILDeclRef;
   class SILGlobalVariable;
   class SILModule;
@@ -99,12 +91,7 @@ namespace swift {
   class SILWitnessTable;
   class SourceLoc;
   class SourceFile;
-  class StructDecl;
   class Type;
-  class TypeAliasDecl;
-  class TypeDecl;
-  class ValueDecl;
-  class VarDecl;
 
 namespace Lowering {
   class TypeConverter;
@@ -113,8 +100,10 @@ namespace Lowering {
 namespace irgen {
   class Address;
   class ClangTypeConverter;
+  class ClassMetadataLayout;
   class DebugTypeInfo;
   class EnumImplStrategy;
+  class EnumMetadataLayout;
   class ExplosionSchema;
   class FixedTypeInfo;
   class ForeignFunctionInfo;
@@ -124,8 +113,12 @@ namespace irgen {
   class IRGenFunction;
   class LinkEntity;
   class LoadableTypeInfo;
+  class MetadataLayout;
   class NecessaryBindings;
+  class NominalMetadataLayout;
   class ProtocolInfo;
+  class Signature;
+  class StructMetadataLayout;
   class TypeConverter;
   class TypeInfo;
   enum class ValueWitness : unsigned;
@@ -355,6 +348,9 @@ public:
     }
     return nullptr;
   }
+
+  /// Return the effective triple used by clang.
+  llvm::Triple getEffectiveClangTriple();
 };
 
 class ConstantReference {
@@ -393,11 +389,12 @@ public:
   llvm::Module &Module;
   llvm::LLVMContext &LLVMContext;
   const llvm::DataLayout DataLayout;
-  const llvm::Triple &Triple;
+  const llvm::Triple Triple;
   std::unique_ptr<llvm::TargetMachine> TargetMachine;
   ModuleDecl *getSwiftModule() const;
   Lowering::TypeConverter &getSILTypes() const;
   SILModule &getSILModule() const { return IRGen.SIL; }
+  const IRGenOptions &getOptions() const { return IRGen.Opts; }
   SILModuleConventions silConv;
 
   llvm::SmallString<128> OutputFilename;
@@ -503,8 +500,8 @@ public:
   llvm::CallingConv::ID SwiftCC;     /// swift calling convention
   bool UseSwiftCC;
 
-  llvm::FunctionType *getAssociatedTypeMetadataAccessFunctionTy();
-  llvm::FunctionType *getAssociatedTypeWitnessTableAccessFunctionTy();
+  Signature getAssociatedTypeMetadataAccessFunctionSignature();
+  Signature getAssociatedTypeWitnessTableAccessFunctionSignature();
   llvm::StructType *getGenericWitnessTableCacheTy();
 
   /// Get the bit width of an integer type for the target platform.
@@ -567,6 +564,7 @@ public:
 
   llvm::Type *getFixedBufferTy();
   llvm::Type *getValueWitnessTy(ValueWitness index);
+  Signature getValueWitnessSignature(ValueWitness index);
 
   void unimplemented(SourceLoc, StringRef Message);
   LLVM_ATTRIBUTE_NORETURN
@@ -645,7 +643,12 @@ public:
   ResilienceExpansion getResilienceExpansionForLayout(SILGlobalVariable *var);
 
   SpareBitVector getSpareBitsForType(llvm::Type *scalarTy, Size size);
-  
+
+  NominalMetadataLayout &getMetadataLayout(NominalTypeDecl *decl);
+  StructMetadataLayout &getMetadataLayout(StructDecl *decl);
+  ClassMetadataLayout &getMetadataLayout(ClassDecl *decl);
+  EnumMetadataLayout &getMetadataLayout(EnumDecl *decl);
+
 private:
   TypeConverter &Types;
   friend class TypeConverter;
@@ -654,6 +657,9 @@ private:
   ClangTypeConverter *ClangTypes;
   void initClangTypeConverter();
   void destroyClangTypeConverter();
+
+  llvm::DenseMap<Decl*, MetadataLayout*> MetadataLayouts;
+  void destroyMetadataLayoutMap();
 
   friend class GenericContextScope;
   
@@ -792,6 +798,7 @@ private:
 
   void emitGlobalLists();
   void emitAutolinkInfo();
+  void emitEnableReportErrorsToDebugger();
   void cleanupClangCodeGenMetadata();
 
 //--- Remote reflection metadata --------------------------------------------
@@ -862,7 +869,7 @@ public:
   llvm::Constant *getEmptyTupleMetadata();
   llvm::Constant *getObjCEmptyCachePtr();
   llvm::Constant *getObjCEmptyVTablePtr();
-  llvm::Value *getObjCRetainAutoreleasedReturnValueMarker();
+  llvm::InlineAsm *getObjCRetainAutoreleasedReturnValueMarker();
   ClassDecl *getObjCRuntimeBaseForSwiftRootClass(ClassDecl *theClass);
   ClassDecl *getObjCRuntimeBaseClass(Identifier name, Identifier objcName);
   llvm::Module *getModule() const;
@@ -874,7 +881,7 @@ private:
   llvm::Constant *ObjCEmptyCachePtr = nullptr;
   llvm::Constant *ObjCEmptyVTablePtr = nullptr;
   llvm::Constant *ObjCISAMaskPtr = nullptr;
-  Optional<llvm::Value*> ObjCRetainAutoreleasedReturnValueMarker;
+  Optional<llvm::InlineAsm*> ObjCRetainAutoreleasedReturnValueMarker;
   llvm::DenseMap<Identifier, ClassDecl*> SwiftRootClasses;
   llvm::AttributeSet AllocAttrs;
 
@@ -934,6 +941,7 @@ public:
   void finalizeClangCodeGen();
   void finishEmitAfterTopLevel();
 
+  Signature getSignature(CanSILFunctionType fnType);
   llvm::FunctionType *getFunctionType(CanSILFunctionType type,
                                       llvm::AttributeSet &attrs,
                                       ForeignFunctionInfo *foreignInfo=nullptr);

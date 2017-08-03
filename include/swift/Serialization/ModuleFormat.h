@@ -54,7 +54,7 @@ const uint16_t VERSION_MAJOR = 0;
 /// in source control, you should also update the comment to briefly
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
-const uint16_t VERSION_MINOR = 346; // Last change: dependency types for enums
+const uint16_t VERSION_MINOR = 354; // Last change: special destructor names
 
 using DeclID = PointerEmbeddedInt<unsigned, 31>;
 using DeclIDField = BCFixed<31>;
@@ -191,6 +191,16 @@ using CtorInitializerKindField = BCFixed<2>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
 // VERSION_MAJOR.
+enum class VarDeclSpecifier : uint8_t {
+  Let = 0,
+  Var,
+  InOut,
+  Shared,
+};
+using VarDeclSpecifierField = BCFixed<2>;
+  
+// These IDs must \em not be renumbered or reordered without incrementing
+// VERSION_MAJOR.
 enum class ParameterConvention : uint8_t {
   Indirect_In,
   Indirect_Inout,
@@ -227,7 +237,7 @@ enum class AddressorKind : uint8_t {
   NotAddressor, Unsafe, Owning, NativeOwning, NativePinning
 };
 using AddressorKindField = BCFixed<3>;
-
+  
 /// Translates an operator DeclKind to a Serialization fixity, whose values are
 /// guaranteed to be stable.
 static inline OperatorKind getStableFixity(DeclKind kind) {
@@ -333,18 +343,30 @@ using OptionalTypeKindField = BCFixed<2>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
 // VERSION_MAJOR.
-enum SpecialModuleID : uint8_t {
+enum class DeclNameKind: uint8_t {
+  Normal,
+  Subscript,
+  Destructor
+};
+
+// These IDs must \em not be renumbered or reordered without incrementing
+// VERSION_MAJOR.
+enum SpecialIdentifierID : uint8_t {
   /// Special IdentifierID value for the Builtin module.
   BUILTIN_MODULE_ID = 0,
   /// Special IdentifierID value for the current module.
   CURRENT_MODULE_ID,
   /// Special value for the module for imported Objective-C headers.
   OBJC_HEADER_MODULE_ID,
+  /// Special value for the special subscript name
+  SUBSCRIPT_ID,
+  /// Special value for the special destructor name
+  DESTRUCTOR_ID,
 
-  /// The number of special modules. This value should never be encoded;
+  /// The number of special Identifier IDs. This value should never be encoded;
   /// it should only be used to count the number of names above. As such, it
   /// is correct and necessary to add new values above this one.
-  NUM_SPECIAL_MODULES
+  NUM_SPECIAL_IDS
 };
 
 // These IDs must \em not be renumbered or reordered without incrementing
@@ -598,7 +620,9 @@ namespace decls_block {
     TypeIDField,        // inner type
     BCFixed<1>,         // vararg?
     BCFixed<1>,         // autoclosure?
-    BCFixed<1>          // escaping?
+    BCFixed<1>,         // escaping?
+    BCFixed<1>,         // inout?
+    BCFixed<1>          // shared?
   >;
 
   using TupleTypeLayout = BCRecordLayout<
@@ -611,7 +635,9 @@ namespace decls_block {
     TypeIDField,        // type
     BCFixed<1>,         // vararg?
     BCFixed<1>,         // autoclosure?
-    BCFixed<1>          // escaping?
+    BCFixed<1>,         // escaping?
+    BCFixed<1>,         // inout?
+    BCFixed<1>          // shared?
   >;
 
   using FunctionTypeLayout = BCRecordLayout<
@@ -874,7 +900,7 @@ namespace decls_block {
     BCFixed<1>,   // implicit?
     BCFixed<1>,   // explicitly objc?
     BCFixed<1>,   // static?
-    BCFixed<1>,   // isLet?
+    VarDeclSpecifierField,   // specifier
     BCFixed<1>,   // HasNonPatternBindingInit?
     StorageKindField,   // StorageKind
     TypeIDField,  // interface type
@@ -896,7 +922,7 @@ namespace decls_block {
     IdentifierIDField, // argument name
     IdentifierIDField, // parameter name
     DeclContextIDField,  // context decl
-    BCFixed<1>,   // isLet?
+    VarDeclSpecifierField,   // specifier
     TypeIDField  // interface type
   >;
 
@@ -1147,10 +1173,11 @@ namespace decls_block {
     DeclContextIDField, // the decl that provided this conformance
     BCVBR<5>, // value mapping count
     BCVBR<5>, // type mapping count
+    BCVBR<5>, // requirement signature conformance count
     BCArray<DeclIDField>
     // The array contains archetype-value pairs, then type declarations.
-    // Inherited conformances follow, then the substitution records for the
-    // associated types.
+    // Requirement signature conformances follow, then the substitution records
+    // for the associated types.
   >;
 
   using SpecializedProtocolConformanceLayout = BCRecordLayout<
@@ -1323,6 +1350,8 @@ namespace decls_block {
   using ImplementsDeclAttrLayout = BCRecordLayout<Implements_DECL_ATTR>;
   using ObjCRuntimeNameDeclAttrLayout
     = BCRecordLayout<ObjCRuntimeName_DECL_ATTR>;
+  using RestatedObjCConformanceDeclAttrLayout
+    = BCRecordLayout<RestatedObjCConformance_DECL_ATTR>;
 
   using InlineDeclAttrLayout = BCRecordLayout<
     Inline_DECL_ATTR,
@@ -1358,12 +1387,6 @@ namespace decls_block {
   >;
 
 #undef BC_AVAIL_TUPLE
-
-  using AutoClosureDeclAttrLayout = BCRecordLayout<
-    AutoClosure_DECL_ATTR,
-    BCFixed<1>, // implicit flag
-    BCFixed<1>  // escaping
-  >;
 
   using ObjCDeclAttrLayout = BCRecordLayout<
     ObjC_DECL_ATTR,

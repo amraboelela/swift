@@ -540,8 +540,17 @@ void ASTMangler::appendDeclName(const ValueDecl *decl) {
         break;
     }
   } else if (decl->hasName()) {
-    // TODO: Handle special names
-    appendIdentifier(decl->getBaseName().getIdentifier().str());
+    // FIXME: Should a mangled subscript name contain the string "subscript"?
+    switch (decl->getBaseName().getKind()) {
+    case DeclBaseName::Kind::Normal:
+      appendIdentifier(decl->getBaseName().getIdentifier().str());
+      break;
+    case DeclBaseName::Kind::Subscript:
+      appendIdentifier("subscript");
+      break;
+    case DeclBaseName::Kind::Destructor:
+      llvm_unreachable("Destructors are not mangled using appendDeclName");
+    }
   } else {
     assert(AllowNamelessEntities && "attempt to mangle unnamed decl");
     // Fall back to an unlikely name, so that we still generate a valid
@@ -885,9 +894,8 @@ void ASTMangler::appendType(Type type) {
       for (auto &field : layout->getFields()) {
         auto fieldTy = field.getLoweredType();
         // Use the `inout` mangling to represent a mutable field.
-        if (field.isMutable())
-          fieldTy = CanInOutType::get(fieldTy);
-        fieldsList.push_back(TupleTypeElt(fieldTy));
+        auto fieldFlag = ParameterTypeFlags().withInOut(field.isMutable());
+        fieldsList.push_back(TupleTypeElt(fieldTy, Identifier(), fieldFlag));
       }
       appendTypeList(TupleType::get(fieldsList, tybase->getASTContext())
                        ->getCanonicalType());
@@ -1426,12 +1434,24 @@ void ASTMangler::appendParams(Type ParamsTy, bool forceSingleParam) {
       return;
     }
     if (forceSingleParam && Tuple->getNumElements() > 1) {
+      auto flags = ParameterTypeFlags();
+      if (ParenType *Paren = dyn_cast<ParenType>(ParamsTy.getPointer())) {
+        ParamsTy = Paren->getUnderlyingType();
+        flags = Paren->getParameterFlags();
+      }
+
       appendType(ParamsTy);
+      if (flags.isShared())
+        appendOperator("h");
       appendListSeparator();
       appendOperator("t");
       return;
     }
   }
+
+  if (ParenType *Paren = dyn_cast<ParenType>(ParamsTy.getPointer()))
+    ParamsTy = Paren->getUnderlyingType();
+
   appendType(ParamsTy);
 }
 
@@ -1441,7 +1461,11 @@ void ASTMangler::appendTypeList(Type listTy) {
       return appendOperator("y");
     bool firstField = true;
     for (auto &field : tuple->getElements()) {
-      appendType(field.getType());
+      appendType(field.getType()->getInOutObjectType());
+      if (field.isInOut())
+        appendOperator("z");
+      if (field.getParameterFlags().isShared())
+        appendOperator("h");
       if (field.hasName())
         appendIdentifier(field.getName().str());
       if (field.isVararg())
@@ -1673,7 +1697,8 @@ CanType ASTMangler::getDeclTypeForMangling(
   auto &C = decl->getASTContext();
   if (!decl->hasInterfaceType() || decl->getInterfaceType()->is<ErrorType>()) {
     if (isa<AbstractFunctionDecl>(decl))
-      return CanFunctionType::get(C.TheErrorType, C.TheErrorType);
+      return CanFunctionType::get({AnyFunctionType::Param(C.TheErrorType)},
+                                  C.TheErrorType, AnyFunctionType::ExtInfo());
     return C.TheErrorType;
   }
 
@@ -1687,7 +1712,7 @@ CanType ASTMangler::getDeclTypeForMangling(
     genericParams = sig->getGenericParams();
     requirements = sig->getRequirements();
 
-    type = CanFunctionType::get(gft.getInput(), gft.getResult(),
+    type = CanFunctionType::get(gft->getParams(), gft.getResult(),
                                 gft->getExtInfo());
   } else {
     genericParams = {};

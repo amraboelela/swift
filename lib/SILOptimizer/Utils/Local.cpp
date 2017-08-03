@@ -9,6 +9,7 @@
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 //===----------------------------------------------------------------------===//
+
 #include "swift/SILOptimizer/Utils/Local.h"
 #include "swift/SILOptimizer/Utils/CFG.h"
 #include "swift/SILOptimizer/Analysis/Analysis.h"
@@ -23,6 +24,7 @@
 #include "swift/SIL/TypeLowering.h"
 #include "swift/SIL/DebugUtils.h"
 #include "swift/SIL/InstructionUtils.h"
+#include "swift/SIL/BasicBlockUtils.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -891,67 +893,117 @@ static bool useDoesNotKeepClosureAlive(const SILInstruction *I) {
   }
 }
 
-void swift::releasePartialApplyCapturedArg(SILBuilder &Builder, SILLocation Loc,
-                                           SILValue Arg, SILParameterInfo PInfo,
-                                           InstModCallbacks Callbacks) {
+static SILValue createLifetimeExtendedAllocStack(
+    SILBuilder &Builder, SILLocation Loc, SILValue Arg,
+    ArrayRef<SILBasicBlock *> ExitingBlocks, InstModCallbacks Callbacks) {
+  AllocStackInst *ASI = nullptr;
+  {
+    // Save our insert point and create a new alloc_stack in the initial BB and
+    // dealloc_stack in all exit blocks.
+    auto *OldInsertPt = &*Builder.getInsertionPoint();
+    Builder.setInsertionPoint(Builder.getFunction().begin()->begin());
+    ASI = Builder.createAllocStack(Loc, Arg->getType());
+    Callbacks.CreatedNewInst(ASI);
+
+    for (auto *BB : ExitingBlocks) {
+      Builder.setInsertionPoint(BB->getTerminator());
+      Callbacks.CreatedNewInst(Builder.createDeallocStack(Loc, ASI));
+    }
+    Builder.setInsertionPoint(OldInsertPt);
+  }
+  assert(ASI != nullptr);
+
+  // Then perform a copy_addr [take] [init] right after the partial_apply from
+  // the original address argument to the new alloc_stack that we have
+  // created.
+  Callbacks.CreatedNewInst(
+      Builder.createCopyAddr(Loc, Arg, ASI, IsTake, IsInitialization));
+
+  // Return the new alloc_stack inst that has the appropriate live range to
+  // destroy said values.
+  return ASI;
+}
+
+static bool shouldDestroyPartialApplyCapturedArg(SILValue Arg,
+                                                 SILParameterInfo PInfo,
+                                                 SILModule &M) {
   // If we have a non-trivial type and the argument is passed in @inout, we do
   // not need to destroy it here. This is something that is implicit in the
   // partial_apply design that will be revisited when partial_apply is
   // redesigned.
   if (PInfo.isIndirectMutating())
+    return false;
+
+  // If we have a trivial type, we do not need to put in any extra releases.
+  if (Arg->getType().isTrivial(M))
+    return false;
+
+  // We handle all other cases.
+  return true;
+}
+
+// *HEY YOU, YES YOU, PLEASE READ*. Even though a textual partial apply is
+// printed with the convention of the closed over function upon it, all
+// non-inout arguments to a partial_apply are passed at +1. This includes
+// arguments that will eventually be passed as guaranteed or in_guaranteed to
+// the closed over function. This is because the partial apply is building up a
+// boxed aggregate to send off to the closed over function. Of course when you
+// call the function, the proper conventions will be used.
+void swift::releasePartialApplyCapturedArg(SILBuilder &Builder, SILLocation Loc,
+                                           SILValue Arg, SILParameterInfo PInfo,
+                                           InstModCallbacks Callbacks) {
+  if (!shouldDestroyPartialApplyCapturedArg(Arg, PInfo, Builder.getModule()))
     return;
 
-  if (isa<AllocStackInst>(Arg)) {
+  // Otherwise, we need to destroy the argument. If we have an address, we
+  // insert a destroy_addr and return. Any live range issues must have been
+  // dealt with by our caller.
+  if (Arg->getType().isAddress()) {
+    // Then emit the destroy_addr for this arg
+    SILInstruction *NewInst = Builder.emitDestroyAddrAndFold(Loc, Arg);
+    Callbacks.CreatedNewInst(NewInst);
     return;
   }
 
-  // If we have a trivial type, we do not need to put in any extra releases.
-  if (Arg->getType().isTrivial(Builder.getModule()))
+  // Otherwise, we have an object. We emit the most optimized form of release
+  // possible for that value.
+
+  // If we have qualified ownership, we should just emit a destroy value.
+  if (Arg->getFunction()->hasQualifiedOwnership()) {
+    Callbacks.CreatedNewInst(Builder.createDestroyValue(Loc, Arg));
     return;
+  }
 
-  // Otherwise, we need to destroy the argument.
-  if (Arg->getType().isObject()) {
-    // If we have qualified ownership, we should just emit a destroy value.
-    if (Arg->getFunction()->hasQualifiedOwnership()) {
-      Callbacks.CreatedNewInst(Builder.createDestroyValue(Loc, Arg));
-      return;
-    }
-
-    if (Arg->getType().hasReferenceSemantics()) {
-      auto U = Builder.emitStrongRelease(Loc, Arg);
-      if (U.isNull())
-        return;
-
-      if (auto *SRI = U.dyn_cast<StrongRetainInst *>()) {
-        Callbacks.DeleteInst(SRI);
-        return;
-      }
-
-      Callbacks.CreatedNewInst(U.get<StrongReleaseInst *>());
-      return;
-    }
-
-    auto U = Builder.emitReleaseValue(Loc, Arg);
+  if (Arg->getType().hasReferenceSemantics()) {
+    auto U = Builder.emitStrongRelease(Loc, Arg);
     if (U.isNull())
       return;
 
-    if (auto *RVI = U.dyn_cast<RetainValueInst *>()) {
-      Callbacks.DeleteInst(RVI);
+    if (auto *SRI = U.dyn_cast<StrongRetainInst *>()) {
+      Callbacks.DeleteInst(SRI);
       return;
     }
 
-    Callbacks.CreatedNewInst(U.get<ReleaseValueInst *>());
+    Callbacks.CreatedNewInst(U.get<StrongReleaseInst *>());
     return;
   }
 
-  SILInstruction *NewInst = Builder.emitDestroyAddrAndFold(Loc, Arg);
-  Callbacks.CreatedNewInst(NewInst);
+  auto U = Builder.emitReleaseValue(Loc, Arg);
+  if (U.isNull())
+    return;
+
+  if (auto *RVI = U.dyn_cast<RetainValueInst *>()) {
+    Callbacks.DeleteInst(RVI);
+    return;
+  }
+
+  Callbacks.CreatedNewInst(U.get<ReleaseValueInst *>());
 }
 
 /// For each captured argument of PAI, decrement the ref count of the captured
 /// argument as appropriate at each of the post dominated release locations
 /// found by Tracker.
-static void releaseCapturedArgsOfDeadPartialApply(PartialApplyInst *PAI,
+static bool releaseCapturedArgsOfDeadPartialApply(PartialApplyInst *PAI,
                                                   ReleaseTracker &Tracker,
                                                   InstModCallbacks Callbacks) {
   SILBuilderWithScope Builder(PAI);
@@ -959,22 +1011,60 @@ static void releaseCapturedArgsOfDeadPartialApply(PartialApplyInst *PAI,
   CanSILFunctionType PAITy =
       PAI->getCallee()->getType().getAs<SILFunctionType>();
 
-  // Emit a destroy value for each captured closure argument.
   ArrayRef<SILParameterInfo> Params = PAITy->getParameters();
-  auto Args = PAI->getArguments();
+  llvm::SmallVector<SILValue, 8> Args;
+  for (SILValue v : PAI->getArguments()) {
+    // If any of our arguments contain open existentials, bail. We do not
+    // support this for now so that we can avoid having to re-order stack
+    // locations (a larger change).
+    if (v->getType().hasOpenedExistential())
+      return false;
+    Args.emplace_back(v);
+  }
   unsigned Delta = Params.size() - Args.size();
   assert(Delta <= Params.size() && "Error, more Args to partial apply than "
                                    "params in its interface.");
+  Params = Params.drop_front(Delta);
 
+  llvm::SmallVector<SILBasicBlock *, 2> ExitingBlocks;
+  PAI->getFunction()->findExitingBlocks(ExitingBlocks);
+
+  // Go through our argument list and create new alloc_stacks for each
+  // non-trivial address value. This ensures that the memory location that we
+  // are cleaning up has the same live range as the partial_apply. Otherwise, we
+  // may be inserting destroy_addr of alloc_stack that have already been passed
+  // to a dealloc_stack.
+  for (unsigned i : reversed(indices(Args))) {
+    SILValue Arg = Args[i];
+    SILParameterInfo PInfo = Params[i];
+
+    // If we are not going to destroy this partial_apply, continue.
+    if (!shouldDestroyPartialApplyCapturedArg(Arg, PInfo, Builder.getModule()))
+      continue;
+
+    // If we have an object, we will not have live range issues, just continue.
+    if (Arg->getType().isObject())
+      continue;
+
+    // Now that we know that we have a non-argument address, perform a take-init
+    // of Arg into a lifetime extended alloc_stack
+    Args[i] = createLifetimeExtendedAllocStack(Builder, Loc, Arg, ExitingBlocks,
+                                               Callbacks);
+  }
+
+  // Emit a destroy for each captured closure argument at each final release
+  // point.
   for (auto *FinalRelease : Tracker.getFinalReleases()) {
     Builder.setInsertionPoint(FinalRelease);
-    for (unsigned AI = 0, AE = Args.size(); AI != AE; ++AI) {
-      SILValue Arg = Args[AI];
-      SILParameterInfo Param = Params[AI + Delta];
+    for (unsigned i : indices(Args)) {
+      SILValue Arg = Args[i];
+      SILParameterInfo Param = Params[i];
 
       releasePartialApplyCapturedArg(Builder, Loc, Arg, Param, Callbacks);
     }
   }
+
+  return true;
 }
 
 /// TODO: Generalize this to general objects.
@@ -999,8 +1089,12 @@ bool swift::tryDeleteDeadClosure(SILInstruction *Closure,
 
   // If we have a partial_apply, release each captured argument at each one of
   // the final release locations of the partial apply.
-  if (auto *PAI = dyn_cast<PartialApplyInst>(Closure))
-    releaseCapturedArgsOfDeadPartialApply(PAI, Tracker, Callbacks);
+  if (auto *PAI = dyn_cast<PartialApplyInst>(Closure)) {
+    // If we can not decrement the ref counts of the dead partial apply for any
+    // reason, bail.
+    if (!releaseCapturedArgsOfDeadPartialApply(PAI, Tracker, Callbacks))
+      return false;
+  }
 
   // Then delete all user instructions.
   for (auto *User : Tracker.getTrackedUsers()) {
@@ -1025,6 +1119,7 @@ void ValueLifetimeAnalysis::propagateLiveness() {
 
   auto DefBB = DefValue->getParentBlock();
   llvm::SmallVector<SILBasicBlock *, 64> Worklist;
+  int NumUsersBeforeDef = 0;
 
   // Find the initial set of blocks where the value is live, because
   // it is used in those blocks.
@@ -1032,6 +1127,17 @@ void ValueLifetimeAnalysis::propagateLiveness() {
     SILBasicBlock *UserBlock = User->getParent();
     if (LiveBlocks.insert(UserBlock))
       Worklist.push_back(UserBlock);
+
+    // A user in the DefBB could potentially be located before the DefValue.
+    if (UserBlock == DefBB)
+      NumUsersBeforeDef++;
+  }
+  // Don't count any users in the DefBB which are actually located _after_
+  // the DefValue.
+  auto InstIter = DefValue->getIterator();
+  while (NumUsersBeforeDef > 0 && ++InstIter != DefBB->end()) {
+    if (UserSet.count(&*InstIter))
+      NumUsersBeforeDef--;
   }
 
   // Now propagate liveness backwards until we hit the block that defines the
@@ -1040,7 +1146,7 @@ void ValueLifetimeAnalysis::propagateLiveness() {
     auto *BB = Worklist.pop_back_val();
 
     // Don't go beyond the definition.
-    if (BB == DefBB)
+    if (BB == DefBB && NumUsersBeforeDef == 0)
       continue;
 
     for (SILBasicBlock *Pred : BB->getPredecessorBlocks()) {
@@ -1063,7 +1169,11 @@ SILInstruction *ValueLifetimeAnalysis:: findLastUserInBlock(SILBasicBlock *BB) {
   llvm_unreachable("Expected to find use of value in block!");
 }
 
-bool ValueLifetimeAnalysis::computeFrontier(Frontier &Fr, Mode mode) {
+bool ValueLifetimeAnalysis::computeFrontier(Frontier &Fr, Mode mode,
+                                            DeadEndBlocks *DEBlocks) {
+  assert(!isAliveAtBeginOfBlock(DefValue->getFunction()->getEntryBlock()) &&
+         "Can't compute frontier for def which does not dominate all uses");
+
   bool NoCriticalEdges = true;
 
   // Exit-blocks from the lifetime region. The value is live at the end of
@@ -1076,12 +1186,15 @@ bool ValueLifetimeAnalysis::computeFrontier(Frontier &Fr, Mode mode) {
 
   /// The lifetime ends if we have a live block and a not-live successor.
   for (SILBasicBlock *BB : LiveBlocks) {
+    if (DEBlocks && DEBlocks->isDeadEnd(BB))
+      continue;
+
     bool LiveInSucc = false;
     bool DeadInSucc = false;
     for (const SILSuccessor &Succ : BB->getSuccessors()) {
       if (isAliveAtBeginOfBlock(Succ)) {
         LiveInSucc = true;
-      } else {
+      } else if (!DEBlocks || !DEBlocks->isDeadEnd(Succ)) {
         DeadInSucc = true;
       }
     }
@@ -1098,7 +1211,10 @@ bool ValueLifetimeAnalysis::computeFrontier(Frontier &Fr, Mode mode) {
       // frontier (see below).
       assert(DeadInSucc && "The final using TermInst must have successors");
     }
-    if (DeadInSucc && mode != IgnoreExitEdges) {
+    if (DeadInSucc) {
+      if (mode == UsersMustPostDomDef)
+        return false;
+
       // The value is not live in some of the successor blocks.
       LiveOutBlocks.insert(BB);
       for (const SILSuccessor &Succ : BB->getSuccessors()) {
@@ -1112,6 +1228,7 @@ bool ValueLifetimeAnalysis::computeFrontier(Frontier &Fr, Mode mode) {
   // Handle "exit" edges from the lifetime region.
   llvm::SmallPtrSet<SILBasicBlock *, 16> UnhandledFrontierBlocks;
   for (SILBasicBlock *FrontierBB: FrontierBlocks) {
+    assert(mode != UsersMustPostDomDef);
     bool needSplit = false;
     // If the value is live only in part of the predecessor blocks we have to
     // split those predecessor edges.
@@ -1134,6 +1251,7 @@ bool ValueLifetimeAnalysis::computeFrontier(Frontier &Fr, Mode mode) {
   // Split critical edges from the lifetime region to not yet handled frontier
   // blocks.
   for (SILBasicBlock *FrontierPred : LiveOutBlocks) {
+    assert(mode != UsersMustPostDomDef);
     auto *T = FrontierPred->getTerminator();
     // Cache the successor blocks because splitting critical edges invalidates
     // the successor list iterator of T.
@@ -1143,6 +1261,7 @@ bool ValueLifetimeAnalysis::computeFrontier(Frontier &Fr, Mode mode) {
 
     for (unsigned i = 0, e = SuccBlocks.size(); i != e; ++i) {
       if (UnhandledFrontierBlocks.count(SuccBlocks[i])) {
+        assert(mode == AllowToModifyCFG);
         assert(isCriticalEdge(T, i) && "actually not a critical edge?");
         SILBasicBlock *NewBlock = splitEdge(T, i);
         // The single terminator instruction is part of the frontier.
@@ -1865,6 +1984,10 @@ simplifyCheckedCastAddrBranchInst(CheckedCastAddrBranchInst *Inst) {
     // The unconditional_addr_cast can be skipped, if the result of a cast
     // is not used afterwards.
     if (ResultNotUsed) {
+      if (shouldTakeOnSuccess(Inst->getConsumptionKind())) {
+        auto &srcTL = Builder.getModule().getTypeLowering(Src->getType());
+        srcTL.emitDestroyAddress(Builder, Loc, Src);
+      }
       EraseInstAction(Inst);
       Builder.setInsertionPoint(BB);
       auto *NewI = Builder.createBranch(Loc, SuccessBB);

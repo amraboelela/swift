@@ -176,8 +176,6 @@
 using namespace swift;
 using namespace Lowering;
 
-namespace {
-
 static std::string
 getMaterializeForSetCallbackName(ProtocolConformance *conformance,
                                  FuncDecl *requirement) {
@@ -208,6 +206,8 @@ getMaterializeForSetCallbackName(ProtocolConformance *conformance,
   return Mangler.mangleClosureEntity(&closure,
                                  Mangle::ASTMangler::SymbolKind::Default);
 }
+
+namespace {
 
 /// A helper class for emitting materializeForSet.
 ///
@@ -426,7 +426,6 @@ public:
     // substituted type isn't a reference type, then we can't have a
     // class-bounded protocol or inheritance, and the simple case just
     // works.
-    AbstractionPattern selfPattern(SubstSelfType);
 
     // Metatypes and bases of non-mutating setters on value types
     //  are always rvalues.
@@ -435,13 +434,23 @@ public:
     }
 
     CanType witnessSelfType =
-      Witness->computeInterfaceSelfType()->getCanonicalType(
+      computeSelfParam(Witness).getType()->getCanonicalType(
         GenericSig, *SGM.M.getSwiftModule());
     witnessSelfType = getSubstWitnessInterfaceType(witnessSelfType);
-    witnessSelfType = witnessSelfType->getInOutObjectType()
-      ->getCanonicalType();
 
-    // Eagerly loading here could cause an unnecessary
+    // Get the inout object type, but remember whether we needed to.
+    auto witnessSelfInOutType = dyn_cast<InOutType>(witnessSelfType);
+    if (witnessSelfInOutType)
+      witnessSelfType = witnessSelfInOutType.getObjectType();
+
+    // If the witness wants an inout and the types match, just use
+    // this value.
+    if (witnessSelfInOutType && witnessSelfType == SubstSelfType) {
+      return LValue::forValue(self, witnessSelfType);
+    }
+
+    // Otherwise, load and do a derived-to-base conversion.
+    // It's possible that this could cause an unnecessary
     // load+materialize in some cases, but it's not really important.
     if (self.getType().isAddress()) {
       self = gen.B.createLoadBorrow(loc, self);
@@ -451,6 +460,11 @@ public:
     if (witnessSelfType != SubstSelfType) {
       auto selfSILType = gen.getLoweredType(witnessSelfType);
       self = gen.B.createUpcast(loc, self, selfSILType);
+    }
+
+    // Put the object back in memory if necessary.
+    if (witnessSelfInOutType) {
+      self = self.materialize(gen, loc);
     }
 
     // Recreate as a borrowed value.
@@ -467,7 +481,8 @@ public:
       WitnessStorage->getAccessStrategy(TheAccessSemantics, accessKind);
 
     // Drill down to the member storage.
-    lv.addMemberComponent(gen, loc, WitnessStorage, WitnessSubs, IsSuper,
+    lv.addMemberComponent(gen, loc, WitnessStorage, WitnessSubs,
+                          LValueOptions(), IsSuper,
                           accessKind, TheAccessSemantics, strategy,
                           SubstStorageType, std::move(indices));
 
@@ -681,12 +696,12 @@ SILFunction *MaterializeForSetEmitter::createCallback(SILFunction &F,
   // the actual materializeForSet function), and so we only need to make sure we
   // don't break things in cases when there may be multiple definitions.
   auto callbackLinkage =
-      hasSharedVisibility(Linkage) ? SILLinkage::Shared : SILLinkage::Private;
+      F.isSerialized() ? SILLinkage::Shared : SILLinkage::Private;
 
   auto callback = SGM.M.createFunction(
       callbackLinkage, CallbackName, callbackType, genericEnv,
-      SILLocation(Witness), IsBare, F.isTransparent(), F.isSerialized(),
-      IsNotThunk, SubclassScope::NotApplicable,
+      SILLocation(Witness), IsBare, F.isTransparent(), F.isSerialized(), IsNotThunk,
+      SubclassScope::NotApplicable,
       /*inlineStrategy=*/InlineDefault,
       /*EK=*/EffectsKind::Unspecified,
       /*InsertBefore=*/&F);

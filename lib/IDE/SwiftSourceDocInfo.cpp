@@ -185,6 +185,21 @@ bool SemaLocResolver::walkToExprPre(Expr *E) {
         ContainerType = ME->getBase()->getType();
       }
     }
+
+    // Keep track of trailing expressions.
+    if (!E->isImplicit() && E->getStartLoc() == LocToResolve)
+      TrailingExprStack.push_back(E);
+  }
+  return true;
+}
+
+bool SemaLocResolver::walkToExprPost(Expr *E) {
+  if (isDone())
+    return false;
+  if (!TrailingExprStack.empty() && TrailingExprStack.back() == E) {
+    // We return the outtermost expression in the token info.
+    SemaTok = { TrailingExprStack.front() };
+    return false;
   }
   return true;
 }
@@ -227,7 +242,7 @@ void ResolvedRangeInfo::print(llvm::raw_ostream &OS) {
   }
   OS << "</Kind>\n";
 
-  OS << "<Content>" << Content.str() << "</Content>\n";
+  OS << "<Content>" << ContentRange.str() << "</Content>\n";
 
   if (auto Ty = getType()) {
     OS << "<Type>";
@@ -277,7 +292,7 @@ void ResolvedRangeInfo::print(llvm::raw_ostream &OS) {
   }
 
   for (auto &VD : DeclaredDecls) {
-    OS << "<Declared>" << VD.VD->getNameStr() << "</Declared>";
+    OS << "<Declared>" << VD.VD->getBaseName() << "</Declared>";
     OS << "<OutscopeReference>";
     if (VD.ReferredAfterRange)
       OS << "true";
@@ -286,7 +301,7 @@ void ResolvedRangeInfo::print(llvm::raw_ostream &OS) {
     OS << "</OutscopeReference>\n";
   }
   for (auto &RD : ReferencedDecls) {
-    OS << "<Referenced>" << RD.VD->getNameStr() << "</Referenced>";
+    OS << "<Referenced>" << RD.VD->getBaseName() << "</Referenced>";
     OS << "<Type>";
     RD.Ty->print(OS);
     OS << "</Type>\n";
@@ -294,6 +309,19 @@ void ResolvedRangeInfo::print(llvm::raw_ostream &OS) {
 
   OS << "<ASTNodes>" << ContainedNodes.size() << "</ASTNodes>\n";
   OS << "<end>\n";
+}
+
+CharSourceRange ResolvedRangeInfo::
+calculateContentRange(ArrayRef<Token> Tokens) {
+  if (Tokens.empty())
+    return CharSourceRange();
+  auto StartTok = Tokens.front();
+  auto EndTok = Tokens.back();
+  auto StartLoc = StartTok.hasComment() ?
+    StartTok.getCommentStart() : StartTok.getLoc();
+  auto EndLoc = EndTok.getRange().getEnd();
+  return CharSourceRange(StartLoc, (char*)EndLoc.getOpaquePointerValue() -
+    (char*)StartLoc.getOpaquePointerValue());
 }
 
 bool DeclaredDecl::operator==(const DeclaredDecl& Other) {
@@ -393,12 +421,11 @@ private:
     }
   };
 
-  std::vector<Token> AllTokens;
-  Token &StartTok;
-  Token &EndTok;
+
+  std::vector<Token> TokensInRange;
   SourceLoc Start;
   SourceLoc End;
-  CharSourceRange Content;
+
   Optional<ResolvedRangeInfo> Result;
   std::vector<ContextInfo> ContextStack;
   ContextInfo &getCurrentDC() {
@@ -481,7 +508,7 @@ private:
     if (Node.is<Expr*>())
       return ResolvedRangeInfo(RangeKind::SingleExpression,
                                resolveNodeType(Node, RangeKind::SingleExpression),
-                               Content,
+                               TokensInRange,
                                getImmediateContext(),
                                /*Common Parent Expr*/nullptr,
                                SingleEntry,
@@ -492,7 +519,8 @@ private:
     else if (Node.is<Stmt*>())
       return ResolvedRangeInfo(RangeKind::SingleStatement,
                                resolveNodeType(Node, RangeKind::SingleStatement),
-                               Content, getImmediateContext(),
+                               TokensInRange,
+                               getImmediateContext(),
                                /*Common Parent Expr*/nullptr,
                                SingleEntry,
                                UnhandledError, Kind,
@@ -502,7 +530,8 @@ private:
     else {
       assert(Node.is<Decl*>());
       return ResolvedRangeInfo(RangeKind::SingleDecl,
-                               ReturnInfo(), Content,
+                               ReturnInfo(),
+                               TokensInRange,
                                getImmediateContext(),
                                /*Common Parent Expr*/nullptr,
                                SingleEntry,
@@ -529,12 +558,11 @@ private:
     return static_cast<DeclContext*>(&File);
   }
 
-  Implementation(SourceFile &File, std::vector<Token> AllTokens,
-                 unsigned StartIdx, unsigned EndIdx) :
+  Implementation(SourceFile &File, ArrayRef<Token> TokensInRange) :
     File(File), Ctx(File.getASTContext()), SM(Ctx.SourceMgr),
-    AllTokens(AllTokens), StartTok(AllTokens[StartIdx]), EndTok(AllTokens[EndIdx]),
-    Start(StartTok.getLoc()), End(EndTok.getLoc()),
-    Content(getContentRange()) {
+    TokensInRange(TokensInRange),
+    Start(TokensInRange.front().getLoc()),
+    End(TokensInRange.back().getLoc()) {
       assert(Start.isValid() && End.isValid());
   }
 
@@ -562,7 +590,9 @@ public:
     if (!hasResult() && !Node.isImplicit() && nodeContainSelection(Node)) {
       if (auto Parent = Node.is<Expr*>() ? Node.get<Expr*>() : nullptr) {
         Result = {
-          RangeKind::PartOfExpression, ReturnInfo(), Content,
+          RangeKind::PartOfExpression,
+          ReturnInfo(),
+          TokensInRange,
           getImmediateContext(),
           Parent,
           hasSingleEntryPoint(ContainedASTNodes),
@@ -579,8 +609,8 @@ public:
     ContextStack.pop_back();
   }
 
-  static Implementation *createInstance(SourceFile &File, unsigned StartOff,
-                                        unsigned Length) {
+  static std::unique_ptr<Implementation>
+  createInstance(SourceFile &File, unsigned StartOff, unsigned Length) {
     SourceManager &SM = File.getASTContext().SourceMgr;
     unsigned BufferId = File.getBufferID().getValue();
 
@@ -607,13 +637,12 @@ public:
     // The start token is inclusive.
     unsigned StartIdx = StartIt - AllTokens.begin();
 
-    // The end token is exclusive.
-    unsigned EndIdx = EndIt - 1 - AllTokens.begin();
-    return new Implementation(File, std::move(AllTokens), StartIdx, EndIdx);
+    return std::unique_ptr<Implementation>(new Implementation(File,
+      llvm::makeArrayRef(AllTokens.data() + StartIdx, EndIt - StartIt)));
   }
 
-  static Implementation *createInstance(SourceFile &File, SourceLoc Start,
-                                        SourceLoc End) {
+  static std::unique_ptr<Implementation>
+  createInstance(SourceFile &File, SourceLoc Start, SourceLoc End) {
     if (Start.isInvalid() || End.isInvalid())
       return nullptr;
     SourceManager &SM = File.getASTContext().SourceMgr;
@@ -645,7 +674,7 @@ public:
     bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
                             TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type T,
                             ReferenceMetaData Data) override {
-      Impl->analyzeDeclRef(D, Range, T, Data);
+      Impl->analyzeDeclRef(D, Range.getStart(), T, Data);
       return true;
     }
   public:
@@ -780,7 +809,8 @@ public:
       Result = {RangeKind::MultiStatement,
                 /* Last node has the type */
                 resolveNodeType(DCInfo.EndMatches.back(),
-                                RangeKind::MultiStatement), Content,
+                                RangeKind::MultiStatement),
+                TokensInRange,
                 getImmediateContext(), nullptr,
                 hasSingleEntryPoint(ContainedASTNodes),
                 hasUnhandledError(ContainedASTNodes),
@@ -827,16 +857,16 @@ public:
   ResolvedRangeInfo getResult() {
     if (Result.hasValue())
       return Result.getValue();
-    return ResolvedRangeInfo(Content);
+    return ResolvedRangeInfo(TokensInRange);
   }
 
-  void analyzeDeclRef(ValueDecl *VD, CharSourceRange Range, Type Ty,
+  void analyzeDeclRef(ValueDecl *VD, SourceLoc Start, Type Ty,
                       ReferenceMetaData Data) {
     // Only collect decl ref.
     if (Data.Kind != SemaReferenceKind::DeclRef)
       return;
 
-    if (!isContainedInSelection(Range))
+    if (!isContainedInSelection(CharSourceRange(Start, 0)))
       return;
 
     // If the VD is declared outside of current file, exclude such decl.
@@ -861,7 +891,7 @@ public:
       ReferencedDecls.emplace_back(VD, Ty);
     } else {
       // LValue type should take precedence.
-      if (!It->Ty->isLValueType() && Ty->isLValueType()) {
+      if (!It->Ty->hasLValueType() && Ty->hasLValueType()) {
         It->Ty = Ty;
       }
     }
@@ -880,13 +910,6 @@ private:
     else
       return RangeMatchKind::NoneMatch;
   }
-
-  CharSourceRange getContentRange() {
-    SourceManager &SM = File.getASTContext().SourceMgr;
-    return CharSourceRange(SM, StartTok.hasComment() ?
-                            StartTok.getCommentStart() : StartTok.getLoc(),
-                           Lexer::getLocForEndOfToken(SM, End));
-  }
 };
 
 RangeResolver::RangeResolver(SourceFile &File, SourceLoc Start, SourceLoc End) :
@@ -895,7 +918,7 @@ RangeResolver::RangeResolver(SourceFile &File, SourceLoc Start, SourceLoc End) :
 RangeResolver::RangeResolver(SourceFile &File, unsigned Offset, unsigned Length) :
   Impl(Implementation::createInstance(File, Offset, Length)) {}
 
-RangeResolver::~RangeResolver() { if (Impl) delete Impl; }
+RangeResolver::~RangeResolver() = default;
 
 bool RangeResolver::walkToExprPre(Expr *E) {
   if (!Impl->shouldEnter(E))
@@ -942,13 +965,13 @@ bool RangeResolver::walkToDeclPost(Decl *D) {
 bool RangeResolver::
 visitDeclReference(ValueDecl *D, CharSourceRange Range, TypeDecl *CtorTyRef,
                    ExtensionDecl *ExtTyRef, Type T, ReferenceMetaData Data) {
-  Impl->analyzeDeclRef(D, Range, T, Data);
+  Impl->analyzeDeclRef(D, Range.getStart(), T, Data);
   return true;
 }
 
 ResolvedRangeInfo RangeResolver::resolve() {
   if (!Impl)
-    return ResolvedRangeInfo(CharSourceRange());
+    return ResolvedRangeInfo({});
   Impl->enter(ASTNode());
   walk(Impl->File);
   return Impl->getResult();
@@ -1009,8 +1032,7 @@ void swift::ide::getLocationInfo(const ValueDecl *VD,
       NameLen = getCharLength(SM, R);
     } else {
       if (VD->hasName()) {
-        // TODO: Handle special names
-        NameLen = VD->getBaseName().getIdentifier().getLength();
+        NameLen = VD->getBaseName().userFacingName().size();
       } else {
         NameLen = getCharLength(SM, VD->getLoc());
       }

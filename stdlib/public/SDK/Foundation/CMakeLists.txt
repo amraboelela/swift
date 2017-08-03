@@ -31,10 +31,13 @@ add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SD
   NSFastEnumeration.swift
   NSGeometry.swift
   NSIndexSet.swift
+  NSItemProvider.swift
   NSNumber.swift
+  NSObject.swift
   NSPredicate.swift
   NSRange.swift
   NSSet.swift
+  NSSortDescriptor.swift
   NSString.swift
   NSStringAPI.swift
   NSStringEncodings.swift
@@ -44,6 +47,7 @@ add_swift_library(swiftFoundation ${SWIFT_SDK_OVERLAY_LIBRARY_BUILD_TYPES} IS_SD
   NSValue.swift.gyb
   PersonNameComponents.swift
   PlistEncoder.swift
+  Progress.swift
   ReferenceConvertible.swift
   String.swift
   TimeZone.swift

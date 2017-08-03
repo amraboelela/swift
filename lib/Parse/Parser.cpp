@@ -24,6 +24,7 @@
 #include "swift/Parse/Lexer.h"
 #include "swift/Parse/CodeCompletionCallbacks.h"
 #include "swift/Parse/DelayedParsingCallbacks.h"
+#include "swift/Parse/ParseSILSupport.h"
 #include "swift/Syntax/TokenSyntax.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -35,21 +36,9 @@
 using namespace swift;
 
 void DelayedParsingCallbacks::anchor() { }
+void SILParserTUStateBase::anchor() { }
 
 namespace {
-  /// To assist debugging parser crashes, tell us the location of the
-  /// current token.
-  class PrettyStackTraceParser : public llvm::PrettyStackTraceEntry {
-    Parser &P;
-  public:
-    PrettyStackTraceParser(Parser &P) : P(P) {}
-    void print(llvm::raw_ostream &out) const override {
-      out << "With parser at source location: ";
-      P.Tok.getLoc().print(out, P.Context.SourceMgr);
-      out << '\n';
-    }
-  };
-
 /// A visitor that does delayed parsing of function bodies.
 class ParseDelayedFunctionBodies : public ASTWalker {
   PersistentParserState &ParserState;
@@ -133,27 +122,6 @@ static void parseDelayedDecl(
     CodeCompletion->doneParsing();
 }
 } // unnamed namespace
-
-bool swift::parseIntoSourceFile(SourceFile &SF,
-                                unsigned BufferID,
-                                bool *Done,
-                                SILParserState *SIL,
-                                PersistentParserState *PersistentState,
-                                DelayedParsingCallbacks *DelayedParseCB) {
-  SharedTimer timer("Parsing");
-  Parser P(BufferID, SF, SIL, PersistentState);
-  PrettyStackTraceParser StackTrace(P);
-
-  llvm::SaveAndRestore<bool> S(P.IsParsingInterfaceTokens, true);
-
-  if (DelayedParseCB)
-    P.setDelayedParsingCallbacks(DelayedParseCB);
-
-  bool FoundSideEffects = P.parseTopLevel();
-  *Done = P.Tok.is(tok::eof);
-
-  return FoundSideEffects;
-}
 
 void swift::performDelayedParsing(
     DeclContext *DC, PersistentParserState &PersistentState,
@@ -282,7 +250,7 @@ std::vector<Token> swift::tokenize(const LangOptions &LangOpts,
 }
 
 // TODO: Refactor into common implementation with swift::tokenize.
-std::vector<std::pair<RC<syntax::TokenSyntax>,
+std::vector<std::pair<RC<syntax::RawTokenSyntax>,
                                  syntax::AbsolutePosition>>
 swift::tokenizeWithTrivia(const LangOptions &LangOpts,
                           const SourceManager &SM,
@@ -296,7 +264,7 @@ swift::tokenizeWithTrivia(const LangOptions &LangOpts,
           CommentRetentionMode::AttachToNextToken,
           TriviaRetentionMode::WithTrivia,
           Offset, EndOffset);
-  std::vector<std::pair<RC<syntax::TokenSyntax>,
+  std::vector<std::pair<RC<syntax::RawTokenSyntax>,
                         syntax::AbsolutePosition>> Tokens;
   syntax::AbsolutePosition RunningPos;
   do {
@@ -312,7 +280,7 @@ swift::tokenizeWithTrivia(const LangOptions &LangOpts,
 // Setup and Helper Methods
 //===----------------------------------------------------------------------===//
 
-Parser::Parser(unsigned BufferID, SourceFile &SF, SILParserState *SIL,
+Parser::Parser(unsigned BufferID, SourceFile &SF, SILParserTUStateBase *SIL,
                PersistentParserState *PersistentState)
   : Parser(std::unique_ptr<Lexer>(
              new Lexer(SF.getASTContext().LangOpts, SF.getASTContext().SourceMgr,
@@ -320,11 +288,12 @@ Parser::Parser(unsigned BufferID, SourceFile &SF, SILParserState *SIL,
                    /*InSILMode=*/SIL != nullptr,
                    SF.getASTContext().LangOpts.AttachCommentsToDecls
                    ? CommentRetentionMode::AttachToNextToken
-                   : CommentRetentionMode::None)), SF, SIL, PersistentState) {
+                   : CommentRetentionMode::None)), SF, SIL, PersistentState){
 }
 
 Parser::Parser(std::unique_ptr<Lexer> Lex, SourceFile &SF,
-               SILParserState *SIL, PersistentParserState *PersistentState)
+               SILParserTUStateBase *SIL,
+               PersistentParserState *PersistentState)
   : SourceMgr(SF.getASTContext().SourceMgr),
     Diags(SF.getASTContext().Diags),
     SF(SF),
@@ -770,7 +739,7 @@ void Parser::diagnoseRedefinition(ValueDecl *Prev, ValueDecl *New) {
   assert(New != Prev && "Cannot conflict with self");
   diagnose(New->getLoc(), diag::decl_redefinition, New->isDefinition());
   diagnose(Prev->getLoc(), diag::previous_decldef, Prev->isDefinition(),
-           Prev->getName());
+           Prev->getBaseName());
 }
 
 struct ParserUnit::Implementation {

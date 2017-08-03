@@ -85,16 +85,25 @@ namespace {
     using offset_type = unsigned;
 
     hash_value_type ComputeHash(key_type_ref key) {
-      assert(!key.empty());
-      // TODO: Handle special names
-      return llvm::HashString(key.getIdentifier().str());
+      switch (key.getKind()) {
+        case DeclBaseName::Kind::Normal:
+          assert(!key.empty());
+          return llvm::HashString(key.getIdentifier().str());
+        case DeclBaseName::Kind::Subscript:
+          return static_cast<uint8_t>(DeclNameKind::Subscript);
+        case DeclBaseName::Kind::Destructor:
+          return static_cast<uint8_t>(DeclNameKind::Destructor);
+      }
     }
 
     std::pair<unsigned, unsigned> EmitKeyDataLength(raw_ostream &out,
                                                     key_type_ref key,
                                                     data_type_ref data) {
-      // TODO: Handle special names
-      uint32_t keyLength = key.getIdentifier().str().size();
+      uint32_t keyLength = sizeof(uint8_t); // For the flag of the name's kind
+      if (key.getKind() == DeclBaseName::Kind::Normal) {
+        keyLength += key.getIdentifier().str().size(); // The name's length
+      }
+
       uint32_t dataLength = (sizeof(uint32_t) + 1) * data.size();
       endian::Writer<little> writer(out);
       writer.write<uint16_t>(keyLength);
@@ -103,8 +112,19 @@ namespace {
     }
 
     void EmitKey(raw_ostream &out, key_type_ref key, unsigned len) {
-      // TODO: Handle special names
-      out << key.getIdentifier().str();
+      endian::Writer<little> writer(out);
+      switch (key.getKind()) {
+      case DeclBaseName::Kind::Normal:
+        writer.write<uint8_t>(static_cast<uint8_t>(DeclNameKind::Normal));
+        writer.OS << key.getIdentifier().str();
+        break;
+      case DeclBaseName::Kind::Subscript:
+        writer.write<uint8_t>(static_cast<uint8_t>(DeclNameKind::Subscript));
+        break;
+      case DeclBaseName::Kind::Destructor:
+        writer.write<uint8_t>(static_cast<uint8_t>(DeclNameKind::Destructor));
+        break;
+      }
     }
 
     void EmitData(raw_ostream &out, key_type_ref key, data_type_ref data,
@@ -479,16 +499,24 @@ TypeID Serializer::addTypeRef(Type ty) {
 }
 
 IdentifierID Serializer::addDeclBaseNameRef(DeclBaseName ident) {
-  if (ident.empty())
-    return 0;
+  switch (ident.getKind()) {
+  case DeclBaseName::Kind::Normal: {
+    if (ident.empty())
+      return 0;
 
-  IdentifierID &id = IdentifierIDs[ident.getIdentifier()];
-  if (id != 0)
+    IdentifierID &id = IdentifierIDs[ident.getIdentifier()];
+    if (id != 0)
+      return id;
+
+    id = ++LastIdentifierID;
+    IdentifiersToWrite.push_back(ident.getIdentifier());
     return id;
-
-  id = ++LastIdentifierID;
-  IdentifiersToWrite.push_back(ident.getIdentifier());
-  return id;
+  }
+  case DeclBaseName::Kind::Subscript:
+    return SUBSCRIPT_ID;
+  case DeclBaseName::Kind::Destructor:
+    return DESTRUCTOR_ID;
+  }
 }
 
 IdentifierID Serializer::addModuleRef(const ModuleDecl *M) {
@@ -1340,6 +1368,9 @@ void Serializer::writeNormalConformance(
     return false;
   });
 
+  unsigned numSignatureConformances =
+      conformance->getSignatureConformances().size();
+
   unsigned abbrCode
     = DeclTypeAbbrCodes[NormalProtocolConformanceLayout::Code];
   auto ownerID = addDeclContextRef(conformance->getDeclContext());
@@ -1347,6 +1378,7 @@ void Serializer::writeNormalConformance(
                                               addDeclRef(protocol), ownerID,
                                               numValueWitnesses,
                                               numTypeWitnesses,
+                                              numSignatureConformances,
                                               data);
 
   // Write requirement signature conformances.
@@ -1708,12 +1740,9 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
 
     abbrCode = DeclTypeAbbrCodes[XRefValuePathPieceLayout::Code];
     bool isProtocolExt = SD->getDeclContext()->getAsProtocolExtensionContext();
-    auto iid = addDeclBaseNameRef(SD->getBaseName().getIdentifier());
     XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                         addTypeRef(ty),
-                                         iid,
-                                         isProtocolExt,
-                                         SD->isStatic());
+                                         addTypeRef(ty), SUBSCRIPT_ID,
+                                         isProtocolExt, SD->isStatic());
     break;
   }
       
@@ -1762,7 +1791,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
     bool isProtocolExt = fn->getDeclContext()->getAsProtocolExtensionContext();
     XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                          addTypeRef(ty),
-                                         addDeclBaseNameRef(fn->getName()),
+                                         addDeclBaseNameRef(fn->getBaseName()),
                                          isProtocolExt,
                                          fn->isStatic());
 
@@ -1957,6 +1986,7 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
   case DAK_SynthesizedProtocol:
   case DAK_Implements:
   case DAK_ObjCRuntimeName:
+  case DAK_RestatedObjCConformance:
     llvm_unreachable("cannot serialize attribute");
 
   case DAK_Count:
@@ -2076,15 +2106,6 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
     return;
 #undef LIST_VER_TUPLE_PIECES
 #undef DEF_VER_TUPLE_PIECES
-  }
-
-  case DAK_AutoClosure: {
-    auto *theAttr = cast<AutoClosureAttr>(DA);
-    auto abbrCode = DeclTypeAbbrCodes[AutoClosureDeclAttrLayout::Code];
-    AutoClosureDeclAttrLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                          theAttr->isImplicit(),
-                                          theAttr->isEscaping());
-    return;
   }
 
   case DAK_ObjC: {
@@ -2289,6 +2310,22 @@ static ForeignErrorConventionKind getRawStableForeignErrorConventionKind(
   }
 
   llvm_unreachable("Unhandled ForeignErrorConvention in switch.");
+}
+
+/// Translate from the AST VarDeclSpecifier enum to the
+/// Serialization enum values, which are guaranteed to be stable.
+static uint8_t getRawStableVarDeclSpecifier(swift::VarDecl::Specifier sf) {
+  switch (sf) {
+  case swift::VarDecl::Specifier::Let:
+    return uint8_t(serialization::VarDeclSpecifier::Let);
+  case swift::VarDecl::Specifier::Var:
+    return uint8_t(serialization::VarDeclSpecifier::Var);
+  case swift::VarDecl::Specifier::InOut:
+    return uint8_t(serialization::VarDeclSpecifier::InOut);
+  case swift::VarDecl::Specifier::Shared:
+    return uint8_t(serialization::VarDeclSpecifier::Shared);
+  }
+  llvm_unreachable("bad variable decl specifier kind");
 }
 
 void Serializer::writeForeignErrorConvention(const ForeignErrorConvention &fec){
@@ -2807,7 +2844,7 @@ void Serializer::writeDecl(const Decl *D) {
 
     writeGenericParams(proto->getGenericParams());
     writeGenericRequirements(
-        proto->getRequirementSignature()->getRequirements(), DeclTypeAbbrCodes);
+      proto->getRequirementSignature(), DeclTypeAbbrCodes);
     writeMembers(proto->getMembers(), true);
     writeDefaultWitnessTable(proto, DeclTypeAbbrCodes);
     break;
@@ -2818,7 +2855,7 @@ void Serializer::writeDecl(const Decl *D) {
     verifyAttrSerializable(var);
 
     auto contextID = addDeclContextRef(var->getDeclContext());
-
+    
     Accessors accessors = getAccessors(var);
     uint8_t rawAccessLevel =
       getRawStableAccessibility(var->getFormalAccess());
@@ -2839,7 +2876,7 @@ void Serializer::writeDecl(const Decl *D) {
                           var->isImplicit(),
                           var->isObjC(),
                           var->isStatic(),
-                          var->isLet(),
+                          getRawStableVarDeclSpecifier(var->getSpecifier()),
                           var->hasNonPatternBindingInit(),
                           (unsigned) accessors.Kind,
                           addTypeRef(ty),
@@ -2868,7 +2905,7 @@ void Serializer::writeDecl(const Decl *D) {
                             addDeclBaseNameRef(param->getArgumentName()),
                             addDeclBaseNameRef(param->getName()),
                             contextID,
-                            param->isLet(),
+                            getRawStableVarDeclSpecifier(param->getSpecifier()),
                             addTypeRef(interfaceType));
 
     if (interfaceType->hasError()) {
@@ -3248,7 +3285,7 @@ void Serializer::writeType(Type ty) {
     ParenTypeLayout::emitRecord(
         Out, ScratchRecord, abbrCode, addTypeRef(parenTy->getUnderlyingType()),
         paramFlags.isVariadic(), paramFlags.isAutoClosure(),
-        paramFlags.isEscaping());
+        paramFlags.isEscaping(), paramFlags.isInOut(), paramFlags.isShared());
     break;
   }
 
@@ -3264,7 +3301,8 @@ void Serializer::writeType(Type ty) {
       TupleTypeEltLayout::emitRecord(
           Out, ScratchRecord, abbrCode, addDeclBaseNameRef(elt.getName()),
           addTypeRef(elt.getType()), paramFlags.isVariadic(),
-          paramFlags.isAutoClosure(), paramFlags.isEscaping());
+          paramFlags.isAutoClosure(), paramFlags.isEscaping(),
+          paramFlags.isInOut(), paramFlags.isShared());
     }
 
     break;
@@ -4342,8 +4380,7 @@ static void collectInterestingNestedDeclarations(
         // Add operator methods.
         // Note that we don't have to add operators that are already in the
         // top-level list.
-        auto iid = memberValue->getBaseName().getIdentifier();
-        operatorMethodDecls[iid].push_back({
+        operatorMethodDecls[memberValue->getBaseName()].push_back({
           /*ignored*/0,
           S.addDeclRef(memberValue)
         });

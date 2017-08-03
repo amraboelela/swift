@@ -322,12 +322,12 @@ public protocol IteratorProtocol {
 /// makes no other requirements about element access, so routines that
 /// traverse a sequence should be considered O(*n*) unless documented
 /// otherwise.
-///
-/// - SeeAlso: `IteratorProtocol`, `Collection`
 public protocol Sequence {
+  /// A type representing the sequence's elements.
+  associatedtype Element
+
   /// A type that provides the sequence's iteration interface and
   /// encapsulates its iteration state.
-  associatedtype Element
   associatedtype Iterator : IteratorProtocol where Iterator.Element == Element
 
   /// A type that represents a subsequence of some of the sequence's elements.
@@ -1291,7 +1291,6 @@ extension Sequence where
   ///   that satisfy `predicate`.
   ///
   /// - Complexity: O(*n*), where *n* is the length of the collection.
-  /// - SeeAlso: `prefix(while:)`
   @_inlineable
   public func drop(
     while predicate: (Element) throws -> Bool
@@ -1351,7 +1350,6 @@ extension Sequence where
   ///   satisfy `predicate`.
   ///
   /// - Complexity: O(*n*), where *n* is the length of the collection.
-  /// - SeeAlso: `drop(while:)`
   @_inlineable
   public func prefix(
     while predicate: (Element) throws -> Bool

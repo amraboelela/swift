@@ -19,6 +19,9 @@
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/Pattern.h"
 
+#include <llvm/ADT/APInt.h>
+#include <llvm/ADT/APFloat.h>
+
 #include <numeric>
 #include <forward_list>
 
@@ -27,11 +30,42 @@ using namespace swift;
 #define DEBUG_TYPE "TypeCheckSwitchStmt"
 
 namespace {
+  struct DenseMapAPIntKeyInfo {
+    static inline APInt getEmptyKey() { return APInt(); }
+
+    static inline APInt getTombstoneKey() {
+      return APInt::getAllOnesValue(/*bitwidth*/1);
+    }
+
+    static unsigned getHashValue(const APInt &Key) {
+      return static_cast<unsigned>(hash_value(Key));
+    }
+
+    static bool isEqual(const APInt &LHS, const APInt &RHS) {
+      return LHS.getBitWidth() == RHS.getBitWidth() && LHS == RHS;
+    }
+  };
+
+  struct DenseMapAPFloatKeyInfo {
+    static inline APFloat getEmptyKey() { return APFloat(APFloat::Bogus(), 1); }
+    static inline APFloat getTombstoneKey() { return APFloat(APFloat::Bogus(), 2); }
+    
+    static unsigned getHashValue(const APFloat &Key) {
+      return static_cast<unsigned>(hash_value(Key));
+    }
+    
+    static bool isEqual(const APFloat &LHS, const APFloat &RHS) {
+      return LHS.bitwiseIsEqual(RHS);
+    }
+  };
+}
+
+namespace {
 
   /// The SpaceEngine encapsulates an algorithm for computing the exhaustiveness
   /// of a switch statement using an algebra of spaces described by Fengyun Liu
   /// and an algorithm for computing warnings for pattern matching by
-  //  Luc Maranget.
+  /// Luc Maranget.
   ///
   /// The main algorithm centers around the computation of the difference and
   /// the intersection of the "Spaces" given in each case, which reduces the
@@ -76,6 +110,9 @@ namespace {
     private:
       SpaceKind Kind;
       llvm::PointerIntPair<Type, 1, bool> TypeAndVal;
+
+      // In type space, we reuse HEAD to help us print meaningful name, e.g.,
+      // tuple element name in fixits.
       Identifier Head;
       std::forward_list<Space> Spaces;
 
@@ -134,8 +171,8 @@ namespace {
       }
       
     public:
-      explicit Space(Type T)
-        : Kind(SpaceKind::Type), TypeAndVal(T, false), Head(Identifier()),
+      explicit Space(Type T, Identifier NameForPrinting)
+        : Kind(SpaceKind::Type), TypeAndVal(T, false), Head(NameForPrinting),
           Spaces({}){}
       explicit Space(Type T, Identifier H, bool downgrade,
                      SmallVectorImpl<Space> &SP)
@@ -186,6 +223,12 @@ namespace {
       Identifier getHead() const {
         assert(getKind() == SpaceKind::Constructor
                && "Wrong kind of space tried to access head");
+        return Head;
+      }
+
+      Identifier getPrintingName() const {
+        assert(getKind() == SpaceKind::Type
+               && "Wrong kind of space tried to access printing name");
         return Head;
       }
 
@@ -750,7 +793,11 @@ namespace {
           if (!forDisplay) {
             getType()->print(buffer);
           }
-          buffer << "_";
+          Identifier Name = getPrintingName();
+          if (Name.empty())
+            buffer << "_";
+          else
+            buffer << tok::kw_let << " " << Name.str();
           break;
         }
       }
@@ -865,10 +912,11 @@ namespace {
                                TTy->getElements().end(),
                                std::back_inserter(constElemSpaces),
                                [&](TupleTypeElt ty){
-                                 return Space(ty.getType());
+                                 return Space(ty.getType(), ty.getName());
                                });
               } else if (auto *TTy = dyn_cast<ParenType>(eedTy.getPointer())) {
-                constElemSpaces.push_back(Space(TTy->getUnderlyingType()));
+                constElemSpaces.push_back(Space(TTy->getUnderlyingType(),
+                                                Identifier()));
               }
             }
             return Space(tp, eed->getName(),
@@ -882,7 +930,7 @@ namespace {
           std::transform(TTy->getElements().begin(), TTy->getElements().end(),
                          std::back_inserter(constElemSpaces),
                          [&](TupleTypeElt ty){
-            return Space(ty.getType());
+            return Space(ty.getType(), ty.getName());
           });
           // Create an empty constructor head for the tuple space.
           arr.push_back(Space(tp, Identifier(), /*canDowngrade*/false,
@@ -900,10 +948,70 @@ namespace {
 
     TypeChecker &TC;
     SwitchStmt *Switch;
-
+    llvm::DenseMap<APInt, Expr *, ::DenseMapAPIntKeyInfo> IntLiteralCache;
+    llvm::DenseMap<APFloat, Expr *, ::DenseMapAPFloatKeyInfo> FloatLiteralCache;
+    llvm::DenseMap<StringRef, Expr *> StringLiteralCache;
+    
     SpaceEngine(TypeChecker &C, SwitchStmt *SS) : TC(C), Switch(SS) {}
 
+    bool checkRedundantLiteral(const Pattern *Pat, Expr *&PrevPattern) {
+      if (Pat->getKind() != PatternKind::Expr) {
+          return false;
+      }
+      auto *ExprPat = cast<ExprPattern>(Pat);
+      auto *MatchExpr = ExprPat->getSubExpr();
+      if (!MatchExpr || !isa<LiteralExpr>(MatchExpr)) {
+          return false;
+      }
+      auto *EL = cast<LiteralExpr>(MatchExpr);
+      switch (EL->getKind()) {
+      case ExprKind::StringLiteral: {
+        auto *SLE = cast<StringLiteralExpr>(EL);
+        auto cacheVal =
+            StringLiteralCache.insert({SLE->getValue(), SLE});
+        PrevPattern = (cacheVal.first != StringLiteralCache.end())
+                    ? cacheVal.first->getSecond()
+                    : nullptr;
+        return !cacheVal.second;
+      }
+      case ExprKind::IntegerLiteral: {
+        // FIXME: The magic number 128 is bad and we should actually figure out
+        // the bitwidth.  But it's too early in Sema to get it.
+        auto *ILE = cast<IntegerLiteralExpr>(EL);
+        auto cacheVal =
+            IntLiteralCache.insert(
+                {ILE->getValue(ILE->getDigitsText(), 128, ILE->isNegative()), ILE});
+        PrevPattern = (cacheVal.first != IntLiteralCache.end())
+                    ? cacheVal.first->getSecond()
+                    : nullptr;
+        return !cacheVal.second;
+      }
+      case ExprKind::FloatLiteral: {
+        // FIXME: Pessimistically using IEEEquad here is bad and we should
+        // actually figure out the bitwidth.  But it's too early in Sema.
+        auto *FLE = cast<FloatLiteralExpr>(EL);
+        auto cacheVal =
+            FloatLiteralCache.insert(
+                   {FLE->getValue(FLE->getDigitsText(),
+                                  APFloat::IEEEquad(), FLE->isNegative()), FLE});
+        PrevPattern = (cacheVal.first != FloatLiteralCache.end())
+                    ? cacheVal.first->getSecond()
+                    : nullptr;
+        return !cacheVal.second;
+      }
+      default:
+        return false;
+      }
+    }
+    
     void checkExhaustiveness(bool limitedChecking) {
+      // If the type of the scrutinee is uninhabited, we're already dead.
+      // Allow any well-typed patterns through.
+      auto subjectType = Switch->getSubjectExpr()->getType();
+      if (subjectType && subjectType->isStructurallyUninhabited()) {
+        return;
+      }
+      
       if (limitedChecking) {
         // Reject switch statements with empty blocks.
         if (Switch->getCases().empty()) {
@@ -917,8 +1025,7 @@ namespace {
       bool sawDowngradablePattern = false;
       bool sawRedundantPattern = false;
       SmallVector<Space, 4> spaces;
-      for (unsigned i = 0, e = Switch->getCases().size(); i < e; ++i) {
-        auto *caseBlock = Switch->getCases()[i];
+      for (auto *caseBlock : Switch->getCases()) {
         for (auto &caseItem : caseBlock->getCaseLabelItems()) {
           // 'where'-clauses on cases mean the case does not contribute to
           // the exhaustiveness of the pattern.
@@ -938,12 +1045,23 @@ namespace {
             TC.diagnose(caseItem.getStartLoc(),
                           diag::redundant_particular_case)
               .highlight(caseItem.getSourceRange());
+          } else {
+            Expr *cachedExpr = nullptr;
+            if (checkRedundantLiteral(caseItem.getPattern(), cachedExpr)) {
+              assert(cachedExpr && "Cache found hit but no expr?");
+              TC.diagnose(caseItem.getStartLoc(),
+                          diag::redundant_particular_literal_case)
+                .highlight(caseItem.getSourceRange());
+              TC.diagnose(cachedExpr->getLoc(),
+                          diag::redundant_particular_literal_case_here)
+                .highlight(cachedExpr->getSourceRange());
+            }
           }
           spaces.push_back(projection);
         }
       }
       
-      Space totalSpace(Switch->getSubjectExpr()->getType());
+      Space totalSpace(subjectType, Identifier());
       Space coveredSpace(spaces);
       size_t totalSpaceSize = totalSpace.getSize(TC);
       if (totalSpaceSize > Space::getMaximumSize()) {
@@ -1090,7 +1208,7 @@ namespace {
           }
         }
 
-        TC.diagnose(startLoc, diag::non_exhaustive_switch);
+        TC.diagnose(startLoc, mainDiagType);
         TC.diagnose(startLoc, diag::missing_several_cases, false)
           .fixItInsert(endLoc, buffer.str());
       } else {
@@ -1218,8 +1336,9 @@ namespace {
                                 bool &sawDowngradablePattern) {
       switch (item->getKind()) {
       case PatternKind::Any:
+        return Space(item->getType(), Identifier());
       case PatternKind::Named:
-        return Space(item->getType());
+        return Space(item->getType(), cast<NamedPattern>(item)->getBoundName());
       case PatternKind::Bool: {
         return Space(cast<BoolPattern>(item)->getValue());
       }
@@ -1231,7 +1350,7 @@ namespace {
           // These coercions are irrefutable.  Project with the original type
           // instead of the cast's target type to maintain consistency with the
           // scrutinee's type.
-          return Space(IP->getType());
+          return Space(IP->getType(), Identifier());
         case CheckedCastKind::Unresolved:
         case CheckedCastKind::ValueCast:
         case CheckedCastKind::ArrayDowncast:
@@ -1316,7 +1435,7 @@ namespace {
               || SP->getKind() == PatternKind::Tuple) {
             if (auto *TTy = SP->getType()->getAs<TupleType>()) {
               for (auto ty : TTy->getElements()) {
-                conArgSpace.push_back(Space(ty.getType()));
+                conArgSpace.push_back(Space(ty.getType(), ty.getName()));
               }
             } else {
               conArgSpace.push_back(projectPattern(TC, SP,

@@ -1069,6 +1069,8 @@ private:
       case SyntaxStructureKind::ClassVariable: return "cvar";
       case SyntaxStructureKind::EnumCase: return "enum-case";
       case SyntaxStructureKind::EnumElement: return "enum-elem";
+      case SyntaxStructureKind::TypeAlias: return "typealias";
+      case SyntaxStructureKind::Subscript: return "subscript";
       case SyntaxStructureKind::Parameter: return "param";
       case SyntaxStructureKind::ForEachStatement: return "foreach";
       case SyntaxStructureKind::ForStatement: return "for";
@@ -2614,6 +2616,7 @@ private:
     if (Decl *reDecl = getDeclFromUSR(Ctx, USR, error)) {
       PrintOptions POpts;
       POpts.PreferTypeRepr = false;
+      POpts.PrintParameterSpecifiers = true;
       reDecl->print(Stream, POpts);
     } else {
       Stream << "FAILURE";
@@ -2762,7 +2765,7 @@ static int doPrintIndexedSymbols(const CompilerInvocation &InitInvok,
   CompilerInvocation Invocation(InitInvok);
   Invocation.addInputFilename(SourceFileName);
   Invocation.getLangOptions().DisableAvailabilityChecking = false;
-  Invocation.getLangOptions().DisableTypoCorrection = true;
+  Invocation.getLangOptions().TypoCorrectionLimit = 0;
 
   CompilerInstance CI;
 
@@ -3056,7 +3059,7 @@ int main(int argc, char *argv[]) {
 
   PrintOptions PrintOpts;
   if (options::PrintInterface) {
-    PrintOpts = PrintOptions::printInterface();
+    PrintOpts = PrintOptions::printModuleInterface();
   } else if (options::PrintInterfaceForDoc) {
     PrintOpts = PrintOptions::printDocInterface();
   } else {

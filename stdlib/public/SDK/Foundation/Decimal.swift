@@ -205,35 +205,43 @@ extension Decimal : ExpressibleByIntegerLiteral {
 
 extension Decimal : SignedNumeric {
   public var magnitude: Decimal {
-    return Decimal(
-      _exponent: self._exponent, _length: self._length,
-       _isNegative: 0, _isCompact: self._isCompact,
-       _reserved: 0, _mantissa: self._mantissa)
+      return Decimal(
+          _exponent: self._exponent, _length: self._length,
+          _isNegative: 0, _isCompact: self._isCompact,
+          _reserved: 0, _mantissa: self._mantissa)
   }
 
   // FIXME(integers): implement properly
   public init?<T : BinaryInteger>(exactly source: T) {
-    fatalError()
+      fatalError()
   }
 
   public static func +=(_ lhs: inout Decimal, _ rhs: Decimal) {
       var rhs = rhs
-      NSDecimalAdd(&lhs, &lhs, &rhs, .plain)
+      _ = withUnsafeMutablePointer(to: &lhs) {
+          NSDecimalAdd($0, $0, &rhs, .plain)
+      }
   }
 
   public static func -=(_ lhs: inout Decimal, _ rhs: Decimal) {
       var rhs = rhs
-      NSDecimalSubtract(&lhs, &lhs, &rhs, .plain)
+      _ = withUnsafeMutablePointer(to: &lhs) {
+          NSDecimalSubtract($0, $0, &rhs, .plain)
+      }
   }
 
   public static func *=(_ lhs: inout Decimal, _ rhs: Decimal) {
       var rhs = rhs
-      NSDecimalMultiply(&lhs, &lhs, &rhs, .plain)
+      _ = withUnsafeMutablePointer(to: &lhs) {
+          NSDecimalMultiply($0, $0, &rhs, .plain)
+      }
   }
 
   public static func /=(_ lhs: inout Decimal, _ rhs: Decimal) {
       var rhs = rhs
-      NSDecimalDivide(&lhs, &lhs, &rhs, .plain)
+      _ = withUnsafeMutablePointer(to: &lhs) {
+          NSDecimalDivide($0, $0, &rhs, .plain)
+      }
   }
 }
 
@@ -241,25 +249,25 @@ extension Decimal {
   @available(swift, obsoleted: 4, message: "Please use arithmetic operators instead")
   @_transparent
   public mutating func add(_ other: Decimal) {
-    self += other
+      self += other
   }
 
   @available(swift, obsoleted: 4, message: "Please use arithmetic operators instead")
   @_transparent
   public mutating func subtract(_ other: Decimal) {
-    self -= other
+      self -= other
   }
 
   @available(swift, obsoleted: 4, message: "Please use arithmetic operators instead")
   @_transparent
   public mutating func multiply(by other: Decimal) {
-    self *= other
+      self *= other
   }
 
   @available(swift, obsoleted: 4, message: "Please use arithmetic operators instead")
   @_transparent
   public mutating func divide(by other: Decimal) {
-    self /= other
+      self /= other
   }
 }
 
@@ -488,12 +496,12 @@ extension Decimal : Codable {
         mantissa.6 = try mantissaContainer.decode(CUnsignedShort.self)
         mantissa.7 = try mantissaContainer.decode(CUnsignedShort.self)
 
-        self.init(_exponent: exponent,
-                  _length: length,
-                  _isNegative: CUnsignedInt(isNegative ? 1 : 0),
-                  _isCompact: CUnsignedInt(isCompact ? 1 : 0),
-                  _reserved: 0,
-                  _mantissa: mantissa)
+        self = Decimal(_exponent: exponent,
+                       _length: length,
+                       _isNegative: CUnsignedInt(isNegative ? 1 : 0),
+                       _isCompact: CUnsignedInt(isCompact ? 1 : 0),
+                       _reserved: 0,
+                       _mantissa: mantissa)
     }
 
     public func encode(to encoder: Encoder) throws {

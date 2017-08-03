@@ -50,18 +50,18 @@ static bool inheritsConformanceTo(ClassDecl *target, ProtocolDecl *proto) {
 ///
 /// \param target The \c ClassDecl whose superclass to check.
 static bool superclassIsEncodable(ClassDecl *target) {
-    auto &C = target->getASTContext();
-    return inheritsConformanceTo(target,
-                                 C.getProtocol(KnownProtocolKind::Encodable));
+  auto &C = target->getASTContext();
+  return inheritsConformanceTo(target,
+                               C.getProtocol(KnownProtocolKind::Encodable));
 }
 
 /// Returns whether the superclass of the given class conforms to Decodable.
 ///
 /// \param target The \c ClassDecl whose superclass to check.
 static bool superclassIsDecodable(ClassDecl *target) {
-    auto &C = target->getASTContext();
-    return inheritsConformanceTo(target,
-                                 C.getProtocol(KnownProtocolKind::Decodable));
+  auto &C = target->getASTContext();
+  return inheritsConformanceTo(target,
+                               C.getProtocol(KnownProtocolKind::Decodable));
 }
 
 /// Represents the possible outcomes of checking whether a decl conforms to
@@ -88,29 +88,34 @@ static CodableConformanceType typeConformsToCodable(TypeChecker &tc,
                                                     ProtocolDecl *proto) {
   // Some generic types need to be introspected to get at their "true" Codable
   // conformance.
-  auto canType = target->getCanonicalType();
-  if (auto genericType = dyn_cast<BoundGenericType>(canType)) {
+  if (auto referenceType = target->getAs<ReferenceStorageType>()) {
+    // This is a weak/unowned/unmanaged var. Get the inner type before checking
+    // conformance.
+    target = referenceType->getReferentType();
+  }
+
+  if (auto genericType = target->getAs<BoundGenericType>()) {
     auto *nominalTypeDecl = genericType->getAnyNominal();
 
     // Implicitly unwrapped optionals need to be unwrapped;
     // ImplicitlyUnwrappedOptional does not need to conform to Codable directly
     // -- only its inner type does.
     if (nominalTypeDecl == tc.Context.getImplicitlyUnwrappedOptionalDecl() ||
-         // FIXME: Remove the following when conditional conformance lands.
-         // Some generic types in the stdlib currently conform to Codable even
-         // when the type they are generic on does not [Optional, Array, Set,
-         // Dictionary].  For synthesizing conformance, we don't want to
-         // consider these types as Codable if the nested type is not Codable.
-         // Look through the generic type parameters of these types recursively
-         // to avoid synthesizing code that will crash at runtime.
-         //
-         // We only want to look through generic params for these types; other
-         // types may validly conform to Codable even if their generic param
-         // types do not.
-         nominalTypeDecl == tc.Context.getOptionalDecl() ||
-         nominalTypeDecl == tc.Context.getArrayDecl() ||
-         nominalTypeDecl == tc.Context.getSetDecl() ||
-         nominalTypeDecl == tc.Context.getDictionaryDecl()) {
+        // FIXME: Remove the following when conditional conformance lands.
+        // Some generic types in the stdlib currently conform to Codable even
+        // when the type they are generic on does not [Optional, Array, Set,
+        // Dictionary].  For synthesizing conformance, we don't want to
+        // consider these types as Codable if the nested type is not Codable.
+        // Look through the generic type parameters of these types recursively
+        // to avoid synthesizing code that will crash at runtime.
+        //
+        // We only want to look through generic params for these types; other
+        // types may validly conform to Codable even if their generic param
+        // types do not.
+        nominalTypeDecl == tc.Context.getOptionalDecl() ||
+        nominalTypeDecl == tc.Context.getArrayDecl() ||
+        nominalTypeDecl == tc.Context.getSetDecl() ||
+        nominalTypeDecl == tc.Context.getDictionaryDecl()) {
       for (auto paramType : genericType->getGenericArgs()) {
         if (typeConformsToCodable(tc, context, paramType, proto) != Conforms)
           return DoesNotConform;
@@ -179,8 +184,7 @@ static bool
 validateCodingKeysEnum(TypeChecker &tc, EnumDecl *codingKeysDecl,
                        NominalTypeDecl *target, ProtocolDecl *proto) {
   // Look through all var decls in the given type.
-  // * Filter out lazy/computed vars (currently already done by
-  //   getStoredProperties).
+  // * Filter out lazy/computed vars.
   // * Filter out ones which are present in the given decl (by name).
   //
   // If any of the entries in the CodingKeys decl are not present in the type
@@ -192,6 +196,9 @@ validateCodingKeysEnum(TypeChecker &tc, EnumDecl *codingKeysDecl,
   // against its CodingKey entry, it will get removed.
   llvm::SmallDenseMap<Identifier, VarDecl *, 8> properties;
   for (auto *varDecl : target->getStoredProperties(/*skipInaccessible=*/true)) {
+    if (varDecl->getAttrs().hasAttribute<LazyAttr>())
+      continue;
+
     properties[varDecl->getName()] = varDecl;
   }
 
@@ -237,7 +244,7 @@ validateCodingKeysEnum(TypeChecker &tc, EnumDecl *codingKeysDecl,
   // we can skip them on encode. On decode, though, we can only skip them if
   // they have a default value.
   if (!properties.empty() &&
-      proto == tc.Context.getProtocol(KnownProtocolKind::Decodable)) {
+      proto->isSpecificProtocol(KnownProtocolKind::Decodable)) {
     for (auto it = properties.begin(); it != properties.end(); ++it) {
       if (it->second->getParentInitializer() != nullptr) {
         // Var has a default value.
@@ -298,12 +305,14 @@ static CodingKeysValidity hasValidCodingKeysEnum(TypeChecker &tc,
     return CodingKeysValidity(/*hasType=*/true, /*isValid=*/false);
   }
 
+  // If the decl hasn't been validated yet, do so.
+  tc.validateDecl(codingKeysTypeDecl);
+
   // CodingKeys may be a typealias. If so, follow the alias to its canonical
   // type.
   auto codingKeysType = codingKeysTypeDecl->getDeclaredInterfaceType();
-  if (isa<TypeAliasDecl>(codingKeysTypeDecl)) {
+  if (isa<TypeAliasDecl>(codingKeysTypeDecl))
     codingKeysTypeDecl = codingKeysType->getAnyNominal();
-  }
 
   // Ensure that the type we found conforms to the CodingKey protocol.
   auto *codingKeyProto = C.getProtocol(KnownProtocolKind::CodingKey);
@@ -377,6 +386,9 @@ static EnumDecl *synthesizeCodingKeysEnum(TypeChecker &tc,
   // conforms to {En,De}codable, add it to the enum.
   bool allConform = true;
   for (auto *varDecl : target->getStoredProperties(/*skipInaccessible=*/true)) {
+    if (varDecl->getAttrs().hasAttribute<LazyAttr>())
+      continue;
+
     auto conformance = varConformsToCodable(tc, target->getDeclContext(),
                                             varDecl, proto);
     switch (conformance) {
@@ -435,9 +447,8 @@ static EnumDecl *lookupEvaluatedCodingKeysEnum(ASTContext &C,
     return nullptr;
 
   auto *codingKeysDecl = codingKeyDecls.front();
-  if (auto *typealiasDecl = dyn_cast<TypeAliasDecl>(codingKeysDecl)) {
+  if (auto *typealiasDecl = dyn_cast<TypeAliasDecl>(codingKeysDecl))
     codingKeysDecl = typealiasDecl->getDeclaredInterfaceType()->getAnyNominal();
-  }
 
   return dyn_cast<EnumDecl>(codingKeysDecl);
 }
@@ -457,17 +468,17 @@ static EnumDecl *lookupEvaluatedCodingKeysEnum(ASTContext &C,
 ///
 /// \param keyType The key type to bind to the container type.
 ///
-/// \param isLet Whether to declare the variable as immutable.
+/// \param spec Whether to declare the variable as immutable.
 static VarDecl *createKeyedContainer(ASTContext &C, DeclContext *DC,
                                      NominalTypeDecl *keyedContainerDecl,
-                                     Type keyType, bool isLet) {
+                                     Type keyType, VarDecl::Specifier spec) {
   // Bind Keyed*Container to Keyed*Container<KeyType>
   Type boundType[1] = {keyType};
   auto containerType = BoundGenericType::get(keyedContainerDecl, Type(),
                                              C.AllocateCopy(boundType));
 
   // let container : Keyed*Container<KeyType>
-  auto *containerDecl = new (C) VarDecl(/*IsStatic=*/false, /*IsLet=*/isLet,
+  auto *containerDecl = new (C) VarDecl(/*IsStatic=*/false, spec,
                                         /*IsCaptureList=*/false, SourceLoc(),
                                         C.Id_container, containerType, DC);
   containerDecl->setImplicit();
@@ -492,7 +503,7 @@ static CallExpr *createContainerKeyedByCall(ASTContext &C, DeclContext *DC,
                                             Expr *base, Type returnType,
                                             NominalTypeDecl *param) {
   // (keyedBy:)
-  auto *keyedByDecl = new (C) ParamDecl(/*IsLet=*/true, SourceLoc(),
+  auto *keyedByDecl = new (C) ParamDecl(VarDecl::Specifier::Owned, SourceLoc(),
                                         SourceLoc(), C.Id_keyedBy, SourceLoc(),
                                         C.Id_keyedBy, returnType, DC);
   keyedByDecl->setImplicit();
@@ -508,7 +519,9 @@ static CallExpr *createContainerKeyedByCall(ASTContext &C, DeclContext *DC,
                                                 /*Implicit=*/true);
 
   // CodingKeys.self expr
-  auto *codingKeysExpr = TypeExpr::createForDecl(SourceLoc(), param,
+  auto *codingKeysExpr = TypeExpr::createForDecl(SourceLoc(),
+                                                 param,
+                                                 param->getDeclContext(),
                                                  /*Implicit=*/true);
   auto *codingKeysMetaTypeExpr = new (C) DotSelfExpr(codingKeysExpr,
                                                      SourceLoc(), SourceLoc());
@@ -565,7 +578,8 @@ static void deriveBodyEncodable_encode(AbstractFunctionDecl *encodeDecl) {
   auto codingKeysType = codingKeysEnum->getDeclaredType();
   auto *containerDecl = createKeyedContainer(C, funcDC,
                                              C.getKeyedEncodingContainerDecl(),
-                                             codingKeysType, /*isLet=*/false);
+                                             codingKeysType,
+                                             VarDecl::Specifier::Var);
 
   auto *containerExpr = new (C) DeclRefExpr(ConcreteDeclRef(containerDecl),
                                             DeclNameLoc(), /*Implicit=*/true,
@@ -622,6 +636,12 @@ static void deriveBodyEncodable_encode(AbstractFunctionDecl *encodeDecl) {
     // encode(_:forKey:)/encodeIfPresent(_:forKey:)
     auto methodName = C.Id_encode;
     auto varType = cast<VarDecl>(matchingVars[0])->getType();
+    if (auto referenceType = varType->getAs<ReferenceStorageType>()) {
+      // This is a weak/unowned/unmanaged var. Get the inner type before
+      // checking optionality.
+      varType = referenceType->getReferentType();
+    }
+
     if (varType->getAnyNominal() == C.getOptionalDecl() ||
         varType->getAnyNominal() == C.getImplicitlyUnwrappedOptionalDecl()) {
       methodName = C.Id_encodeIfPresent;
@@ -651,8 +671,9 @@ static void deriveBodyEncodable_encode(AbstractFunctionDecl *encodeDecl) {
     // Need to generate `try super.encode(to: container.superEncoder())`
 
     // superEncoder()
-    auto *method = new (C) UnresolvedDeclRefExpr(
-        DeclName(C.Id_superEncoder), DeclRefKind::Ordinary, DeclNameLoc());
+    auto *method = new (C) UnresolvedDeclRefExpr(DeclName(C.Id_superEncoder),
+                                                 DeclRefKind::Ordinary,
+                                                 DeclNameLoc());
 
     // container.superEncoder()
     auto *superEncoderRef = new (C) DotSyntaxCallExpr(containerExpr,
@@ -727,7 +748,7 @@ static FuncDecl *deriveEncodable_encode(TypeChecker &tc, Decl *parentDecl,
 
   // Params: (self [implicit], Encoder)
   auto *selfDecl = ParamDecl::createSelf(SourceLoc(), target);
-  auto *encoderParam = new (C) ParamDecl(/*isLet=*/true, SourceLoc(),
+  auto *encoderParam = new (C) ParamDecl(VarDecl::Specifier::Owned, SourceLoc(),
                                          SourceLoc(), C.Id_to, SourceLoc(),
                                          C.Id_encoder, encoderType, target);
   encoderParam->setInterfaceType(encoderType);
@@ -759,8 +780,7 @@ static FuncDecl *deriveEncodable_encode(TypeChecker &tc, Decl *parentDecl,
   Type interfaceType;
   if (auto sig = target->getGenericSignatureOfContext()) {
     // Evaluate the below, but in a generic environment (if Self is generic).
-    encodeDecl->setGenericEnvironment(
-            target->getGenericEnvironmentOfContext());
+    encodeDecl->setGenericEnvironment(target->getGenericEnvironmentOfContext());
     interfaceType = GenericFunctionType::get(sig, selfType, innerType,
                                              FunctionType::ExtInfo());
   } else {
@@ -825,7 +845,8 @@ static void deriveBodyDecodable_init(AbstractFunctionDecl *initDecl) {
   auto codingKeysType = codingKeysEnum->getDeclaredType();
   auto *containerDecl = createKeyedContainer(C, funcDC,
                                              C.getKeyedDecodingContainerDecl(),
-                                             codingKeysType, /*isLet=*/true);
+                                             codingKeysType,
+                                             VarDecl::Specifier::Let);
 
   auto *containerExpr = new (C) DeclRefExpr(ConcreteDeclRef(containerDecl),
                                             DeclNameLoc(), /*Implicit=*/true,
@@ -883,6 +904,12 @@ static void deriveBodyDecodable_init(AbstractFunctionDecl *initDecl) {
       // This is also true if the type is an ImplicitlyUnwrappedOptional.
       auto varType = varDecl->getType();
       auto methodName = C.Id_decode;
+      if (auto referenceType = varType->getAs<ReferenceStorageType>()) {
+        // This is a weak/unowned/unmanaged var. Get the inner type before
+        // checking optionality.
+        varType = referenceType->getReferentType();
+      }
+
       if (varType->getAnyNominal() == C.getOptionalDecl() ||
           varType->getAnyNominal() == C.getImplicitlyUnwrappedOptionalDecl()) {
         methodName = C.Id_decodeIfPresent;
@@ -926,51 +953,91 @@ static void deriveBodyDecodable_init(AbstractFunctionDecl *initDecl) {
                                       /*Implicit=*/true);
 
       auto *selfRef = createSelfDeclRef(initDecl);
-      auto *varExpr = new (C) UnresolvedDotExpr(
-          selfRef, SourceLoc(), DeclName(varDecl->getName()), DeclNameLoc(),
-          /*implicit=*/true);
+      auto *varExpr = new (C) UnresolvedDotExpr(selfRef, SourceLoc(),
+                                                DeclName(varDecl->getName()),
+                                                DeclNameLoc(),
+                                                /*implicit=*/true);
       auto *assignExpr = new (C) AssignExpr(varExpr, SourceLoc(), tryExpr,
                                             /*Implicit=*/true);
       statements.push_back(assignExpr);
     }
   }
 
-  // Classes which inherit from something Decodable should decode super as well.
-  auto *classDecl = dyn_cast<ClassDecl>(targetDecl);
-  if (classDecl && superclassIsDecodable(classDecl)) {
-    // Need to generate `try super.init(from: container.superDecoder())`
+  // Classes which have a superclass must call super.init(from:) if the
+  // superclass is Decodable, or super.init() if it is not.
+  if (auto *classDecl = dyn_cast<ClassDecl>(targetDecl)) {
+    if (auto *superclassDecl = classDecl->getSuperclassDecl()) {
+      if (superclassIsDecodable(classDecl)) {
+        // Need to generate `try super.init(from: container.superDecoder())`
 
-    // superDecoder()
-    auto *method = new (C) UnresolvedDeclRefExpr(
-        DeclName(C.Id_superDecoder), DeclRefKind::Ordinary, DeclNameLoc());
+        // container.superDecoder
+        auto *superDecoderRef =
+          new (C) UnresolvedDotExpr(containerExpr, SourceLoc(),
+                                    DeclName(C.Id_superDecoder),
+                                    DeclNameLoc(), /*Implicit=*/true);
 
-    // container.superDecoder()
-    auto *superDecoderRef = new (C) DotSyntaxCallExpr(containerExpr,
-                                                      SourceLoc(), method);
+        // container.superDecoder()
+        auto *superDecoderCall =
+          CallExpr::createImplicit(C, superDecoderRef, ArrayRef<Expr *>(),
+                                   ArrayRef<Identifier>());
 
-    // init(from:) expr
-    auto *initDeclRef = new (C) DeclRefExpr(ConcreteDeclRef(initDecl),
-                                            DeclNameLoc(), /*Implicit=*/true);
+        // super
+        auto *superRef = new (C) SuperRefExpr(initDecl->getImplicitSelfDecl(),
+                                              SourceLoc(), /*Implicit=*/true);
 
-    // super
-    auto *superRef = new (C) SuperRefExpr(initDecl->getImplicitSelfDecl(),
-                                          SourceLoc(), /*Implicit=*/true);
+        // super.init(from:)
+        auto initName = DeclName(C, C.Id_init, C.Id_from);
+        auto *initCall = new (C) UnresolvedDotExpr(superRef, SourceLoc(),
+                                                   initName, DeclNameLoc(),
+                                                   /*Implicit=*/true);
 
-    // super.init(from:)
-    auto *decodeCall = new (C) DotSyntaxCallExpr(superRef, SourceLoc(),
-                                                 initDeclRef);
+        // super.decode(from: container.superDecoder())
+        Expr *args[1] = {superDecoderCall};
+        Identifier argLabels[1] = {C.Id_from};
+        auto *callExpr = CallExpr::createImplicit(C, initCall,
+                                                  C.AllocateCopy(args),
+                                                  C.AllocateCopy(argLabels));
 
-    // super.decode(from: container.superDecoder())
-    Expr *args[1] = {superDecoderRef};
-    Identifier argLabels[1] = {C.Id_from};
-    auto *callExpr = CallExpr::createImplicit(C, decodeCall,
-                                              C.AllocateCopy(args),
-                                              C.AllocateCopy(argLabels));
+        // try super.init(from: container.superDecoder())
+        auto *tryExpr = new (C) TryExpr(SourceLoc(), callExpr, Type(),
+                                        /*Implicit=*/true);
+        statements.push_back(tryExpr);
+      } else {
+        // The explicit constructor name is a compound name taking no arguments.
+        DeclName initName(C, C.Id_init, ArrayRef<Identifier>());
 
-    // try super.init(from: container.superDecoder())
-    auto *tryExpr = new (C) TryExpr(SourceLoc(), callExpr, Type(),
-                                    /*Implicit=*/true);
-    statements.push_back(tryExpr);
+        // We need to look this up in the superclass to see if it throws.
+        auto result = superclassDecl->lookupDirect(initName);
+
+        // We should have bailed one level up if this were not available.
+        assert(!result.empty());
+
+        // If the init is failable, we should have already bailed one level
+        // above.
+        ConstructorDecl *superInitDecl = cast<ConstructorDecl>(result.front());
+        assert(superInitDecl->getFailability() == OTK_None);
+
+        // super
+        auto *superRef = new (C) SuperRefExpr(initDecl->getImplicitSelfDecl(),
+                                              SourceLoc(), /*Implicit=*/true);
+
+        // super.init()
+        auto *superInitRef = new (C) UnresolvedDotExpr(superRef, SourceLoc(),
+                                                       initName, DeclNameLoc(),
+                                                       /*Implicit=*/true);
+        // super.init() call
+        Expr *callExpr = CallExpr::createImplicit(C, superInitRef,
+                                                  ArrayRef<Expr *>(),
+                                                  ArrayRef<Identifier>());
+
+        // If super.init throws, try super.init()
+        if (superInitDecl->hasThrows())
+          callExpr = new (C) TryExpr(SourceLoc(), callExpr, Type(),
+                                     /*Implicit=*/true);
+
+        statements.push_back(callExpr);
+      }
+    }
   }
 
   auto *body = BraceStmt::create(C, SourceLoc(), statements, SourceLoc(),
@@ -1022,7 +1089,8 @@ static ValueDecl *deriveDecodable_init(TypeChecker &tc, Decl *parentDecl,
   auto *selfDecl = ParamDecl::createSelf(SourceLoc(), target,
                                          /*isStatic=*/false,
                                          /*isInOut=*/inOut);
-  auto *decoderParamDecl = new (C) ParamDecl(/*isLet=*/true, SourceLoc(),
+  auto *decoderParamDecl = new (C) ParamDecl(VarDecl::Specifier::Owned,
+                                             SourceLoc(),
                                              SourceLoc(), C.Id_from,
                                              SourceLoc(), C.Id_decoder,
                                              decoderType, target);
@@ -1034,12 +1102,10 @@ static ValueDecl *deriveDecodable_init(TypeChecker &tc, Decl *parentDecl,
   // Func name: init(from: Decoder)
   DeclName name(C, C.Id_init, paramList);
 
-  auto *initDecl = new (C) ConstructorDecl(
-      name, SourceLoc(),
-      /*Failability=*/OTK_None,
-      /*FailabilityLoc=*/SourceLoc(),
-      /*Throws=*/true, /*ThrowsLoc=*/SourceLoc(), selfDecl, paramList,
-      /*GenericParams=*/nullptr, target);
+  auto *initDecl = new (C) ConstructorDecl(name, SourceLoc(), OTK_None,
+                                           SourceLoc(), /*Throws=*/true,
+                                           SourceLoc(), selfDecl, paramList,
+                                           /*GenericParams=*/nullptr, target);
   initDecl->setImplicit();
   initDecl->setBodySynthesizer(deriveBodyDecodable_init);
 
@@ -1049,27 +1115,29 @@ static ValueDecl *deriveDecodable_init(TypeChecker &tc, Decl *parentDecl,
     initDecl->getAttrs().add(reqAttr);
   }
 
-  Type selfType = initDecl->computeInterfaceSelfType();
-  Type selfInitType = initDecl->computeInterfaceSelfType(/*init=*/true);
+  auto selfParam = computeSelfParam(initDecl);
+  auto initSelfParam = computeSelfParam(initDecl, /*init=*/true);
   Type interfaceType;
   Type initializerType;
   if (auto sig = target->getGenericSignatureOfContext()) {
     // Evaluate the below, but in a generic environment (if Self is generic).
     initDecl->setGenericEnvironment(target->getGenericEnvironmentOfContext());
-    interfaceType = GenericFunctionType::get(sig, selfType, innerType,
+    interfaceType = GenericFunctionType::get(sig, {selfParam}, innerType,
                                              FunctionType::ExtInfo());
-    initializerType = GenericFunctionType::get(sig, selfInitType, innerType,
+    initializerType = GenericFunctionType::get(sig, {initSelfParam}, innerType,
                                                FunctionType::ExtInfo());
   } else {
     // (Self) -> (Decoder) throws -> (Self)
-    interfaceType = FunctionType::get(selfType, innerType);
-    initializerType = FunctionType::get(selfInitType, innerType);
+    interfaceType = FunctionType::get({selfParam}, innerType,
+                                      FunctionType::ExtInfo());
+    initializerType = FunctionType::get({initSelfParam}, innerType,
+                                        FunctionType::ExtInfo());
   }
 
   initDecl->setInterfaceType(interfaceType);
   initDecl->setInitializerInterfaceType(initializerType);
-  initDecl->setAccessibility(
-      std::max(target->getFormalAccess(), Accessibility::Internal));
+  initDecl->setAccessibility(std::max(target->getFormalAccess(),
+                                      Accessibility::Internal));
 
   // If the type was not imported, the derived conformance is either from the
   // type itself or an extension, in which case we will emit the declaration
@@ -1090,10 +1158,80 @@ static ValueDecl *deriveDecodable_init(TypeChecker &tc, Decl *parentDecl,
 ///
 /// \param target The type to validate.
 ///
+/// \param requirement The requirement we want to synthesize.
+///
 /// \param proto The *codable protocol to check for validity.
 static bool canSynthesize(TypeChecker &tc, NominalTypeDecl *target,
-                          ProtocolDecl *proto) {
-  // First, look up if the type has a valid CodingKeys enum we can use.
+                          ValueDecl *requirement, ProtocolDecl *proto) {
+  // Before we attempt to look up (or more importantly, synthesize) a CodingKeys
+  // entity on target, we need to make sure the type is otherwise valid.
+  //
+  // If we are synthesizing Decodable and the target is a class with a
+  // superclass, our synthesized init(from:) will need to call either
+  // super.init(from:) or super.init() depending on whether the superclass is
+  // Decodable itself.
+  //
+  // If the required initializer is not available, we shouldn't attempt to
+  // synthesize CodingKeys.
+  ASTContext &C = tc.Context;
+  auto *classDecl = dyn_cast<ClassDecl>(target);
+  if (proto->isSpecificProtocol(KnownProtocolKind::Decodable) && classDecl) {
+    if (auto *superclassDecl = classDecl->getSuperclassDecl()) {
+      DeclName memberName;
+      auto superType = superclassDecl->getDeclaredInterfaceType();
+      if (tc.conformsToProtocol(superType, proto, superclassDecl,
+                                ConformanceCheckFlags::Used)) {
+        // super.init(from:) must be accessible.
+        memberName = cast<ConstructorDecl>(requirement)->getFullName();
+      } else {
+        // super.init() must be accessible.
+        // Passing an empty params array constructs a compound name with no
+        // arguments (as opposed to a simple name when omitted).
+        memberName = DeclName(C, DeclBaseName(C.Id_init),
+                              ArrayRef<Identifier>());
+      }
+
+      auto result = tc.lookupMember(superclassDecl, superType, memberName);
+
+      if (result.empty()) {
+        // No super initializer for us to call.
+        tc.diagnose(superclassDecl, diag::decodable_no_super_init_here,
+                    requirement->getFullName(), memberName);
+        return false;
+      } else if (result.size() > 1) {
+        // There are multiple results for this lookup. We'll end up producing a
+        // diagnostic later complaining about duplicate methods (if we haven't
+        // already), so just bail with a general error.
+        return false;
+      } else {
+        auto *initializer =
+          cast<ConstructorDecl>(result.front().getValueDecl());
+        if (!initializer->isDesignatedInit()) {
+          // We must call a superclass's designated initializer.
+          tc.diagnose(initializer,
+                      diag::decodable_super_init_not_designated_here,
+                      requirement->getFullName(), memberName);
+          return false;
+        } else if (!initializer->isAccessibleFrom(target)) {
+          // Cannot call an inaccessible method.
+          auto accessScope = initializer->getFormalAccessScope(target);
+          tc.diagnose(initializer, diag::decodable_inaccessible_super_init_here,
+                      requirement->getFullName(), memberName,
+                      accessScope.accessibilityForDiagnostics());
+          return false;
+        } else if (initializer->getFailability() != OTK_None) {
+          // We can't call super.init() if it's failable, since init(from:)
+          // isn't failable.
+          tc.diagnose(initializer, diag::decodable_super_init_is_failable_here,
+                      requirement->getFullName(), memberName);
+          return false;
+        }
+      }
+    }
+  }
+
+  // If the target already has a valid CodingKeys enum, we won't need to
+  // synthesize one.
   auto validity = hasValidCodingKeysEnum(tc, target, proto);
 
   // We found a type, but it wasn't valid.
@@ -1111,82 +1249,100 @@ static bool canSynthesize(TypeChecker &tc, NominalTypeDecl *target,
 }
 
 ValueDecl *DerivedConformance::deriveEncodable(TypeChecker &tc,
-                                              Decl *parentDecl,
-                                              NominalTypeDecl *target,
-                                              ValueDecl *requirement) {
-    // We can only synthesize Encodable for structs and classes.
-    if (!isa<StructDecl>(target) && !isa<ClassDecl>(target))
-        return nullptr;
-
-    if (requirement->getBaseName() != tc.Context.Id_encode) {
-        // Unknown requirement.
-        tc.diagnose(requirement->getLoc(), diag::broken_encodable_requirement);
-        return nullptr;
-    }
-
-    // Conformance can't be synthesized in an extension.
-    auto encodableProto = tc.Context.getProtocol(KnownProtocolKind::Encodable);
-    auto encodableType = encodableProto->getDeclaredType();
-    if (target != parentDecl) {
-        tc.diagnose(parentDecl->getLoc(), diag::cannot_synthesize_in_extension,
-                    encodableType);
-        return nullptr;
-    }
-
-    // Check other preconditions for synthesized conformance.
-    // This synthesizes a CodingKeys enum if possible.
-    if (canSynthesize(tc, target, encodableProto))
-        return deriveEncodable_encode(tc, parentDecl, target);
-
-    // Known protocol requirement but could not synthesize.
-    // FIXME: We have to output at least one error diagnostic here because we
-    // returned true from NominalTypeDecl::derivesProtocolConformance; if we
-    // don't, we expect to return a witness here later and crash on an
-    // assertion.  Producing an error stops compilation before then.
-    tc.diagnose(target, diag::type_does_not_conform, target->getDeclaredType(),
-                encodableType);
-    tc.diagnose(requirement, diag::no_witnesses, diag::RequirementKind::Func,
-                requirement->getFullName(), encodableType, /*AddFixIt=*/false);
+                                               Decl *parentDecl,
+                                               NominalTypeDecl *target,
+                                               ValueDecl *requirement) {
+  // We can only synthesize Encodable for structs and classes.
+  if (!isa<StructDecl>(target) && !isa<ClassDecl>(target))
     return nullptr;
+
+  if (requirement->getBaseName() != tc.Context.Id_encode) {
+    // Unknown requirement.
+    tc.diagnose(requirement->getLoc(), diag::broken_encodable_requirement);
+    return nullptr;
+  }
+
+  // Conformance can't be synthesized in an extension.
+  auto encodableProto = tc.Context.getProtocol(KnownProtocolKind::Encodable);
+  auto encodableType = encodableProto->getDeclaredType();
+  if (target != parentDecl) {
+    tc.diagnose(parentDecl->getLoc(), diag::cannot_synthesize_in_extension,
+                encodableType);
+    return nullptr;
+  }
+
+  // We're about to try to synthesize Encodable. If something goes wrong,
+  // we'll have to output at least one error diagnostic because we returned
+  // true from NominalTypeDecl::derivesProtocolConformance; if we don't, we're
+  // expected to return a witness here later (and we crash on an assertion).
+  // Producing a diagnostic stops compilation before then.
+  //
+  // A synthesis attempt will produce NOTE diagnostics throughout, but we'll
+  // want to collect them before displaying -- we want NOTEs to display
+  // _after_ a main diagnostic so we don't get a NOTE before the error it
+  // relates to.
+  //
+  // We can do this with a diagnostic transaction -- first collect failure
+  // diagnostics, then potentially collect notes. If we succeed in
+  // synthesizing Encodable, we can cancel the transaction and get rid of the
+  // fake failures.
+  auto diagnosticTransaction = DiagnosticTransaction(tc.Context.Diags);
+  tc.diagnose(target, diag::type_does_not_conform, target->getDeclaredType(),
+              encodableType);
+  tc.diagnose(requirement, diag::no_witnesses, diag::RequirementKind::Func,
+              requirement->getFullName(), encodableType, /*AddFixIt=*/false);
+
+  // Check other preconditions for synthesized conformance.
+  // This synthesizes a CodingKeys enum if possible.
+  if (canSynthesize(tc, target, requirement, encodableProto)) {
+    diagnosticTransaction.abort();
+    return deriveEncodable_encode(tc, parentDecl, target);
+  }
+
+  return nullptr;
 }
 
 ValueDecl *DerivedConformance::deriveDecodable(TypeChecker &tc,
                                                Decl *parentDecl,
                                                NominalTypeDecl *target,
                                                ValueDecl *requirement) {
-    // We can only synthesize Encodable for structs and classes.
-    if (!isa<StructDecl>(target) && !isa<ClassDecl>(target))
-        return nullptr;
-
-    if (requirement->getBaseName() != tc.Context.Id_init) {
-        // Unknown requirement.
-        tc.diagnose(requirement->getLoc(), diag::broken_decodable_requirement);
-        return nullptr;
-    }
-
-    // Conformance can't be synthesized in an extension.
-    auto decodableProto = tc.Context.getProtocol(KnownProtocolKind::Decodable);
-    auto decodableType = decodableProto->getDeclaredType();
-    if (target != parentDecl) {
-        tc.diagnose(parentDecl->getLoc(), diag::cannot_synthesize_in_extension,
-                    decodableType);
-        return nullptr;
-    }
-
-    // Check other preconditions for synthesized conformance.
-    // This synthesizes a CodingKeys enum if possible.
-    if (canSynthesize(tc, target, decodableProto))
-        return deriveDecodable_init(tc, parentDecl, target);
-
-    // Known protocol requirement but could not synthesize.
-    // FIXME: We have to output at least one error diagnostic here because we
-    // returned true from NominalTypeDecl::derivesProtocolConformance; if we
-    // don't, we expect to return a witness here later and crash on an
-    // assertion.  Producing an error stops compilation before then.
-    tc.diagnose(target, diag::type_does_not_conform, target->getDeclaredType(),
-                decodableType);
-    tc.diagnose(requirement, diag::no_witnesses,
-                diag::RequirementKind::Constructor, requirement->getFullName(),
-                decodableType, /*AddFixIt=*/false);
+  // We can only synthesize Encodable for structs and classes.
+  if (!isa<StructDecl>(target) && !isa<ClassDecl>(target))
     return nullptr;
+
+  if (requirement->getBaseName() != tc.Context.Id_init) {
+    // Unknown requirement.
+    tc.diagnose(requirement->getLoc(), diag::broken_decodable_requirement);
+    return nullptr;
+  }
+
+  // Conformance can't be synthesized in an extension.
+  auto decodableProto = tc.Context.getProtocol(KnownProtocolKind::Decodable);
+  auto decodableType = decodableProto->getDeclaredType();
+  if (target != parentDecl) {
+    tc.diagnose(parentDecl->getLoc(), diag::cannot_synthesize_in_extension,
+                decodableType);
+    return nullptr;
+  }
+
+  // We're about to try to synthesize Decodable. If something goes wrong,
+  // we'll have to output at least one error diagnostic. We need to collate
+  // diagnostics produced by canSynthesize and deriveDecodable_init to produce
+  // them in the right order -- see the comment in deriveEncodable for
+  // background on this transaction.
+  auto diagnosticTransaction = DiagnosticTransaction(tc.Context.Diags);
+  tc.diagnose(target, diag::type_does_not_conform, target->getDeclaredType(),
+              decodableType);
+  tc.diagnose(requirement, diag::no_witnesses,
+              diag::RequirementKind::Constructor, requirement->getFullName(),
+              decodableType, /*AddFixIt=*/false);
+
+  // Check other preconditions for synthesized conformance.
+  // This synthesizes a CodingKeys enum if possible.
+  if (canSynthesize(tc, target, requirement, decodableProto)) {
+    diagnosticTransaction.abort();
+    return deriveDecodable_init(tc, parentDecl, target);
+  }
+
+  return nullptr;
 }

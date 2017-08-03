@@ -36,7 +36,7 @@ class SILFunction;
 class SILInstruction;
 class SILLocation;
 class SILModule;
-class TransitivelyUnreachableBlocksInfo;
+class DeadEndBlocks;
 class ValueBaseUseIterator;
 class ValueUseIterator;
 
@@ -198,6 +198,9 @@ public:
   /// otherwise.
   inline Operand *getSingleUse() const;
 
+  template <class T>
+  inline T *getSingleUserOfType();
+
   /// Pretty-print the value.
   void dump() const;
   void print(raw_ostream &OS) const;
@@ -301,7 +304,7 @@ public:
 
   /// Verify that this SILValue and its uses respects ownership invariants.
   void verifyOwnership(SILModule &Mod,
-                       TransitivelyUnreachableBlocksInfo *TUB = nullptr) const;
+                       DeadEndBlocks *DEBlocks = nullptr) const;
 };
 
 /// A formal SIL reference to a value, suitable for use as a stored
@@ -525,6 +528,19 @@ inline Operand *ValueBase::getSingleUse() const {
 
   // Otherwise, the element that we accessed.
   return Op;
+}
+
+template <class T>
+inline T *ValueBase::getSingleUserOfType() {
+  T *Result = nullptr;
+  for (auto *Op : getUses()) {
+    if (auto *Tmp = dyn_cast<T>(Op->getUser())) {
+      if (Result)
+        return nullptr;
+      Result = Tmp;
+    }
+  }
+  return Result;
 }
 
 /// A constant-size list of the operands of an instruction.

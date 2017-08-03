@@ -24,6 +24,7 @@
 #include "WeakReference.h"
 #include "llvm/Support/Compiler.h"
 #include <cassert>
+#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -382,7 +383,7 @@ void swift_TupleMirror_subscript(String *outString,
   if (!hasLabel) {
     // The name is the stringized element number '.0'.
     char buf[32];
-    snprintf(buf, sizeof(buf), ".%zd", i);
+    snprintf(buf, sizeof(buf), ".%" PRIdPTR, i);
     new (outString) String(buf, strlen(buf));
   }
 
@@ -1210,9 +1211,8 @@ char *swift_demangle(const char *mangledName,
 
   // Check if we are dealing with Swift mangled name, otherwise, don't try
   // to demangle and send indication to the user.
-  if (mangledName[0] != '_' || mangledName[1] != 'T') {
-    return nullptr;
-  }
+  if (!Demangle::isSwiftSymbol(mangledName))
+    return nullptr; // Not a mangled name
 
   // Demangle the name.
   auto options = Demangle::DemangleOptions();

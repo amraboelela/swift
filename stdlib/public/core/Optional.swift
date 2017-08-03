@@ -178,11 +178,11 @@ public enum Optional<Wrapped> : ExpressibleByNilLiteral {
   ///
   ///     let possibleNumber: Int? = Int("42")
   ///     let nonOverflowingSquare = possibleNumber.flatMap { x -> Int? in
-  ///         let (result, overflowed) = Int.multiplyWithOverflow(x, x)
-  ///         return overflowed ? nil : result
+  ///         let (result, overflowed) = x.multipliedReportingOverflow(by: x)
+  ///         return overflowed == .overflow ? nil : result
   ///     }
   ///     print(nonOverflowingSquare)
-  ///     // Prints "Optional(1746)"
+  ///     // Prints "Optional(1764)"
   ///
   /// - Parameter transform: A closure that takes the unwrapped value
   ///   of the instance.  

@@ -169,6 +169,11 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     Opts.GroupInfoPath = A->getValue();
   }
 
+  if (const Arg *A = Args.getLastArg(OPT_index_store_path)) {
+    Opts.IndexStorePath = A->getValue();
+  }
+  Opts.IndexSystemModules |= Args.hasArg(OPT_index_system_modules);
+
   Opts.EmitVerboseSIL |= Args.hasArg(OPT_emit_verbose_sil);
   Opts.EmitSortedSIL |= Args.hasArg(OPT_emit_sorted_sil);
 
@@ -206,6 +211,10 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     }
   }
 
+  if (const Arg *A = Args.getLastArg(OPT_tbd_install_name)) {
+    Opts.TBDInstallName = A->getValue();
+  }
+
   if (const Arg *A = Args.getLastArg(OPT_warn_long_function_bodies)) {
     unsigned attempt;
     if (StringRef(A->getValue()).getAsInteger(10, attempt)) {
@@ -213,6 +222,26 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
                      A->getAsString(Args), A->getValue());
     } else {
       Opts.WarnLongFunctionBodies = attempt;
+    }
+  }
+
+  if (const Arg *A = Args.getLastArg(OPT_warn_long_expression_type_checking)) {
+    unsigned attempt;
+    if (StringRef(A->getValue()).getAsInteger(10, attempt)) {
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                     A->getAsString(Args), A->getValue());
+    } else {
+      Opts.WarnLongExpressionTypeChecking = attempt;
+    }
+  }
+
+  if (const Arg *A = Args.getLastArg(OPT_solver_expression_time_threshold_EQ)) {
+    unsigned attempt;
+    if (StringRef(A->getValue()).getAsInteger(10, attempt)) {
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                     A->getAsString(Args), A->getValue());
+    } else {
+      Opts.SolverExpressionTimeThreshold = attempt;
     }
   }
 
@@ -285,8 +314,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       Action = FrontendOptions::EmitPCH;
     } else if (Opt.matches(OPT_emit_imported_modules)) {
       Action = FrontendOptions::EmitImportedModules;
-    } else if (Opt.matches(OPT_emit_tbd)) {
-      Action = FrontendOptions::EmitTBD;
     } else if (Opt.matches(OPT_parse)) {
       Action = FrontendOptions::Parse;
     } else if (Opt.matches(OPT_typecheck)) {
@@ -295,6 +322,10 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       Action = FrontendOptions::DumpParse;
     } else if (Opt.matches(OPT_dump_ast)) {
       Action = FrontendOptions::DumpAST;
+    } else if (Opt.matches(OPT_emit_syntax)) {
+      Action = FrontendOptions::EmitSyntax;
+    } else if (Opt.matches(OPT_merge_modules)) {
+      Action = FrontendOptions::MergeModules;
     } else if (Opt.matches(OPT_dump_scope_maps)) {
       Action = FrontendOptions::DumpScopeMaps;
 
@@ -506,6 +537,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::DumpParse:
     case FrontendOptions::DumpInterfaceHash:
     case FrontendOptions::DumpAST:
+    case FrontendOptions::EmitSyntax:
     case FrontendOptions::PrintAST:
     case FrontendOptions::DumpScopeMaps:
     case FrontendOptions::DumpTypeRefinementContexts:
@@ -531,6 +563,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       Suffix = SIB_EXTENSION;
       break;
 
+    case FrontendOptions::MergeModules:
     case FrontendOptions::EmitModuleOnly:
       Suffix = SERIALIZED_MODULE_EXTENSION;
       break;
@@ -571,13 +604,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
         Opts.setSingleOutputFilename("-");
       else
         Suffix = "importedmodules";
-      break;
-
-    case FrontendOptions::EmitTBD:
-      if (Opts.OutputFilenames.empty())
-        Opts.setSingleOutputFilename("-");
-      else
-        Suffix = "tbd";
       break;
     }
 
@@ -688,6 +714,9 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
                           OPT_emit_loaded_module_trace_path,
                           "trace.json", false);
 
+  determineOutputFilename(Opts.TBDPath, OPT_emit_tbd, OPT_emit_tbd_path, "tbd",
+                          false);
+
   if (const Arg *A = Args.getLastArg(OPT_emit_fixits_path)) {
     Opts.FixitsOutputPath = A->getValue();
   }
@@ -696,7 +725,9 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     Opts.RequestedAction == FrontendOptions::EmitSIB ||
     Opts.RequestedAction == FrontendOptions::EmitSIBGen;
   bool canUseMainOutputForModule =
-    Opts.RequestedAction == FrontendOptions::EmitModuleOnly || IsSIB;
+    Opts.RequestedAction == FrontendOptions::MergeModules ||
+    Opts.RequestedAction == FrontendOptions::EmitModuleOnly ||
+    IsSIB;
   auto ext = IsSIB ? SIB_EXTENSION : SERIALIZED_MODULE_EXTENSION;
   auto sibOpt = Opts.RequestedAction == FrontendOptions::EmitSIB ?
     OPT_emit_sib : OPT_emit_sibgen;
@@ -718,6 +749,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::DumpParse:
     case FrontendOptions::DumpInterfaceHash:
     case FrontendOptions::DumpAST:
+    case FrontendOptions::EmitSyntax:
     case FrontendOptions::PrintAST:
     case FrontendOptions::DumpScopeMaps:
     case FrontendOptions::DumpTypeRefinementContexts:
@@ -727,6 +759,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       return true;
     case FrontendOptions::Parse:
     case FrontendOptions::Typecheck:
+    case FrontendOptions::MergeModules:
     case FrontendOptions::EmitModuleOnly:
     case FrontendOptions::EmitPCH:
     case FrontendOptions::EmitSILGen:
@@ -738,7 +771,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::EmitAssembly:
     case FrontendOptions::EmitObject:
     case FrontendOptions::EmitImportedModules:
-    case FrontendOptions::EmitTBD:
       break;
     }
   }
@@ -749,6 +781,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::DumpParse:
     case FrontendOptions::DumpInterfaceHash:
     case FrontendOptions::DumpAST:
+    case FrontendOptions::EmitSyntax:
     case FrontendOptions::PrintAST:
     case FrontendOptions::EmitPCH:
     case FrontendOptions::DumpScopeMaps:
@@ -759,6 +792,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       return true;
     case FrontendOptions::Parse:
     case FrontendOptions::Typecheck:
+    case FrontendOptions::MergeModules:
     case FrontendOptions::EmitModuleOnly:
     case FrontendOptions::EmitSILGen:
     case FrontendOptions::EmitSIL:
@@ -769,7 +803,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::EmitAssembly:
     case FrontendOptions::EmitObject:
     case FrontendOptions::EmitImportedModules:
-    case FrontendOptions::EmitTBD:
       break;
     }
   }
@@ -781,6 +814,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::DumpParse:
     case FrontendOptions::DumpInterfaceHash:
     case FrontendOptions::DumpAST:
+    case FrontendOptions::EmitSyntax:
     case FrontendOptions::PrintAST:
     case FrontendOptions::DumpScopeMaps:
     case FrontendOptions::DumpTypeRefinementContexts:
@@ -790,6 +824,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
                      diag::error_mode_cannot_emit_loaded_module_trace);
       return true;
     case FrontendOptions::Typecheck:
+    case FrontendOptions::MergeModules:
     case FrontendOptions::EmitModuleOnly:
     case FrontendOptions::EmitPCH:
     case FrontendOptions::EmitSILGen:
@@ -801,7 +836,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::EmitAssembly:
     case FrontendOptions::EmitObject:
     case FrontendOptions::EmitImportedModules:
-    case FrontendOptions::EmitTBD:
       break;
     }
   }
@@ -815,6 +849,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::DumpParse:
     case FrontendOptions::DumpInterfaceHash:
     case FrontendOptions::DumpAST:
+    case FrontendOptions::EmitSyntax:
     case FrontendOptions::PrintAST:
     case FrontendOptions::EmitPCH:
     case FrontendOptions::DumpScopeMaps:
@@ -827,6 +862,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       else
         Diags.diagnose(SourceLoc(), diag::error_mode_cannot_emit_module_doc);
       return true;
+    case FrontendOptions::MergeModules:
     case FrontendOptions::EmitModuleOnly:
     case FrontendOptions::EmitSIL:
     case FrontendOptions::EmitSIBGen:
@@ -836,7 +872,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     case FrontendOptions::EmitAssembly:
     case FrontendOptions::EmitObject:
     case FrontendOptions::EmitImportedModules:
-    case FrontendOptions::EmitTBD:
       break;
     }
   }
@@ -849,7 +884,6 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       Args.hasArg(OPT_serialize_debugging_options);
   Opts.EnableSourceImport |= Args.hasArg(OPT_enable_source_import);
   Opts.ImportUnderlyingModule |= Args.hasArg(OPT_import_underlying_module);
-  Opts.SILSerializeAll |= Args.hasArg(OPT_sil_serialize_all);
   Opts.EnableSerializationNestedTypeLookupTable &=
       !Args.hasArg(OPT_disable_serialization_nested_type_lookup_table);
 
@@ -945,6 +979,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.DisableTsanInoutInstrumentation |=
       Args.hasArg(OPT_disable_tsan_inout_instrumentation);
 
+  Opts.ReportErrorsToDebugger |=
+      Args.hasArg(OPT_report_errors_to_debugger);
+
   if (FrontendOpts.InputKind == InputFileKind::IFK_SIL)
     Opts.DisableAvailabilityChecking = true;
   
@@ -954,7 +991,21 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
       = A->getOption().matches(OPT_enable_access_control);
   }
 
-  Opts.DisableTypoCorrection |= Args.hasArg(OPT_disable_typo_correction);
+  if (auto A = Args.getLastArg(OPT_disable_typo_correction,
+                               OPT_typo_correction_limit)) {
+    if (A->getOption().matches(OPT_disable_typo_correction))
+      Opts.TypoCorrectionLimit = 0;
+    else {
+      unsigned limit;
+      if (StringRef(A->getValue()).getAsInteger(10, limit)) {
+        Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                       A->getAsString(Args), A->getValue());
+        return true;
+      }
+
+      Opts.TypoCorrectionLimit = limit;
+    }
+  }
 
   Opts.CodeCompleteInitsInPostfixExpr |=
       Args.hasArg(OPT_code_complete_inits_in_postfix_expr);
@@ -1015,6 +1066,17 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     }
     
     Opts.SolverMemoryThreshold = threshold;
+  }
+
+  if (const Arg *A = Args.getLastArg(OPT_solver_shrink_unsolved_threshold)) {
+    unsigned threshold;
+    if (StringRef(A->getValue()).getAsInteger(10, threshold)) {
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                     A->getAsString(Args), A->getValue());
+      return true;
+    }
+
+    Opts.SolverShrinkUnsolvedThreshold = threshold;
   }
 
   if (const Arg *A = Args.getLastArg(OPT_value_recursion_threshold)) {
@@ -1120,6 +1182,9 @@ static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
 
   if (const Arg *A = Args.getLastArg(OPT_target_cpu))
     Opts.TargetCPU = A->getValue();
+
+  if (const Arg *A = Args.getLastArg(OPT_index_store_path))
+    Opts.IndexStorePath = A->getValue();
 
   for (const Arg *A : make_range(Args.filtered_begin(OPT_Xcc),
                                  Args.filtered_end())) {
@@ -1288,7 +1353,8 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
                          IRGenOptions &IRGenOpts,
                          FrontendOptions &FEOpts,
                          DiagnosticEngine &Diags,
-                         const llvm::Triple &Triple) {
+                         const llvm::Triple &Triple,
+                         ClangImporterOptions &ClangOpts) {
   using namespace options;
 
   if (const Arg *A = Args.getLastArg(OPT_sil_inline_threshold)) {
@@ -1319,6 +1385,10 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   if (Args.hasArg(OPT_sil_merge_partial_modules))
     Opts.MergePartialModules = true;
 
+  Opts.SILSerializeAll |= Args.hasArg(OPT_sil_serialize_all);
+  Opts.SILSerializeWitnessTables |=
+    Args.hasArg(OPT_sil_serialize_witness_tables);
+
   // Parse the optimization level.
   if (const Arg *A = Args.getLastArg(OPT_O_Group)) {
     if (A->getOption().matches(OPT_Onone)) {
@@ -1339,6 +1409,10 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
       assert(A->getOption().matches(OPT_O));
       IRGenOpts.Optimize = true;
       Opts.Optimization = SILOptions::SILOptMode::Optimize;
+    }
+
+    if (IRGenOpts.Optimize) {
+      ClangOpts.Optimization = "-Os";
     }
   }
 
@@ -1410,7 +1484,14 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   }
 
   if (const Arg *A = Args.getLastArg(options::OPT_sanitize_EQ)) {
-    Opts.Sanitize = parseSanitizerArgValues(A, Triple, Diags);
+    Opts.Sanitize = parseSanitizerArgValues(
+        A, Triple, Diags,
+        /* sanitizerRuntimeLibExists= */[](StringRef libName) {
+
+          // The driver has checked the existence of the library
+          // already.
+          return true;
+        });
     IRGenOpts.Sanitize = Opts.Sanitize;
   }
 
@@ -1724,7 +1805,7 @@ bool CompilerInvocation::parseArgs(ArrayRef<const char *> Args,
   }
 
   if (ParseSILArgs(SILOpts, ParsedArgs, IRGenOpts, FrontendOpts, Diags,
-                   LangOpts.Target)) {
+                   LangOpts.Target, ClangImporterOpts)) {
     return true;
   }
 
