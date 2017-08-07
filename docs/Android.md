@@ -204,7 +204,9 @@ $ utils/build-script \
     --android-icu-uc /path/to/libicu-android/armeabi-v7a \
     --android-icu-uc-include /path/to/libicu-android/armeabi-v7a/icu/source/common \
     --android-icu-i18n /path/to/libicu-android/armeabi-v7a \
-    --android-icu-i18n-include /path/to/libicu-android/armeabi-v7a/icu/source/i18n
+    --android-icu-i18n-include /path/to/libicu-android/armeabi-v7a/icu/source/i18n \
+    --android-icu-data /path/to/libicu-android/armeabi-v7a \
+    --android-icu-data-include /path/to/libicu-android/armeabi-v7a/icu/source/data
 ```
 
 ### 3. Compiling `hello.swift` to run on an Android device
@@ -331,5 +333,7 @@ $ utils/build-script \
   --android-icu-uc ~/libicu-android/armeabi-v7a/libicuuc.so \
   --android-icu-uc-include ~/libicu-android/armeabi-v7a/icu/source/common \
   --android-icu-i18n ~/libicu-android/armeabi-v7a/libicui18n.so \
-  --android-icu-i18n-include ~/libicu-android/armeabi-v7a/icu/source/i18n/
+  --android-icu-i18n-include ~/libicu-android/armeabi-v7a/icu/source/i18n \
+  --android-icu-data ~/libicu-android/armeabi-v7a/libicui18n.so \
+  --android-icu-data-include ~/libicu-android/armeabi-v7a/icu/source/data
 ```

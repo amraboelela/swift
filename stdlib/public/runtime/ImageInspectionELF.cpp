@@ -26,6 +26,7 @@
 #include <elf.h>
 #include <link.h>
 #include <string.h>
+#include "llvm/ADT/StringRef.h"
 
 #if defined(__ANDROID__)
 #include "llvm/ADT/StringRef.h"
