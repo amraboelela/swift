@@ -2439,6 +2439,8 @@ namespace {
         ProtocolDecl *protocols[]
           = {cxt.getProtocol(KnownProtocolKind::RawRepresentable),
              cxt.getProtocol(KnownProtocolKind::Equatable)};
+        if (!protocols[0] || !protocols[1])
+          return nullptr;
 
         auto options = getDefaultMakeStructRawValuedOptions();
         options |= MakeStructRawValuedFlags::MakeUnlabeledValueInit;
@@ -4394,12 +4396,12 @@ namespace {
       result->setCheckedInheritanceClause();
 
       // Add inferred attributes.
-#define INFERRED_ATTRIBUTES(ModuleName, ClassName, AttributeSet)        \
-      if (name.str().equals(#ClassName) &&                              \
-          result->getParentModule()->getName().str().equals(#ModuleName)) {  \
-        using namespace inferred_attributes;                            \
-        addInferredAttributes(result, AttributeSet);                    \
-      }
+#define INFERRED_ATTRIBUTES(ModuleName, ClassName, AttributeSet)               \
+  if (name.str().equals(#ClassName) &&                                         \
+      result->getParentModule()->getName().str().equals(#ModuleName)) {        \
+    using namespace inferred_attributes;                                       \
+    addInferredAttributes(result, AttributeSet);                               \
+  }
 #include "InferredAttributes.def"
 
       result->setMemberLoader(&Impl, 0);
