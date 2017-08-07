@@ -46,9 +46,9 @@ bool BuiltinInfo::isReadNone() const {
 
 bool IntrinsicInfo::hasAttribute(llvm::Attribute::AttrKind Kind) const {
   // FIXME: We should not be relying on the global LLVM context.
-  llvm::AttributeSet attrs
-    = llvm::Intrinsic::getAttributes(getGlobalLLVMContext(), ID);
-  return (attrs.hasAttribute(llvm::AttributeSet::FunctionIndex, Kind));
+  llvm::AttributeList attrs =
+      llvm::Intrinsic::getAttributes(getGlobalLLVMContext(), ID);
+  return (attrs.hasAttribute(llvm::AttributeList::FunctionIndex, Kind));
 }
 
 Type swift::getBuiltinType(ASTContext &Context, StringRef Name) {
@@ -1062,8 +1062,12 @@ static ValueDecl *getIntToFPWithOverflowOperation(ASTContext &Context,
 
 static ValueDecl *getUnreachableOperation(ASTContext &Context,
                                           Identifier Id) {
+  auto NeverTy = Context.getNeverType();
+  if (!NeverTy)
+    return nullptr;
+
   // () -> Never
-  return getBuiltinFunction(Id, {}, Context.getNeverType());
+  return getBuiltinFunction(Id, {}, NeverTy);
 }
 
 static ValueDecl *getOnceOperation(ASTContext &Context,
@@ -1291,12 +1295,15 @@ getSwiftFunctionTypeForIntrinsic(unsigned iid, ArrayRef<Type> TypeArgs,
   }
   
   // Translate LLVM function attributes to Swift function attributes.
-  llvm::AttributeSet attrs =
+  llvm::AttributeList attrs =
       llvm::Intrinsic::getAttributes(getGlobalLLVMContext(), ID);
   Info = FunctionType::ExtInfo();
-  if (attrs.hasAttribute(llvm::AttributeSet::FunctionIndex,
-                         llvm::Attribute::NoReturn))
+  if (attrs.hasAttribute(llvm::AttributeList::FunctionIndex,
+                         llvm::Attribute::NoReturn)) {
     ResultTy = Context.getNeverType();
+    if (!ResultTy)
+      return false;
+  }
   
   return true;
 }

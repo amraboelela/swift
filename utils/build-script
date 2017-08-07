@@ -1955,7 +1955,7 @@ iterations with -O",
     llvm_group.add_argument(
         '--llvm-targets-to-build',
         help='LLVM target generators to build',
-        default="X86;ARM;AArch64;PowerPC;SystemZ")
+        default="X86;ARM;AArch64;PowerPC;SystemZ;Mips")
 
     android_group = parser.add_argument_group(
         title="Build settings for Android")
@@ -2061,7 +2061,7 @@ iterations with -O",
         "--clang-user-visible-version",
         help="User-visible version of the embedded Clang and LLVM compilers",
         type=arguments.type.clang_compiler_version,
-        default="4.0.0",
+        default="5.0.0",
         metavar="MAJOR.MINOR.PATCH")
     parser.add_argument(
         "--swift-compiler-version",
