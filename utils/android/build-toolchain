@@ -22,7 +22,7 @@ SWIFT_TOOLCHAIN_DIR="${SRC_DIR}/../swift-android-toolchain"
 SWIFT_LINUX_DIR="${SRC_DIR}/../build/Ninja-ReleaseAssert/swift-linux-x86_64"
 
 ./utils/build-script \
-    -R --debug-swift-stdlib \
+    -R \
     --android \
     --android-ndk "${ANDROID_NDK_DIR}" \
     --android-api-level 21 \
