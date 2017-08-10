@@ -1,4 +1,4 @@
 #!/bin/bash
 
-/home/amr/swift/swift/utils/build-toolchain-manually -c -u
-#/home/amr/swift/swift/utils/build-toolchain-manually -u
+#/home/amr/swift/swift/utils/build-toolchain-manually -c -u
+/home/amr/swift/swift/utils/build-toolchain-manually -u
