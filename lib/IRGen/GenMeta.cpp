@@ -329,9 +329,9 @@ static llvm::Value *emitForeignTypeMetadataRef(IRGenFunction &IGF,
   llvm::Value *candidate = IGF.IGM.getAddrOfForeignTypeMetadataCandidate(type);
   auto call = IGF.Builder.CreateCall(IGF.IGM.getGetForeignTypeMetadataFn(),
                                 candidate);
-  call->addAttribute(llvm::AttributeSet::FunctionIndex,
+  call->addAttribute(llvm::AttributeList::FunctionIndex,
                      llvm::Attribute::NoUnwind);
-  call->addAttribute(llvm::AttributeSet::FunctionIndex,
+  call->addAttribute(llvm::AttributeList::FunctionIndex,
                      llvm::Attribute::ReadNone);
   return call;
 }
@@ -381,7 +381,7 @@ static llvm::Value *emitNominalMetadataRef(IRGenFunction &IGF,
 
   auto result = IGF.Builder.CreateCall(accessor, genericArgs.Values);
   result->setDoesNotThrow();
-  result->addAttribute(llvm::AttributeSet::FunctionIndex,
+  result->addAttribute(llvm::AttributeList::FunctionIndex,
                        llvm::Attribute::ReadNone);
 
   IGF.setScopedLocalTypeData(theType, LocalTypeDataKind::forTypeMetadata(),
@@ -1094,7 +1094,7 @@ void irgen::emitLazyCacheAccessFunction(IRGenModule &IGM,
   // current LLVM ARM backend.
   auto load = IGF.Builder.CreateLoad(cache);
   // Make this barrier explicit when building for TSan to avoid false positives.
-  if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+  if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
     load->setOrdering(llvm::AtomicOrdering::Acquire);
 
 
@@ -1170,7 +1170,7 @@ static llvm::Value *emitGenericMetadataAccessFunction(IRGenFunction &IGF,
   auto result = IGF.Builder.CreateCall(IGF.IGM.getGetGenericMetadataFn(),
                                        {metadata, arguments});
   result->setDoesNotThrow();
-  result->addAttribute(llvm::AttributeSet::FunctionIndex,
+  result->addAttribute(llvm::AttributeList::FunctionIndex,
                        llvm::Attribute::ReadOnly);
 
   IGF.Builder.CreateLifetimeEnd(argsBuffer,
@@ -1208,7 +1208,7 @@ createInPlaceMetadataInitializationFunction(IRGenModule &IGM,
 
   // Skip instrumentation when building for TSan to avoid false positives.
   // The synchronization for this happens in the Runtime and we do not see it.
-  if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+  if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
     fn->removeFnAttr(llvm::Attribute::SanitizeThread);
 
   // Emit the initialization.
@@ -1268,7 +1268,7 @@ emitInPlaceTypeMetadataAccessFunctionBody(IRGenFunction &IGF,
   Address cacheAddr = Address(cacheVariable, IGF.IGM.getPointerAlignment());
   llvm::LoadInst *relocatedMetadata = IGF.Builder.CreateLoad(cacheAddr);
   // Make this barrier explicit when building for TSan to avoid false positives.
-  if (IGF.IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+  if (IGF.IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
     relocatedMetadata->setOrdering(llvm::AtomicOrdering::Acquire);
 
   // emitLazyCacheAccessFunction will see that the value was loaded from
@@ -1543,7 +1543,7 @@ namespace {
 
         auto result = IGF.Builder.CreateCall(accessor, args);
         result->setDoesNotThrow();
-        result->addAttribute(llvm::AttributeSet::FunctionIndex,
+        result->addAttribute(llvm::AttributeList::FunctionIndex,
                              llvm::Attribute::ReadNone);
 
         return result;
@@ -1831,10 +1831,8 @@ namespace {
         return visit(singletonFieldTy.getSwiftRValueType());
 
       // If the type is fixed-layout, emit a copy of its layout.
-      if (auto fixed = dyn_cast<FixedTypeInfo>(&ti)) {
-
+      if (auto fixed = dyn_cast<FixedTypeInfo>(&ti))
         return IGF.IGM.emitFixedTypeLayout(t, *fixed);
-      }
 
       return emitFromTypeMetadata(t);
     }
@@ -2859,7 +2857,7 @@ namespace {
 
       // Skip instrumentation when building for TSan to avoid false positives.
       // The synchronization for this happens in the Runtime and we do not see it.
-      if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+      if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
         f->removeFnAttr(llvm::Attribute::SanitizeThread);
 
       if (IGM.DebugInfo)
@@ -3065,13 +3063,15 @@ namespace {
   };
 } // end anonymous namespace
 
-// Classes
-
-static llvm::Value *emitInitializeFieldOffsetVector(IRGenFunction &IGF,
-                                                    ClassDecl *target,
-                                                    llvm::Value *metadata) {
+llvm::Value *
+irgen::emitInitializeFieldOffsetVector(IRGenFunction &IGF,
+                                       SILType T,
+                                       llvm::Value *metadata,
+                                       llvm::Value *vwtable) {
+  auto *target = T.getNominalOrBoundGenericNominal();
   llvm::Value *fieldVector
-    = emitAddressOfFieldOffsetVector(IGF, metadata, target).getAddress();
+    = emitAddressOfFieldOffsetVector(IGF, metadata, target)
+      .getAddress();
   
   // Collect the stored properties of the type.
   llvm::SmallVector<VarDecl*, 4> storedProperties;
@@ -3081,52 +3081,46 @@ static llvm::Value *emitInitializeFieldOffsetVector(IRGenFunction &IGF,
 
   // Fill out an array with the field type metadata records.
   Address fields = IGF.createAlloca(
-                   llvm::ArrayType::get(IGF.IGM.SizeTy,
-                                        storedProperties.size() * 2),
+                   llvm::ArrayType::get(IGF.IGM.Int8PtrPtrTy,
+                                        storedProperties.size()),
                    IGF.IGM.getPointerAlignment(), "classFields");
   IGF.Builder.CreateLifetimeStart(fields,
-                  IGF.IGM.getPointerSize() * storedProperties.size() * 2);
-  
-  Address firstField;
+                  IGF.IGM.getPointerSize() * storedProperties.size());
+  fields = IGF.Builder.CreateStructGEP(fields, 0, Size(0));
+
   unsigned index = 0;
   for (auto prop : storedProperties) {
-    auto propFormalTy = target->mapTypeIntoContext(prop->getInterfaceType())
-                            ->getCanonicalType();
-    SILType propLoweredTy = IGF.IGM.getLoweredType(propFormalTy);
-    auto &propTI = IGF.getTypeInfo(propLoweredTy);
-    auto sizeAndAlignMask
-      = propTI.getSizeAndAlignmentMask(IGF, propLoweredTy);
-
-    llvm::Value *size = sizeAndAlignMask.first;
-    Address sizeAddr =
-      IGF.Builder.CreateStructGEP(fields, index, IGF.IGM.getPointerSize());
-    IGF.Builder.CreateStore(size, sizeAddr);
-    if (index == 0) firstField = sizeAddr;
-
-    llvm::Value *alignMask = sizeAndAlignMask.second;
-    Address alignMaskAddr =
-      IGF.Builder.CreateStructGEP(fields, index + 1,
-                                  IGF.IGM.getPointerSize());
-    IGF.Builder.CreateStore(alignMask, alignMaskAddr);
-
-    index += 2;
-  }
-
-  if (storedProperties.empty()) {
-    firstField = IGF.Builder.CreateStructGEP(fields, 0, Size(0));
+    auto propTy = T.getFieldType(prop, IGF.getSILModule());
+    llvm::Value *metadata = IGF.emitTypeLayoutRef(propTy);
+    Address field = IGF.Builder.CreateConstArrayGEP(fields, index,
+                                                    IGF.IGM.getPointerSize());
+    IGF.Builder.CreateStore(metadata, field);
+    ++index;
   }
 
   // Ask the runtime to lay out the class.  This can relocate it if it
   // wasn't allocated with swift_allocateGenericClassMetadata.
   auto numFields = IGF.IGM.getSize(Size(storedProperties.size()));
-  metadata = IGF.Builder.CreateCall(IGF.IGM.getInitClassMetadataUniversalFn(),
-                                    {metadata, numFields,
-                                     firstField.getAddress(), fieldVector});
+
+  if (isa<ClassDecl>(target)) {
+    assert(vwtable == nullptr);
+    metadata = IGF.Builder.CreateCall(IGF.IGM.getInitClassMetadataUniversalFn(),
+                                      {metadata, numFields,
+                                       fields.getAddress(), fieldVector});
+  } else {
+    assert(isa<StructDecl>(target));
+    IGF.Builder.CreateCall(IGF.IGM.getInitStructMetadataUniversalFn(),
+                           {numFields, fields.getAddress(),
+                            fieldVector, vwtable});
+  }
+
   IGF.Builder.CreateLifetimeEnd(fields,
-                  IGF.IGM.getPointerSize() * storedProperties.size() * 2);
+                  IGF.IGM.getPointerSize() * storedProperties.size());
 
   return metadata;
 }
+
+// Classes
 
 namespace {
   /// An adapter for laying out class metadata.
@@ -3469,7 +3463,11 @@ namespace {
       //
       // emitInitializeFieldOffsetVector will do everything in the full case.
       if (doesClassMetadataRequireDynamicInitialization(IGF.IGM, Target)) {
-        metadata = emitInitializeFieldOffsetVector(IGF, Target, metadata);
+        auto classTy = Target->getDeclaredTypeInContext()->getCanonicalType();
+        auto loweredClassTy = IGF.IGM.getLoweredType(classTy);
+        metadata = emitInitializeFieldOffsetVector(IGF, loweredClassTy,
+                                                   metadata,
+                                                   /*vwtable=*/nullptr);
 
       // TODO: do something intermediate when e.g. all we needed to do was
       // set parent metadata pointers.
@@ -4260,7 +4258,7 @@ emitHeapMetadataRefForUnknownHeapObject(IRGenFunction &IGF,
                                          object->getName() + ".Type");
   metadata->setCallingConv(llvm::CallingConv::C);
   metadata->setDoesNotThrow();
-  metadata->addAttribute(llvm::AttributeSet::FunctionIndex,
+  metadata->addAttribute(llvm::AttributeList::FunctionIndex,
                          llvm::Attribute::ReadOnly);
   return metadata;
 }

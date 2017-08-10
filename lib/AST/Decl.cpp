@@ -61,6 +61,12 @@ STATISTIC(NumLazyGenericEnvironments,
 STATISTIC(NumLazyGenericEnvironmentsLoaded,
           "# of lazily-deserialized generic environments loaded");
 
+const clang::MacroInfo *ClangNode::getAsMacro() const {
+  if (auto MM = getAsModuleMacro())
+    return MM->getMacroInfo();
+  return getAsMacroInfo();
+}
+
 clang::SourceLocation ClangNode::getLocation() const {
   if (auto D = getAsDecl())
     return D->getLocation();
@@ -4414,6 +4420,18 @@ SourceRange SubscriptDecl::getSourceRange() const {
   if (getBracesRange().isValid())
     return { getSubscriptLoc(), getBracesRange().End };
   return { getSubscriptLoc(), ElementTy.getSourceRange().End };
+}
+
+SourceRange SubscriptDecl::getSignatureSourceRange() const {
+  if (isImplicit())
+    return SourceRange();
+  if (auto Indices = getIndices()) {
+    auto End = Indices->getEndLoc();
+    if (End.isValid()) {
+      return SourceRange(getSubscriptLoc(), End);
+    }
+  }
+  return getSubscriptLoc();
 }
 
 DeclName AbstractFunctionDecl::getEffectiveFullName() const {

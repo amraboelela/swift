@@ -202,7 +202,10 @@ namespace {
     // of the exit(3) libc function as "func exit(Int32)", not as
     // "func exit(CInt)".
     static Type unwrapCType(Type T) {
-      if (auto *NAT = dyn_cast_or_null<NameAliasType>(T.getPointer()))
+      // Handle missing or invalid stdlib declarations
+      if (!T || T->hasError())
+        return Type();
+      if (auto *NAT = dyn_cast<NameAliasType>(T.getPointer()))
         return NAT->getSinglyDesugaredType();
       return T;
     }
@@ -284,7 +287,6 @@ namespace {
       case clang::BuiltinType::OCLEvent:
       case clang::BuiltinType::OCLClkEvent:
       case clang::BuiltinType::OCLQueue:
-      case clang::BuiltinType::OCLNDRange:
       case clang::BuiltinType::OCLReserveID:
         return Type();
 
@@ -335,11 +337,14 @@ namespace {
       // that 'Unsafe[Mutable]Pointer<T>' implicitly converts to
       // 'Unsafe[Mutable]RawPointer' for interoperability.
       if (pointeeQualType->isVoidType()) {
-        return {
-          (quals.hasConst() ? Impl.SwiftContext.getUnsafeRawPointerDecl()
-           : Impl.SwiftContext.getUnsafeMutableRawPointerDecl())
-            ->getDeclaredType(),
-            ImportHint::OtherPointer};
+        auto pointerTypeDecl =
+          (quals.hasConst()
+           ? Impl.SwiftContext.getUnsafeRawPointerDecl()
+           : Impl.SwiftContext.getUnsafeMutableRawPointerDecl());
+        if (!pointerTypeDecl)
+          return Type();
+        return {pointerTypeDecl->getDeclaredType(),
+                ImportHint::OtherPointer};
       }
 
       // All other C pointers to concrete types map to
@@ -360,9 +365,13 @@ namespace {
 
       // If the pointed-to type is unrepresentable in Swift, import as
       // OpaquePointer.
-      if (!pointeeType)
-        return {Impl.SwiftContext.getOpaquePointerDecl()->getDeclaredType(),
+      if (!pointeeType) {
+        auto opaquePointer = Impl.SwiftContext.getOpaquePointerDecl();
+        if (!opaquePointer)
+          return Type();
+        return {opaquePointer->getDeclaredType(),
                 ImportHint::OtherPointer};
+      }
       
       if (pointeeQualType->isFunctionType()) {
         auto funcTy = pointeeType->castTo<FunctionType>();
@@ -797,16 +806,20 @@ namespace {
     }
 
     ImportResult VisitEnumType(const clang::EnumType *type) {
-      auto clangDecl = type->getDecl();
+      auto clangDecl = type->getDecl()->getDefinition();
+      if (!clangDecl) {
+        // FIXME: If the enum has a fixed underlying type, can we use that
+        // instead? Or import it opaquely somehow?
+        return nullptr;
+      }
       switch (Impl.getEnumKind(clangDecl)) {
       case EnumKind::Constants: {
-        auto clangDef = clangDecl->getDefinition();
         // Map anonymous enums with no fixed underlying type to Int /if/
         // they fit in an Int32. If not, this mapping isn't guaranteed to be
         // consistent for all platforms we care about.
-        if (!clangDef->isFixed() &&
-            clangDef->getNumPositiveBits() < 32 &&
-            clangDef->getNumNegativeBits() <= 32)
+        if (!clangDecl->isFixed() &&
+            clangDecl->getNumPositiveBits() < 32 &&
+            clangDecl->getNumNegativeBits() <= 32)
           return Impl.getNamedSwiftType(Impl.getStdlibModule(), "Int");
 
         // Import the underlying integer type.
@@ -1750,14 +1763,16 @@ DefaultArgumentKind ClangImporter::Implementation::inferDefaultArgument(
     return DefaultArgumentKind::None;
 
   // Option sets default to "[]" if they have "Options" in their name.
-  if (const clang::EnumType *enumTy = type->getAs<clang::EnumType>())
-    if (nameImporter.getEnumKind(enumTy->getDecl()) == EnumKind::Options) {
-      auto enumName = enumTy->getDecl()->getName();
+  if (const clang::EnumType *enumTy = type->getAs<clang::EnumType>()) {
+    const clang::EnumDecl *enumDef = enumTy->getDecl()->getDefinition();
+    if (nameImporter.getEnumKind(enumDef) == EnumKind::Options) {
+      auto enumName = enumDef->getName();
       for (auto word : reversed(camel_case::getWords(enumName))) {
         if (camel_case::sameWordIgnoreFirstCase(word, "options"))
           return DefaultArgumentKind::EmptyArray;
       }
     }
+  }
 
   // NSDictionary arguments default to [:] (or nil, if nullable) if "options",
   // "attributes", or "userInfo" occur in the argument label or (if there is no

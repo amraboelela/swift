@@ -1206,8 +1206,8 @@ namespace {
           CanType type = subscripts.getType();
           SmallVector<ManagedValue, 4> values;
           std::move(subscripts).getAll(values);
-          subscripts = RValue::withPreExplodedElements(values, type);
-          borrowedSubscripts = RValue::withPreExplodedElements(values, type);
+          subscripts = RValue(SGF, values, type);
+          borrowedSubscripts = RValue(SGF, values, type);
           optSubscripts = &borrowedSubscripts;
         }
         return new GetterSetterComponent(decl, IsSuper, IsDirectAccessorUse,
@@ -3121,7 +3121,7 @@ static ManagedValue drillIntoComponent(SILGenFunction &SGF,
   }
 
   if (!SGF.getASTContext().LangOpts.DisableTsanInoutInstrumentation &&
-      SGF.getModule().getOptions().Sanitize == SanitizerKind::Thread &&
+      (SGF.getModule().getOptions().Sanitizers & SanitizerKind::Thread) &&
       tsanKind == TSanKind::InoutAccess && !isRValue) {
     emitTsanInoutAccess(SGF, loc, addr);
   }

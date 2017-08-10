@@ -1499,7 +1499,7 @@ static MetadataAllocator &getResilientMetadataAllocator() {
 ClassMetadata *
 swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
                                                  size_t numFields,
-                                           const ClassFieldLayout *fieldLayouts,
+                                           const TypeLayout * const *fieldTypes,
                                                  size_t *fieldOffsets) {
     //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 1\n");
     self = _swift_initializeSuperclass(self, /*copyFieldOffsetVectors=*/true);
@@ -1594,46 +1594,75 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
     auto genericPattern = self->getDescription()->getGenericMetadataPattern();
     auto &allocator =
     genericPattern ? unsafeGetInitializedCache(genericPattern).getAllocator()
-    : getResilientMetadataAllocator();
-    
-    // Always clone the ivar descriptors.
-    if (numFields) {
-        const ClassIvarList *dependentIvars = rodata->IvarList;
-        assert(dependentIvars->Count == numFields);
-        assert(dependentIvars->EntrySize == sizeof(ClassIvarEntry));
-        
-        auto ivarListSize = sizeof(ClassIvarList) +
-        numFields * sizeof(ClassIvarEntry);
-        auto ivars = (ClassIvarList*) allocator.Allocate(ivarListSize,
-                                                         alignof(ClassIvarList));
-        memcpy(ivars, dependentIvars, ivarListSize);
-        rodata->IvarList = ivars;
-        
-        for (unsigned i = 0; i != numFields; ++i) {
-            ClassIvarEntry &ivar = ivars->getIvars()[i];
-            
-            // Remember the global ivar offset if present.
-            if (ivar.Offset) {
-                getGlobalIvarOffsets()[i] = ivar.Offset;
-            }
-            
-            // Change the ivar offset to point to the respective entry of
-            // the field-offset vector, as discussed above.
-            ivar.Offset = &fieldOffsets[i];
-            
-            // If the ivar's size doesn't match the field layout we
-            // computed, overwrite it and give it better type information.
-            if (ivar.Size != fieldLayouts[i].Size) {
-                ivar.Size = fieldLayouts[i].Size;
-                ivar.Type = nullptr;
-                ivar.Log2Alignment =
-                getLog2AlignmentFromMask(fieldLayouts[i].AlignMask);
-            }
-        }
+                   : getResilientMetadataAllocator();
+
+  // Always clone the ivar descriptors.
+  if (numFields) {
+    const ClassIvarList *dependentIvars = rodata->IvarList;
+    assert(dependentIvars->Count == numFields);
+    assert(dependentIvars->EntrySize == sizeof(ClassIvarEntry));
+
+    auto ivarListSize = sizeof(ClassIvarList) +
+                        numFields * sizeof(ClassIvarEntry);
+    auto ivars = (ClassIvarList*) allocator.Allocate(ivarListSize,
+                                                     alignof(ClassIvarList));
+    memcpy(ivars, dependentIvars, ivarListSize);
+    rodata->IvarList = ivars;
+
+    for (unsigned i = 0; i != numFields; ++i) {
+      auto *eltLayout = fieldTypes[i];
+
+      ClassIvarEntry &ivar = ivars->getIvars()[i];
+
+      // Remember the global ivar offset if present.
+      if (ivar.Offset) {
+        getGlobalIvarOffsets()[i] = ivar.Offset;
+      }
+
+      // Change the ivar offset to point to the respective entry of
+      // the field-offset vector, as discussed above.
+      ivar.Offset = &fieldOffsets[i];
+
+      // If the ivar's size doesn't match the field layout we
+      // computed, overwrite it and give it better type information.
+      if (ivar.Size != eltLayout->size) {
+        ivar.Size = eltLayout->size;
+        ivar.Type = nullptr;
+        ivar.Log2Alignment =
+          getLog2AlignmentFromMask(eltLayout->flags.getAlignmentMask());
+      }
     }
 #endif
-    //fprintf(stderr, "swift_initClassMetadata_UniversalStrategy 6\n");
-    // Okay, now do layout.
+
+  // Okay, now do layout.
+  for (unsigned i = 0; i != numFields; ++i) {
+    auto *eltLayout = fieldTypes[i];
+
+    // Skip empty fields.
+    if (fieldOffsets[i] == 0 && eltLayout->size == 0)
+      continue;
+    auto offset = roundUpToAlignMask(size,
+                                     eltLayout->flags.getAlignmentMask());
+    fieldOffsets[i] = offset;
+    size = offset + eltLayout->size;
+    alignMask = std::max(alignMask, eltLayout->flags.getAlignmentMask());
+  }
+
+  // Save the final size and alignment into the metadata record.
+  assert(self->isTypeMetadata());
+  self->setInstanceSize(size);
+  self->setInstanceAlignMask(alignMask);
+
+#if SWIFT_OBJC_INTEROP
+  // Save the size into the Objective-C metadata as well.
+  rodata->InstanceSize = size;
+
+  // Register this class with the runtime.  This will also cause the
+  // runtime to lay us out.
+  swift_instantiateObjCClass(self);
+
+  // If we saved any global ivar offsets, make sure we write back to them.
+  if (_globalIvarOffsets) {
     for (unsigned i = 0; i != numFields; ++i) {
         // Skip empty fields.
         if (fieldOffsets[i] == 0 && fieldLayouts[i].Size == 0)

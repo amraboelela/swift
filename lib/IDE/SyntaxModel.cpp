@@ -63,6 +63,9 @@ SyntaxModelContext::SyntaxModelContext(SourceFile &SrcFile)
   auto LiteralStartLoc = Optional<SourceLoc>();
   for (unsigned I = 0, E = Tokens.size(); I != E; ++I) {
     auto &Tok = Tokens[I];
+    // Ignore empty string literals between interpolations, e.g. "\(1)\(2)"
+    if (!Tok.getLength())
+        continue;
     SyntaxNodeKind Kind;
     SourceLoc Loc;
     Optional<unsigned> Length;
@@ -579,39 +582,16 @@ std::pair<bool, Stmt *> ModelASTWalker::walkToStmtPre(Stmt *S) {
     SyntaxStructureNode SN;
     SN.Kind = SyntaxStructureKind::ForEachStatement;
     SN.Range = charSourceRangeFromSourceRange(SM, S->getSourceRange());
-    if (ForEachS->getPattern())
-      SN.Elements.emplace_back(SyntaxStructureElementKind::Id,
-                               charSourceRangeFromSourceRange(SM,
-                                     ForEachS->getPattern()->getSourceRange()));
+    if (ForEachS->getPattern()) {
+      auto Pat = ForEachS->getPattern();
+      if (!Pat->isImplicit()) {
+        SourceRange ElemRange = Pat->getSourceRange();
+        SN.Elements.emplace_back(SyntaxStructureElementKind::Id,
+                                 charSourceRangeFromSourceRange(SM, ElemRange));
+      }
+    }
     if (ForEachS->getSequence())
       addExprElem(SyntaxStructureElementKind::Expr, ForEachS->getSequence(),SN);
-    pushStructureNode(SN, S);
-
-  } else if (auto *ForS = dyn_cast<ForStmt>(S)) {
-    SyntaxStructureNode SN;
-    SN.Kind = SyntaxStructureKind::ForStatement;
-    SN.Range = charSourceRangeFromSourceRange(SM, S->getSourceRange());
-
-    if (!ForS->getInitializerVarDecls().empty()) {
-      auto InitDs = ForS->getInitializerVarDecls();
-      // Initializer decls come as a PatternBindingDecl followed by VarDecl's
-      // for each pattern set up.  The PBD covers the whole initializer.
-      assert(isa<PatternBindingDecl>(InitDs[0]));
-      SourceRange ElemRange = InitDs[0]->getSourceRange();
-      SN.Elements.emplace_back(SyntaxStructureElementKind::InitExpr,
-                               charSourceRangeFromSourceRange(SM, ElemRange));
-    } else if (ForS->getInitializer()) {
-      addExprElem(SyntaxStructureElementKind::InitExpr,
-                  ForS->getInitializer().get(), SN);
-    }
-
-    if (ForS->getCond()) {
-      addExprElem(SyntaxStructureElementKind::Expr, ForS->getCond().get(), SN);
-    }
-    if (ForS->getIncrement()) {
-      addExprElem(SyntaxStructureElementKind::Expr, ForS->getIncrement().get(),
-                  SN);
-    }
     pushStructureNode(SN, S);
 
   } else if (auto *WhileS = dyn_cast<WhileStmt>(S)) {
@@ -973,6 +953,8 @@ bool ModelASTWalker::walkToDeclPre(Decl *D) {
                                               SubscriptD->getSourceRange());
     SN.BodyRange = innerCharSourceRangeFromSourceRange(SM,
                                                SubscriptD->getBracesRange());
+    SN.NameRange = charSourceRangeFromSourceRange(SM,
+                                        SubscriptD->getSignatureSourceRange());
     pushStructureNode(SN, SubscriptD);
   }
 

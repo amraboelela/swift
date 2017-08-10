@@ -1522,7 +1522,7 @@ emitReturnOfCheckedLoadFromCache(IRGenFunction &IGF, Address destTable,
   // Load and check whether it was null.
   auto cachedResult = IGF.Builder.CreateLoad(cache);
   // TODO: When LLVM supports Consume, we should use it here.
-  if (IGF.IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+  if (IGF.IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
     cachedResult->setOrdering(llvm::AtomicOrdering::Acquire);
   auto cacheIsEmpty = IGF.Builder.CreateIsNull(cachedResult);
   llvm::BasicBlock *fetchBB = IGF.createBasicBlock("fetch");
@@ -2841,9 +2841,9 @@ Signature IRGenModule::getAssociatedTypeMetadataAccessFunctionSignature() {
                                      /*varargs*/ false);
   }
 
-  auto attrs = llvm::AttributeSet::get(getLLVMContext(),
-                                       llvm::AttributeSet::FunctionIndex,
-                                       llvm::Attribute::NoUnwind);
+  auto attrs = llvm::AttributeList::get(getLLVMContext(),
+                                        llvm::AttributeList::FunctionIndex,
+                                        llvm::Attribute::NoUnwind);
 
   return Signature(fnType, attrs, DefaultCC);
 }
@@ -2885,8 +2885,8 @@ IRGenModule::getAssociatedTypeWitnessTableAccessFunctionSignature() {
                                      /*varargs*/ false);
   }
 
-  auto attrs = llvm::AttributeSet::get(getLLVMContext(),
-                                       llvm::AttributeSet::FunctionIndex,
+  auto attrs = llvm::AttributeList::get(getLLVMContext(),
+                                       llvm::AttributeList::FunctionIndex,
                                        llvm::Attribute::NoUnwind);
 
   return Signature(fnType, attrs, DefaultCC);

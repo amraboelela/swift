@@ -637,7 +637,7 @@ public:
             auto *DVI = dyn_cast<llvm::DbgValueInst>(I);
             if (DVI && DVI->getValue() == Value)
               IGM.DebugInfo->getBuilder().insertDbgValueIntrinsic(
-                  DVI->getValue(), 0, DVI->getVariable(), DVI->getExpression(),
+                  DVI->getValue(), DVI->getVariable(), DVI->getExpression(),
                   DVI->getDebugLoc(), &*CurBB->getFirstInsertionPt());
             else
               // Found all dbg.value intrinsics describing this location.
@@ -1099,9 +1099,9 @@ IRGenSILFunction::IRGenSILFunction(IRGenModule &IGM,
   // Apply sanitizer attributes to the function.
   // TODO: Check if the function is ASan black listed either in the external
   // file or via annotations.
-  if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Address)
+  if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Address)
     CurFn->addFnAttr(llvm::Attribute::SanitizeAddress);
-  if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread) {
+  if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread) {
     auto declContext = f->getDeclContext();
     if (declContext && isa<DestructorDecl>(declContext))
       // Do not report races in deinit and anything called from it
@@ -2063,8 +2063,9 @@ static CallEmission getCallEmissionForLoweredValue(IRGenSILFunction &IGF,
 
   CallEmission callEmission(IGF, std::move(callee));
   if (IGF.CurSILFn->isThunk())
-    callEmission.addAttribute(llvm::AttributeSet::FunctionIndex,
+    callEmission.addAttribute(llvm::AttributeList::FunctionIndex,
                               llvm::Attribute::NoInline);
+
   return callEmission;
 }
 

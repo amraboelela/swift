@@ -237,7 +237,9 @@ static void tryDiagnoseUnnecessaryCastOverOptionSet(ASTContext &Ctx,
   auto *NTD = ResultType->getAnyNominal();
   if (!NTD)
     return;
-  auto optionSetType = dyn_cast<ProtocolDecl>(Ctx.getOptionSetDecl());
+  auto optionSetType = dyn_cast_or_null<ProtocolDecl>(Ctx.getOptionSetDecl());
+  if (!optionSetType)
+    return;
   SmallVector<ProtocolConformance *, 4> conformances;
   if (!(optionSetType &&
         NTD->lookupConformance(module, optionSetType, conformances)))
@@ -543,37 +545,6 @@ public:
     TC.typeCheckCondition(E, DC);
     RWS->setCond(E);
     return RWS;
-  }
-  Stmt *visitForStmt(ForStmt *FS) {
-    // Type check any var decls in the initializer.
-    for (auto D : FS->getInitializerVarDecls())
-      TC.typeCheckDecl(D, /*isFirstPass*/false);
-
-    if (auto *Initializer = FS->getInitializer().getPtrOrNull()) {
-      TC.typeCheckExpression(Initializer, DC, TypeLoc(), CTP_Unused,
-                             TypeCheckExprFlags::IsDiscarded);
-      FS->setInitializer(Initializer);
-      TC.checkIgnoredExpr(Initializer);
-    }
-
-    if (auto *Cond = FS->getCond().getPtrOrNull()) {
-      TC.typeCheckCondition(Cond, DC);
-      FS->setCond(Cond);
-    }
-
-    if (auto *Increment = FS->getIncrement().getPtrOrNull()) {
-      TC.typeCheckExpression(Increment, DC, TypeLoc(), CTP_Unused,
-                             TypeCheckExprFlags::IsDiscarded);
-      FS->setIncrement(Increment);
-      TC.checkIgnoredExpr(Increment);
-    }
-
-    AddLabeledStmt loopNest(*this, FS);
-    Stmt *S = FS->getBody();
-    typeCheckStmt(S);
-    FS->setBody(S);
-    
-    return FS;
   }
   
   Stmt *visitForEachStmt(ForEachStmt *S) {
