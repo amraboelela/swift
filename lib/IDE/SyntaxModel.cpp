@@ -118,6 +118,14 @@ SyntaxModelContext::SyntaxModelContext(SourceFile &SrcFile)
               next.is(tok::colon))
             Kind = SyntaxNodeKind::Identifier;
         }
+
+        if (I) {
+          auto Prev = Tokens[I - 1];
+          if (Prev.isAny(tok::period, tok::period_prefix) &&
+              SM.getByteDistance(Prev.getLoc(), Tok.getLoc()) == 1) {
+            Kind = SyntaxNodeKind::Identifier;
+          }
+        }
         break;
 
 #define POUND_OLD_OBJECT_LITERAL(Name, NewName, OldArg, NewArg) \
@@ -813,41 +821,41 @@ bool ModelASTWalker::walkToDeclPre(Decl *D) {
     pushStructureNode(SN, PD);
   } else if (auto *VD = dyn_cast<VarDecl>(D)) {
     const DeclContext *DC = VD->getDeclContext();
-    if (DC->isTypeContext() || DC->isModuleScopeContext()) {
-      SyntaxStructureNode SN;
-      setDecl(SN, D);
-      SourceRange SR;
-      if (auto *PBD = VD->getParentPatternBinding())
-        SR = PBD->getSourceRange();
-      else
-        SR = VD->getSourceRange();
-      SN.Range = charSourceRangeFromSourceRange(SM, SR);
-      if (VD->hasAccessorFunctions())
-        SN.BodyRange = innerCharSourceRangeFromSourceRange(SM,
-                                                           VD->getBracesRange());
-      SourceLoc NRStart = VD->getNameLoc();
-      SourceLoc NREnd = NRStart.getAdvancedLoc(VD->getName().getLength());
-      SN.NameRange = CharSourceRange(SM, NRStart, NREnd);
-      SN.TypeRange = charSourceRangeFromSourceRange(SM,
+    SyntaxStructureNode SN;
+    setDecl(SN, D);
+    SourceRange SR;
+    if (auto *PBD = VD->getParentPatternBinding())
+      SR = PBD->getSourceRange();
+    else
+      SR = VD->getSourceRange();
+    SN.Range = charSourceRangeFromSourceRange(SM, SR);
+    if (VD->hasAccessorFunctions())
+      SN.BodyRange = innerCharSourceRangeFromSourceRange(SM,
+                                                         VD->getBracesRange());
+    SourceLoc NRStart = VD->getNameLoc();
+    SourceLoc NREnd = NRStart.getAdvancedLoc(VD->getName().getLength());
+    SN.NameRange = CharSourceRange(SM, NRStart, NREnd);
+    SN.TypeRange = charSourceRangeFromSourceRange(SM,
                                         VD->getTypeSourceRangeForDiagnostics());
 
-      if (DC->isTypeContext()) {
-        if (VD->isStatic()) {
-          StaticSpellingKind Spell = StaticSpellingKind::KeywordStatic;
-          if (auto *PBD = VD->getParentPatternBinding())
-            Spell = PBD->getStaticSpelling();
-          if (Spell == StaticSpellingKind::KeywordClass)
-            SN.Kind = SyntaxStructureKind::ClassVariable;
-          else
-            SN.Kind = SyntaxStructureKind::StaticVariable;
-        } else {
-          SN.Kind = SyntaxStructureKind::InstanceVariable;
-        }
+    if (DC->isLocalContext()) {
+      SN.Kind = SyntaxStructureKind::LocalVariable;
+    } else if (DC->isTypeContext()) {
+      if (VD->isStatic()) {
+        StaticSpellingKind Spell = StaticSpellingKind::KeywordStatic;
+        if (auto *PBD = VD->getParentPatternBinding())
+          Spell = PBD->getStaticSpelling();
+        if (Spell == StaticSpellingKind::KeywordClass)
+          SN.Kind = SyntaxStructureKind::ClassVariable;
+        else
+          SN.Kind = SyntaxStructureKind::StaticVariable;
       } else {
-        SN.Kind = SyntaxStructureKind::GlobalVariable;
+        SN.Kind = SyntaxStructureKind::InstanceVariable;
       }
-      pushStructureNode(SN, VD);
+    } else {
+      SN.Kind = SyntaxStructureKind::GlobalVariable;
     }
+    pushStructureNode(SN, VD);
 
   } else if (auto *ConfigD = dyn_cast<IfConfigDecl>(D)) {
     for (auto &Clause : ConfigD->getClauses()) {

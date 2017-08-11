@@ -51,8 +51,20 @@ public:
   using StoredOffset = MetadataLayout::StoredOffset;
 
   void noteAddressPoint() { AddressPoint = this->NextOffset; }
-  StoredOffset getNextOffset() {
+  StoredOffset getNextOffset() const {
     return StoredOffset(this->NextOffset - AddressPoint.getValue());
+  }
+
+  Size getAddressPoint() const {
+    return *AddressPoint;
+  }
+
+  MetadataSize getMetadataSize() const {
+    assert(AddressPoint.hasValue() && !AddressPoint->isInvalid()
+           && "did not find address point?!");
+    assert(*AddressPoint < this->NextOffset
+           && "address point is after end?!");
+    return {this->NextOffset, *AddressPoint};
   }
 };
 
@@ -118,6 +130,13 @@ Offset NominalMetadataLayout::getParentOffset(IRGenFunction &IGF) const {
   assert(Parent.isValid());
   assert(Parent.isStatic() && "resilient metadata layout unsupported!");
   return Offset(Parent.getStaticOffset());
+}
+
+Size
+NominalMetadataLayout::getStaticGenericRequirementsOffset() const {
+  assert(GenericRequirements.isValid());
+  assert(GenericRequirements.isStatic() && "resilient metadata layout unsupported!");
+  return GenericRequirements.getStaticOffset();
 }
 
 Offset
@@ -246,6 +265,11 @@ ClassMetadataLayout::ClassMetadataLayout(IRGenModule &IGM, ClassDecl *decl)
         Layout.FieldOffsets.try_emplace(field, getNextOffset());
       super::addFieldOffset(field);
     }
+
+    void layout() {
+      super::layout();
+      Layout.TheSize = getMetadataSize();
+    }
   };
 
   Scanner(IGM, decl, *this).layout();
@@ -279,6 +303,14 @@ Size ClassMetadataLayout::getStaticFieldOffset(VarDecl *field) const {
   auto &stored = getStoredFieldOffset(field);
   assert(stored.isStatic() && "resilient class metadata layout unsupported!");
   return stored.getStaticOffset();
+}
+
+Size
+ClassMetadataLayout::getStaticFieldOffsetVectorOffset() const {
+  // TODO: if class is resilient, return the offset relative to the start
+  // of immediate class metadata
+  assert(FieldOffsetVector.isStatic());
+  return FieldOffsetVector.getStaticOffset();
 }
 
 Offset
@@ -326,6 +358,11 @@ EnumMetadataLayout::EnumMetadataLayout(IRGenModule &IGM, EnumDecl *decl)
     Scanner(IRGenModule &IGM, EnumDecl *decl, EnumMetadataLayout &layout)
       : super(IGM, decl), Layout(layout) {}
 
+    void addPayloadSize() {
+      Layout.PayloadSizeOffset = getNextOffset();
+      super::addPayloadSize();
+    }
+
     void addParentMetadataRef() {
       Layout.Parent = getNextOffset();
       super::addParentMetadataRef();
@@ -335,9 +372,20 @@ EnumMetadataLayout::EnumMetadataLayout(IRGenModule &IGM, EnumDecl *decl)
       Layout.GenericRequirements = getNextOffset();
       super::noteStartOfGenericRequirements();
     }
+
+    void layout() {
+      super::layout();
+      Layout.TheSize = getMetadataSize();
+    }
   };
 
   Scanner(IGM, decl, *this).layout();
+}
+
+Offset
+EnumMetadataLayout::getPayloadSizeOffset() const {
+  assert(PayloadSizeOffset.isStatic());
+  return Offset(PayloadSizeOffset.getStaticOffset());
 }
 
 /********************************** STRUCTS ***********************************/
@@ -370,6 +418,11 @@ StructMetadataLayout::StructMetadataLayout(IRGenModule &IGM, StructDecl *decl)
     void addFieldOffset(VarDecl *field) {
       Layout.FieldOffsets.try_emplace(field, getNextOffset());
       super::addFieldOffset(field);
+    }
+
+    void layout() {
+      super::layout();
+      Layout.TheSize = getMetadataSize();
     }
   };
 
