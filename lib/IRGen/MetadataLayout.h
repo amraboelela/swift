@@ -31,6 +31,18 @@ class Address;
 class IRGenFunction;
 class IRGenModule;
 
+/// The total size and address point of a metadata object.
+struct MetadataSize {
+  Size FullSize;
+  Size AddressPoint;
+
+  /// Return the offset from the address point to the end of the
+  /// metadata object.
+  Size getOffsetToEnd() const {
+    return FullSize - AddressPoint;
+  }
+};
+
 /// A base class for various kinds of metadata layout.
 class MetadataLayout {
 public:
@@ -88,6 +100,8 @@ private:
   Kind TheKind;
 
 protected:
+  MetadataSize TheSize;
+
   MetadataLayout(Kind theKind) : TheKind(theKind) {}
 
   MetadataLayout(const MetadataLayout &other) = delete;
@@ -98,6 +112,8 @@ public:
   void destroy() const;
 
   Kind getKind() const { return TheKind; }
+
+  MetadataSize getSize() const { return TheSize; }
 };
 
 /// Base class for nominal type metadata layouts.
@@ -113,7 +129,11 @@ public:
     return GenericRequirements.isValid();
   }
 
+  /// Should only be used when emitting the nominal type descriptor.
+  Size getStaticGenericRequirementsOffset() const;
+
   Offset getGenericRequirementsOffset(IRGenFunction &IGF) const;
+
   Offset getParentOffset(IRGenFunction &IGF) const;
 
   static bool classof(const MetadataLayout *layout) {
@@ -179,6 +199,9 @@ public:
   /// more arbitrary fashion.
   Size getStaticFieldOffset(VarDecl *field) const;
 
+  /// Should only be used when emitting the nominal type descriptor.
+  Size getStaticFieldOffsetVectorOffset() const;
+
   Offset getFieldOffsetVectorOffset(IRGenFunction &IGF) const;
 
   static bool classof(const MetadataLayout *layout) {
@@ -188,6 +211,9 @@ public:
 
 /// Layout for enum type metadata.
 class EnumMetadataLayout : public NominalMetadataLayout {
+  /// The offset of the payload size field, if there is one.
+  StoredOffset PayloadSizeOffset;
+
   // TODO: presumably it would be useful to store *something* here
   // for resilience.
 
@@ -195,6 +221,12 @@ class EnumMetadataLayout : public NominalMetadataLayout {
   EnumMetadataLayout(IRGenModule &IGM, EnumDecl *theEnum);
 
 public:
+  bool hasPayloadSizeOffset() const {
+    return PayloadSizeOffset.isValid();
+  }
+
+  Offset getPayloadSizeOffset() const;
+
   static bool classof(const MetadataLayout *layout) {
     return layout->getKind() == Kind::Enum;
   }
