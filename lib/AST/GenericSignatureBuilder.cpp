@@ -128,6 +128,7 @@ bool RequirementSource::isAcceptableStorageKind(Kind kind,
   case QuietlyInferred:
   case RequirementSignatureSelf:
   case NestedTypeNameMatch:
+  case ConcreteTypeBinding:
     switch (storageKind) {
     case StorageKind::RootArchetype:
       return true;
@@ -242,6 +243,9 @@ bool RequirementSource::isInferredRequirement(bool includeQuietInferred) const {
     case QuietlyInferred:
       return includeQuietInferred;
 
+    case ConcreteTypeBinding:
+      return false;
+
     case Concrete:
     case Explicit:
     case NestedTypeNameMatch:
@@ -271,6 +275,7 @@ bool RequirementSource::isDerivedRequirement() const {
     return false;
 
   case NestedTypeNameMatch:
+  case ConcreteTypeBinding:
   case Parent:
   case Superclass:
   case Concrete:
@@ -314,12 +319,6 @@ bool RequirementSource::isSelfDerivedSource(PotentialArchetype *pa,
     case RequirementSource::Inferred:
     case RequirementSource::QuietlyInferred:
     case RequirementSource::RequirementSignatureSelf:
-      for (auto parent = currentPA->getParent(); parent;
-           parent = parent->getParent()) {
-        if (parent->isInSameEquivalenceClassAs(pa))
-          return true;
-      }
-
       return false;
 
     case RequirementSource::Parent:
@@ -334,6 +333,7 @@ bool RequirementSource::isSelfDerivedSource(PotentialArchetype *pa,
       return addConstraint(currentPA, source->getProtocolDecl());
 
     case RequirementSource::NestedTypeNameMatch:
+    case RequirementSource::ConcreteTypeBinding:
     case RequirementSource::Concrete:
     case RequirementSource::Superclass:
     case RequirementSource::Derived:
@@ -407,28 +407,35 @@ const RequirementSource *RequirementSource::getMinimalConformanceSource(
                                              PotentialArchetype *currentPA,
                                              ProtocolDecl *proto,
                                              bool &derivedViaConcrete) const {
+  // If it's not a derived requirement, it's not self-derived.
+  if (!isDerivedRequirement()) return this;
+
   /// Keep track of all of the requirements we've seen along the way. If
   /// we see the same requirement twice, we have found a shorter path.
-  llvm::DenseSet<std::pair<PotentialArchetype *, ProtocolDecl *>>
+  llvm::DenseMap<std::pair<PotentialArchetype *, ProtocolDecl *>,
+                 const RequirementSource *>
     constraintsSeen;
 
   // Note that we've now seen a new constraint, returning true if we've seen
   // it before.
-  auto addConstraint = [&](PotentialArchetype *pa, ProtocolDecl *proto) {
-    return !constraintsSeen.insert({pa->getRepresentative(), proto}).second;
-  };
+  auto addConstraint = [&](PotentialArchetype *pa, ProtocolDecl *proto,
+                           const RequirementSource *source)
+      -> const RequirementSource * {
+    auto &storedSource = constraintsSeen[{pa->getRepresentative(), proto}];
+    if (storedSource) return storedSource;
 
-  // Insert our end state.
-  constraintsSeen.insert({currentPA->getRepresentative(), proto});
+    storedSource = source;
+    return nullptr;
+  };
 
   derivedViaConcrete = false;
   bool sawProtocolRequirement = false;
 
   PotentialArchetype *rootPA = nullptr;
-  const RequirementSource *minimalSource = nullptr;
-  auto resultPA = visitPotentialArchetypesAlongPath(
-                    [&](PotentialArchetype *parentPA,
-                        const RequirementSource *source) {
+  Optional<std::pair<const RequirementSource *, const RequirementSource *>>
+    redundantSubpath;
+  (void)visitPotentialArchetypesAlongPath(
+          [&](PotentialArchetype *parentPA, const RequirementSource *source) {
     switch (source->kind) {
     case ProtocolRequirement:
     case InferredProtocolRequirement: {
@@ -441,12 +448,13 @@ const RequirementSource *RequirementSource::getMinimalConformanceSource(
 
       // The parent potential archetype must conform to the protocol in which
       // this requirement resides. Add this constraint.
-      if (!addConstraint(parentPA, source->getProtocolDecl())) return false;
+      auto startOfPath =
+        addConstraint(parentPA, source->getProtocolDecl(), source->parent);
+      if (!startOfPath) return false;
 
-      // We found the shortest source to derive this information; record it
-      // and stop the algorithm.
-      if (source->getProtocolDecl() == proto)
-        minimalSource = source->parent;
+      // We found a redundant subpath; record it and stop the algorithm.
+      assert(startOfPath != source->parent);
+      redundantSubpath = { startOfPath, source->parent };
       return true;
     }
 
@@ -459,14 +467,30 @@ const RequirementSource *RequirementSource::getMinimalConformanceSource(
     case Inferred:
     case QuietlyInferred:
     case NestedTypeNameMatch:
+    case ConcreteTypeBinding:
     case RequirementSignatureSelf:
       rootPA = parentPA;
       return false;
     }
   });
 
+  // If we didn't already find a redundancy, check our end state.
+  if (!redundantSubpath && proto) {
+    if (auto startOfPath = addConstraint(currentPA, proto, this)) {
+      redundantSubpath = { startOfPath, this };
+      assert(startOfPath != this);
+    }
+  }
+
+
   // If we saw a constraint twice, it's self-derived.
-  if (!resultPA) return minimalSource;
+  if (redundantSubpath) {
+    auto shorterSource =
+      withoutRedundantSubpath(redundantSubpath->first,
+                              redundantSubpath->second);
+    return shorterSource
+      ->getMinimalConformanceSource(currentPA, proto, derivedViaConcrete);
+  }
 
   // If we haven't seen a protocol requirement, we're done.
   if (!sawProtocolRequirement) return this;
@@ -475,7 +499,7 @@ const RequirementSource *RequirementSource::getMinimalConformanceSource(
   // for each of the protocols of the associated types referenced (if any).
   for (auto pa = rootPA; pa->getParent(); pa = pa->getParent()) {
     if (auto assocType = pa->getResolvedAssociatedType()) {
-      if (addConstraint(pa->getParent(), assocType->getProtocol()))
+      if (addConstraint(pa->getParent(), assocType->getProtocol(), nullptr))
         return nullptr;
     }
   }
@@ -560,6 +584,17 @@ const RequirementSource *RequirementSource::forNestedTypeNameMatch(
                         0, WrittenRequirementLoc());
 }
 
+const RequirementSource *RequirementSource::forConcreteTypeBinding(
+                                                   PotentialArchetype *root) {
+  auto &builder = *root->getBuilder();
+  REQUIREMENT_SOURCE_FACTORY_BODY(
+                        (nodeID, ConcreteTypeBinding, nullptr, root,
+                         nullptr, nullptr),
+                                  (ConcreteTypeBinding, root, nullptr,
+                         WrittenRequirementLoc()),
+                        0, WrittenRequirementLoc());
+}
+
 const RequirementSource *RequirementSource::viaProtocolRequirement(
             GenericSignatureBuilder &builder, Type dependentType,
             ProtocolDecl *protocol,
@@ -618,6 +653,64 @@ const RequirementSource *RequirementSource::viaDerived(
 
 #undef REQUIREMENT_SOURCE_FACTORY_BODY
 
+const RequirementSource *RequirementSource::withoutRedundantSubpath(
+                                        const RequirementSource *start,
+                                        const RequirementSource *end) const {
+  // Replace the end with the start; the caller has guaranteed that they
+  // produce the same thing.
+  if (this == end) {
+#ifndef NDEBUG
+    // Sanity check: make sure the 'start' precedes the 'end'.
+    bool foundStart = false;
+    for (auto source = this; source; source = source->parent) {
+      if (source == start) {
+        foundStart = true;
+        break;
+      }
+    }
+    assert(foundStart && "Start doesn't precede end!");
+#endif
+    return start;
+  }
+
+  auto &builder = *getRootPotentialArchetype()->getBuilder();
+  switch (kind) {
+  case Explicit:
+  case Inferred:
+  case QuietlyInferred:
+  case RequirementSignatureSelf:
+  case NestedTypeNameMatch:
+  case ConcreteTypeBinding:
+    llvm_unreachable("Subpath end doesn't occur within path");
+
+  case ProtocolRequirement:
+    return parent->withoutRedundantSubpath(start, end)
+      ->viaProtocolRequirement(builder, getStoredType(),
+                               getProtocolDecl(), /*inferred=*/false);
+
+  case InferredProtocolRequirement:
+    return parent->withoutRedundantSubpath(start, end)
+      ->viaProtocolRequirement(builder, getStoredType(),
+                               getProtocolDecl(), /*inferred=*/true);
+
+  case Concrete:
+    return parent->withoutRedundantSubpath(start, end)
+      ->viaParent(builder, getAssociatedType());
+
+  case Derived:
+    return parent->withoutRedundantSubpath(start, end)
+      ->viaDerived(builder);
+
+  case Parent:
+    return parent->withoutRedundantSubpath(start, end)
+      ->viaParent(builder, getAssociatedType());
+
+  case Superclass:
+    return parent->withoutRedundantSubpath(start, end)
+      ->viaSuperclass(builder, getProtocolConformance());
+  }
+}
+
 const RequirementSource *RequirementSource::getRoot() const {
   auto root = this;
   while (auto parent = root->parent)
@@ -658,6 +751,7 @@ RequirementSource::visitPotentialArchetypesAlongPath(
   }
 
   case RequirementSource::NestedTypeNameMatch:
+  case RequirementSource::ConcreteTypeBinding:
   case RequirementSource::Explicit:
   case RequirementSource::Inferred:
   case RequirementSource::QuietlyInferred:
@@ -769,31 +863,7 @@ static unsigned sourcePathLength(const RequirementSource *source) {
   return count;
 }
 
-/// Check whether we have a NestedTypeNameMatch/ProtocolRequirement requirement
-/// pair, in which case we prefer the RequirementSignature.
-///
-/// This is part of staging out NestedTypeNameMatch requirement sources in
-/// favor of something more principled.
-static int isNestedTypeNameMatchAndRequirementSignaturePair(
-                                              const RequirementSource *lhs,
-                                              const RequirementSource *rhs) {
-  if (lhs->getRoot()->kind == RequirementSource::NestedTypeNameMatch &&
-      rhs->isProtocolRequirement())
-    return +1;
-
-  if (rhs->getRoot()->kind == RequirementSource::NestedTypeNameMatch &&
-      lhs->isProtocolRequirement())
-    return -1;
-
-  return 0;
-}
-
 int RequirementSource::compare(const RequirementSource *other) const {
-  // FIXME: Egregious hack while we phase out NestedTypeNameMatch
-  if (int compare =
-        isNestedTypeNameMatchAndRequirementSignaturePair(this, other))
-    return compare;
-
   // Prefer the derived option, if there is one.
   bool thisIsDerived = this->isDerivedRequirement();
   bool otherIsDerived = other->isDerivedRequirement();
@@ -857,6 +927,10 @@ void RequirementSource::print(llvm::raw_ostream &out,
 
   case NestedTypeNameMatch:
     out << "Nested type match";
+    break;
+
+  case RequirementSource::ConcreteTypeBinding:
+    out << "Concrete type binding";
     break;
 
   case Parent:
@@ -1036,6 +1110,7 @@ bool FloatingRequirementSource::isExplicit() const {
     case RequirementSource::Inferred:
     case RequirementSource::QuietlyInferred:
     case RequirementSource::NestedTypeNameMatch:
+    case RequirementSource::ConcreteTypeBinding:
     case RequirementSource::Parent:
     case RequirementSource::ProtocolRequirement:
     case RequirementSource::InferredProtocolRequirement:
@@ -1059,6 +1134,7 @@ bool FloatingRequirementSource::isExplicit() const {
     case RequirementSource::RequirementSignatureSelf:
     case RequirementSource::Concrete:
     case RequirementSource::NestedTypeNameMatch:
+    case RequirementSource::ConcreteTypeBinding:
     case RequirementSource::Parent:
     case RequirementSource::Superclass:
     case RequirementSource::Derived:
@@ -2078,7 +2154,7 @@ PotentialArchetype *PotentialArchetype::updateNestedTypeForConformance(
         builder.addSameTypeRequirement(
                          UnresolvedType(resultPA),
                          UnresolvedType(type),
-                         RequirementSource::forNestedTypeNameMatch(resultPA),
+                         RequirementSource::forConcreteTypeBinding(resultPA),
                          UnresolvedHandlingKind::GenerateConstraints);
       }
     }
@@ -4424,7 +4500,7 @@ void GenericSignatureBuilder::checkConformanceConstraints(
           // original source is self-derived.
           ++NumSelfDerived;
 
-          if (minimalSource) {
+          if (minimalSource && minimalSource->isDerivedRequirement()) {
             // Record a constraint with a minimized source.
             minimalSources.push_back(
                              {minimalSource->getAffectedPotentialArchetype(),

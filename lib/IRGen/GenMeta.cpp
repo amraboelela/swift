@@ -1094,7 +1094,7 @@ void irgen::emitLazyCacheAccessFunction(IRGenModule &IGM,
   // current LLVM ARM backend.
   auto load = IGF.Builder.CreateLoad(cache);
   // Make this barrier explicit when building for TSan to avoid false positives.
-  if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+  if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
     load->setOrdering(llvm::AtomicOrdering::Acquire);
 
 
@@ -1208,7 +1208,7 @@ createInPlaceMetadataInitializationFunction(IRGenModule &IGM,
 
   // Skip instrumentation when building for TSan to avoid false positives.
   // The synchronization for this happens in the Runtime and we do not see it.
-  if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+  if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
     fn->removeFnAttr(llvm::Attribute::SanitizeThread);
 
   // Emit the initialization.
@@ -1268,7 +1268,7 @@ emitInPlaceTypeMetadataAccessFunctionBody(IRGenFunction &IGF,
   Address cacheAddr = Address(cacheVariable, IGF.IGM.getPointerAlignment());
   llvm::LoadInst *relocatedMetadata = IGF.Builder.CreateLoad(cacheAddr);
   // Make this barrier explicit when building for TSan to avoid false positives.
-  if (IGF.IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+  if (IGF.IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
     relocatedMetadata->setOrdering(llvm::AtomicOrdering::Acquire);
 
   // emitLazyCacheAccessFunction will see that the value was loaded from
@@ -1831,10 +1831,8 @@ namespace {
         return visit(singletonFieldTy.getSwiftRValueType());
 
       // If the type is fixed-layout, emit a copy of its layout.
-      if (auto fixed = dyn_cast<FixedTypeInfo>(&ti)) {
-
+      if (auto fixed = dyn_cast<FixedTypeInfo>(&ti))
         return IGF.IGM.emitFixedTypeLayout(t, *fixed);
-      }
 
       return emitFromTypeMetadata(t);
     }
@@ -2184,113 +2182,6 @@ namespace {
     //   unsigned getGenericParamsOffset();
     //   void addKindDependentFields();
   };
-
-  /// A CRTP helper for classes which are simply searching for a
-  /// specific index within the metadata.
-  ///
-  /// The pattern is that subclasses should override an 'add' method
-  /// from the appropriate layout class and ensure that they call
-  /// setTargetOffset() when the appropriate location is reached.  The
-  /// subclass user then just calls getTargetOffset(), which performs
-  /// the layout and returns the found index.
-  ///
-  /// \tparam Base the base class, which should generally be a CRTP
-  ///   class template applied to the most-derived class
-  template <class Base> class MetadataSearcher : public Base {
-    Size TargetOffset = Size::invalid();
-    Size AddressPoint = Size::invalid();
-
-  protected:
-    void setTargetOffset() {
-      assert(TargetOffset.isInvalid() && "setting twice");
-      TargetOffset = this->NextOffset;
-    }
-
-  public:
-    template <class... T> MetadataSearcher(T &&...args)
-      : Base(std::forward<T>(args)...) {}
-
-    void noteAddressPoint() { AddressPoint = this->NextOffset; }
-
-    Size getTargetOffset() {
-      assert(TargetOffset.isInvalid() && "computing twice");
-      this->layout();
-      assert(!TargetOffset.isInvalid() && "target not found!");
-      assert(!AddressPoint.isInvalid() && "address point not set");
-      return TargetOffset - AddressPoint;
-    }
-
-    Size::int_type getTargetIndex() {
-      return this->IGM.getOffsetInWords(getTargetOffset());
-    }
-  };
-
-  /// The total size and address point of a metadata object.
-  struct MetadataSize {
-    Size FullSize;
-    Size AddressPoint;
-
-    /// Return the offset from the address point to the end of the
-    /// metadata object.
-    Size getOffsetToEnd() const {
-      return FullSize - AddressPoint;
-    }
-  };
-
-  /// A template for computing the size of a metadata record.
-  template <template <class T> class Scanner>
-  class MetadataSizer : public Scanner<MetadataSizer<Scanner>> {
-    typedef Scanner<MetadataSizer<Scanner>> super;
-    using super::Target;
-    using TargetType = decltype(Target);
-
-    Size AddressPoint = Size::invalid();
-  public:
-    MetadataSizer(IRGenModule &IGM, TargetType target)
-      : super(IGM, target) {}
-
-    void noteAddressPoint() {
-      AddressPoint = super::NextOffset;
-      super::noteAddressPoint();
-    }
-
-    static MetadataSize compute(IRGenModule &IGM, TargetType target) {
-      MetadataSizer sizer(IGM, target);
-      sizer.layout();
-
-      assert(!sizer.AddressPoint.isInvalid()
-             && "did not find address point?!");
-      assert(sizer.AddressPoint < sizer.NextOffset
-             && "address point is after end?!");
-      return { sizer.NextOffset, sizer.AddressPoint };
-    }
-  };
-
-  static MetadataSize getSizeOfMetadata(IRGenModule &IGM, StructDecl *decl) {
-    return MetadataSizer<StructMetadataScanner>::compute(IGM, decl);
-  }
-
-  static MetadataSize getSizeOfMetadata(IRGenModule &IGM, ClassDecl *decl) {
-    return MetadataSizer<ClassMetadataScanner>::compute(IGM, decl);
-  }
-
-  static MetadataSize getSizeOfMetadata(IRGenModule &IGM, EnumDecl *decl) {
-    return MetadataSizer<EnumMetadataScanner>::compute(IGM, decl);
-  }
-
-  /// Return the total size and address point of a metadata record.
-  static MetadataSize getSizeOfMetadata(IRGenModule &IGM,
-                                        NominalTypeDecl *decl) {
-    if (auto theStruct = dyn_cast<StructDecl>(decl)) {
-      return getSizeOfMetadata(IGM, theStruct);
-    } else if (auto theClass = dyn_cast<ClassDecl>(decl)) {
-      return getSizeOfMetadata(IGM, theClass);
-    } else if (auto theEnum = dyn_cast<EnumDecl>(decl)) {
-      return getSizeOfMetadata(IGM, theEnum);
-    } else {
-      llvm_unreachable("not implemented for other nominal types");
-    }
-  }
   
   /// Build a doubly-null-terminated list of field names.
   template<typename ValueDeclRange>
@@ -2401,35 +2292,9 @@ namespace {
                                        StructDecl *s)
       : super(IGM), Target(s)
     {
-      struct ScanForDescriptorOffsets
-        : StructMetadataScanner<ScanForDescriptorOffsets>
-      {
-        ScanForDescriptorOffsets(IRGenModule &IGM, StructDecl *Target)
-          : StructMetadataScanner(IGM, Target) {}
-
-        Size AddressPoint = Size::invalid();
-        Size FieldVectorOffset = Size::invalid();
-        Size GenericParamsOffset = Size::invalid();
-        
-        void noteAddressPoint() { AddressPoint = NextOffset; }
-        void noteStartOfFieldOffsets() { FieldVectorOffset = NextOffset; }
-        void noteStartOfGenericRequirements() {
-          GenericParamsOffset = NextOffset;
-        }
-      };
-      
-      ScanForDescriptorOffsets scanner(IGM, Target);
-      scanner.layout();
-      assert(!scanner.AddressPoint.isInvalid()
-             && !scanner.FieldVectorOffset.isInvalid()
-             && "did not find required fields in struct metadata?!");
-      assert(scanner.FieldVectorOffset >= scanner.AddressPoint
-             && "found field offset vector after address point?!");
-      assert(scanner.GenericParamsOffset >= scanner.AddressPoint
-             && "found generic param vector after address point?!");
-      FieldVectorOffset = scanner.FieldVectorOffset - scanner.AddressPoint;
-      GenericParamsOffset = scanner.GenericParamsOffset.isInvalid()
-        ? Size(0) : scanner.GenericParamsOffset - scanner.AddressPoint;
+      auto &layout = IGM.getMetadataLayout(Target);
+      FieldVectorOffset = layout.getFieldOffsetVectorOffset().getStatic();
+      GenericParamsOffset = layout.getStaticGenericRequirementsOffset();
     }
     
     StructDecl *getTarget() { return Target; }
@@ -2478,42 +2343,9 @@ namespace {
                                        ClassDecl *c)
       : super(IGM), Target(c)
     {
-      // Scan the metadata layout for the class to find the key offsets to
-      // put in our descriptor.
-      struct ScanForDescriptorOffsets
-        : ClassMetadataScanner<ScanForDescriptorOffsets>
-      {
-        ScanForDescriptorOffsets(IRGenModule &IGM, ClassDecl *Target)
-          : ClassMetadataScanner(IGM, Target) {}
-        
-        Size AddressPoint = Size::invalid();
-        Size FieldVectorOffset = Size::invalid();
-        Size GenericParamsOffset = Size::invalid();
-        
-        void noteAddressPoint() { AddressPoint = NextOffset; }
-        void noteStartOfFieldOffsets(ClassDecl *c) {
-          if (c == Target) {
-            FieldVectorOffset = NextOffset;
-          }
-        }
-        void noteStartOfGenericRequirements(ClassDecl *c) {
-          if (c == Target) {
-            GenericParamsOffset = NextOffset;
-          }
-        }
-      };
-      
-      ScanForDescriptorOffsets scanner(IGM, Target);
-      scanner.layout();
-      assert(!scanner.AddressPoint.isInvalid()
-             && !scanner.FieldVectorOffset.isInvalid()
-             && "did not find required fields in struct metadata?!");
-      assert(scanner.FieldVectorOffset >= scanner.AddressPoint
-             && "found field offset vector after address point?!");
-      assert(scanner.GenericParamsOffset >= scanner.AddressPoint
-             && "found generic param vector after address point?!");
-      FieldVectorOffset = scanner.FieldVectorOffset - scanner.AddressPoint;
-      GenericParamsOffset = scanner.GenericParamsOffset - scanner.AddressPoint;
+      auto &layout = IGM.getMetadataLayout(Target);
+      FieldVectorOffset = layout.getStaticFieldOffsetVectorOffset();
+      GenericParamsOffset = layout.getStaticGenericRequirementsOffset();
     }
     
     ClassDecl *getTarget() { return Target; }
@@ -2562,38 +2394,10 @@ namespace {
     EnumNominalTypeDescriptorBuilder(IRGenModule &IGM, EnumDecl *c)
       : super(IGM), Target(c)
     {
-      // Scan the metadata layout for the class to find the key offsets to
-      // put in our descriptor.
-      struct ScanForDescriptorOffsets
-        : EnumMetadataScanner<ScanForDescriptorOffsets>
-      {
-        ScanForDescriptorOffsets(IRGenModule &IGM, EnumDecl *Target)
-          : EnumMetadataScanner(IGM, Target) {}
-        
-        Size AddressPoint = Size::invalid();
-        Size GenericParamsOffset = Size::invalid();
-        Size PayloadSizeOffset = Size::invalid();
-        
-        void noteAddressPoint() { AddressPoint = NextOffset; }
-        void addPayloadSize() {
-          PayloadSizeOffset = NextOffset;
-          EnumMetadataScanner::addPayloadSize();
-        }
-        void noteStartOfGenericRequirements() {
-          GenericParamsOffset = NextOffset;
-        }
-      };
-      
-      ScanForDescriptorOffsets scanner(IGM, Target);
-      scanner.layout();
-      assert(!scanner.AddressPoint.isInvalid()
-             && "did not find fields in Enum metadata?!");
-      assert(scanner.GenericParamsOffset >= scanner.AddressPoint
-             && "found generic param vector after address point?!");
-      GenericParamsOffset = scanner.GenericParamsOffset.isInvalid()
-        ? Size(0) : scanner.GenericParamsOffset - scanner.AddressPoint;
-      PayloadSizeOffset = scanner.PayloadSizeOffset.isInvalid()
-        ? Size(0) : scanner.PayloadSizeOffset - scanner.AddressPoint;
+      auto &layout = IGM.getMetadataLayout(Target);
+      GenericParamsOffset = layout.getStaticGenericRequirementsOffset();
+      if (layout.hasPayloadSizeOffset())
+        PayloadSizeOffset = layout.getPayloadSizeOffset().getStatic();
     }
     
     EnumDecl *getTarget() { return Target; }
@@ -2679,7 +2483,8 @@ irgen::emitFieldTypeAccessor(IRGenModule &IGM,
   // immediately after the metadata object itself, which should be
   // instantiated with every generic metadata instance.
   } else {
-    Size offset = getSizeOfMetadata(IGM, type).getOffsetToEnd();
+    auto size = IGM.getMetadataLayout(type).getSize();
+    Size offset = size.getOffsetToEnd();
     vectorPtr = IGF.Builder.CreateBitCast(metadata,
                                           metadataArrayPtrTy->getPointerTo());
     vectorPtr = IGF.Builder.CreateConstInBoundsGEP1_32(
@@ -2859,7 +2664,7 @@ namespace {
 
       // Skip instrumentation when building for TSan to avoid false positives.
       // The synchronization for this happens in the Runtime and we do not see it.
-      if (IGM.IRGen.Opts.Sanitize == SanitizerKind::Thread)
+      if (IGM.IRGen.Opts.Sanitizers & SanitizerKind::Thread)
         f->removeFnAttr(llvm::Attribute::SanitizeThread);
 
       if (IGM.DebugInfo)
@@ -3065,13 +2870,15 @@ namespace {
   };
 } // end anonymous namespace
 
-// Classes
-
-static llvm::Value *emitInitializeFieldOffsetVector(IRGenFunction &IGF,
-                                                    ClassDecl *target,
-                                                    llvm::Value *metadata) {
+llvm::Value *
+irgen::emitInitializeFieldOffsetVector(IRGenFunction &IGF,
+                                       SILType T,
+                                       llvm::Value *metadata,
+                                       llvm::Value *vwtable) {
+  auto *target = T.getNominalOrBoundGenericNominal();
   llvm::Value *fieldVector
-    = emitAddressOfFieldOffsetVector(IGF, metadata, target).getAddress();
+    = emitAddressOfFieldOffsetVector(IGF, metadata, target)
+      .getAddress();
   
   // Collect the stored properties of the type.
   llvm::SmallVector<VarDecl*, 4> storedProperties;
@@ -3081,60 +2888,52 @@ static llvm::Value *emitInitializeFieldOffsetVector(IRGenFunction &IGF,
 
   // Fill out an array with the field type metadata records.
   Address fields = IGF.createAlloca(
-                   llvm::ArrayType::get(IGF.IGM.SizeTy,
-                                        storedProperties.size() * 2),
+                   llvm::ArrayType::get(IGF.IGM.Int8PtrPtrTy,
+                                        storedProperties.size()),
                    IGF.IGM.getPointerAlignment(), "classFields");
   IGF.Builder.CreateLifetimeStart(fields,
-                  IGF.IGM.getPointerSize() * storedProperties.size() * 2);
-  
-  Address firstField;
+                  IGF.IGM.getPointerSize() * storedProperties.size());
+  fields = IGF.Builder.CreateStructGEP(fields, 0, Size(0));
+
   unsigned index = 0;
   for (auto prop : storedProperties) {
-    auto propFormalTy = target->mapTypeIntoContext(prop->getInterfaceType())
-                            ->getCanonicalType();
-    SILType propLoweredTy = IGF.IGM.getLoweredType(propFormalTy);
-    auto &propTI = IGF.getTypeInfo(propLoweredTy);
-    auto sizeAndAlignMask
-      = propTI.getSizeAndAlignmentMask(IGF, propLoweredTy);
-
-    llvm::Value *size = sizeAndAlignMask.first;
-    Address sizeAddr =
-      IGF.Builder.CreateStructGEP(fields, index, IGF.IGM.getPointerSize());
-    IGF.Builder.CreateStore(size, sizeAddr);
-    if (index == 0) firstField = sizeAddr;
-
-    llvm::Value *alignMask = sizeAndAlignMask.second;
-    Address alignMaskAddr =
-      IGF.Builder.CreateStructGEP(fields, index + 1,
-                                  IGF.IGM.getPointerSize());
-    IGF.Builder.CreateStore(alignMask, alignMaskAddr);
-
-    index += 2;
-  }
-
-  if (storedProperties.empty()) {
-    firstField = IGF.Builder.CreateStructGEP(fields, 0, Size(0));
+    auto propTy = T.getFieldType(prop, IGF.getSILModule());
+    llvm::Value *metadata = IGF.emitTypeLayoutRef(propTy);
+    Address field = IGF.Builder.CreateConstArrayGEP(fields, index,
+                                                    IGF.IGM.getPointerSize());
+    IGF.Builder.CreateStore(metadata, field);
+    ++index;
   }
 
   // Ask the runtime to lay out the class.  This can relocate it if it
   // wasn't allocated with swift_allocateGenericClassMetadata.
   auto numFields = IGF.IGM.getSize(Size(storedProperties.size()));
-  metadata = IGF.Builder.CreateCall(IGF.IGM.getInitClassMetadataUniversalFn(),
-                                    {metadata, numFields,
-                                     firstField.getAddress(), fieldVector});
+
+  if (isa<ClassDecl>(target)) {
+    assert(vwtable == nullptr);
+    metadata = IGF.Builder.CreateCall(IGF.IGM.getInitClassMetadataUniversalFn(),
+                                      {metadata, numFields,
+                                       fields.getAddress(), fieldVector});
+  } else {
+    assert(isa<StructDecl>(target));
+    IGF.Builder.CreateCall(IGF.IGM.getInitStructMetadataUniversalFn(),
+                           {numFields, fields.getAddress(),
+                            fieldVector, vwtable});
+  }
+
   IGF.Builder.CreateLifetimeEnd(fields,
-                  IGF.IGM.getPointerSize() * storedProperties.size() * 2);
+                  IGF.IGM.getPointerSize() * storedProperties.size());
 
   return metadata;
 }
+
+// Classes
 
 namespace {
   /// An adapter for laying out class metadata.
   template <class Impl>
   class ClassMetadataBuilderBase : public ClassMetadataVisitor<Impl> {
     using super = ClassMetadataVisitor<Impl>;
-
-    Optional<MetadataSize> ClassObjectExtents;
 
   protected:
     using super::IGM;
@@ -3152,11 +2951,6 @@ namespace {
       : super(IGM, theClass), B(builder),
         Layout(layout), FieldLayout(fieldLayout) {
       VTable = IGM.getSILModule().lookUpVTable(Target);
-    }
-
-    void computeClassObjectExtents() {
-      if (ClassObjectExtents.hasValue()) return;
-      ClassObjectExtents = getSizeOfMetadata(IGM, Target);
     }
 
   public:
@@ -3299,13 +3093,13 @@ namespace {
     }
 
     void addClassSize() {
-      computeClassObjectExtents();
-      B.addInt32(ClassObjectExtents->FullSize.getValue());
+      auto size = IGM.getMetadataLayout(Target).getSize();
+      B.addInt32(size.FullSize.getValue());
     }
 
     void addClassAddressPoint() {
-      computeClassObjectExtents();
-      B.addInt32(ClassObjectExtents->AddressPoint.getValue());
+      auto size = IGM.getMetadataLayout(Target).getSize();
+      B.addInt32(size.AddressPoint.getValue());
     }
     
     void addClassCacheData() {
@@ -3469,7 +3263,11 @@ namespace {
       //
       // emitInitializeFieldOffsetVector will do everything in the full case.
       if (doesClassMetadataRequireDynamicInitialization(IGF.IGM, Target)) {
-        metadata = emitInitializeFieldOffsetVector(IGF, Target, metadata);
+        auto classTy = Target->getDeclaredTypeInContext()->getCanonicalType();
+        auto loweredClassTy = IGF.IGM.getLoweredType(classTy);
+        metadata = emitInitializeFieldOffsetVector(IGF, loweredClassTy,
+                                                   metadata,
+                                                   /*vwtable=*/nullptr);
 
       // TODO: do something intermediate when e.g. all we needed to do was
       // set parent metadata pointers.
