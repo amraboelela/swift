@@ -182,6 +182,10 @@ foreach(sdk ANDROID;FREEBSD;LINUX;WINDOWS)
       "Path to a directory containing the icui18n library for ${sdk}")
   set(SWIFT_${sdk}_ICU_I18N_INCLUDE "" CACHE STRING
       "Path to a directory containing headers icui18n for ${sdk}")
+  set(SWIFT_${sdk}_ICU_DATA "" CACHE STRING
+      "Path to a directory containing the icudata library for ${sdk}")
+  set(SWIFT_${sdk}_ICU_DATA_INCLUDE "" CACHE STRING
+      "Path to a directory containing headers icudata for ${sdk}")
 endforeach()
 
 #

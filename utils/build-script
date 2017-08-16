@@ -231,6 +231,8 @@ class BuildScriptInvocation(object):
         if args.android:
             if args.android_ndk is None or \
                     args.android_api_level is None or \
+                    args.android_icu_data is None or \
+                    args.android_icu_data_include is None or \
                     args.android_icu_uc is None or \
                     args.android_icu_uc_include is None or \
                     args.android_icu_i18n is None or \
@@ -239,7 +241,8 @@ class BuildScriptInvocation(object):
                     "when building for Android, --android-ndk, "
                     "--android-ndk-version, --android-icu-uc, "
                     "--android-icu-uc-include, --android-icu-i18n, "
-                    "and --android-icu-i18n-include must be specified")
+                    "--android-icu-i18n-include, --android-icu-data, "
+                    "and --android-icu-data-include must be specified")
 
     @staticmethod
     def apply_default_arguments(toolchain, args):
@@ -822,6 +825,8 @@ class BuildScriptInvocation(object):
                 "--android-icu-uc-include", args.android_icu_uc_include,
                 "--android-icu-i18n", args.android_icu_i18n,
                 "--android-icu-i18n-include", args.android_icu_i18n_include,
+                "--android-icu-data", args.android_icu_data,
+                "--android-icu-data-include", args.android_icu_data_include,
             ]
         if args.android_deploy_device_path:
             impl_args += [
@@ -1994,6 +1999,14 @@ iterations with -O",
     android_group.add_argument(
         "--android-icu-i18n-include",
         help="Path to a directory containing headers libicui18n",
+        metavar="PATH")
+    android_group.add_argument(
+        "--android-icu-data",
+        help="Path to a directory containing libicudata.so",
+        metavar="PATH")
+    android_group.add_argument(
+        "--android-icu-data-include",
+        help="Path to a directory containing headers libicudata",
         metavar="PATH")
     android_group.add_argument(
         "--android-deploy-device-path",

@@ -1191,6 +1191,16 @@ function(_add_swift_library_single target name)
   # Do not add code here.
 endfunction()
 
+# ANDROID hack: We want to statically link libc++ to avoid potential downstream conflicts with user binaries.
+# Static linking flags are order sensitive and this must come after all the C++ that uses it.
+# More specifically, this must come after the libicu link flags, though if other C++ libraries are linked, this must always be at the end.
+# Because the order is tricky, there wasn't a very natural place for this block of code, so this seemed like the best place.
+# Note that this must be linked in the target/client library, not the host compiler.
+if("${SWIFTLIB_SINGLE_SDK}" STREQUAL "ANDROID")
+    list(APPEND SWIFTLIB_SINGLE_PRIVATE_LINK_LIBRARIES
+        "-lc++_static")
+endif()
+
 # Add a new Swift library.
 #
 # Usage:
