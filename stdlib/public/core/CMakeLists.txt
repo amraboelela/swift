@@ -194,12 +194,19 @@ else()
   # effort has been completed.
   #set(LINK_FLAGS
   #  -Wl,--whole-archive swiftRuntime -Wl,--no-whole-archive)
-  if("${SWIFT_PATH_TO_LIBICU_BUILD}" STREQUAL "")
-    list(APPEND swift_core_private_link_libraries
-      ICU_UC ICU_I18N)
-  else()
-    list(APPEND swift_core_private_link_libraries -licui18n -licuuc -licudata)
-  endif()
+
+  find_package(ICU REQUIRED COMPONENTS uc i18n data)
+  # If linking against static library versions of ICU, the order matters.
+  # i18N needs uc and data
+  # uc needs data
+  # We need to link against i18n and uc explicitly for dynamic linking.
+  # We also need to link against data for static libraries.
+  # TODO: Detect if the library is static and conditionally link.
+  # NOTE: If ICU is built with data archive, then the data library is a stub.
+  # (This explicit link is harmless in the dynamic library case.)
+  # NOTE: If ICU is built with data archive, then the data library still exists as a stub.
+  list(APPEND swift_core_private_link_libraries
+    ${ICU_I18N_LIBRARY} ${ICU_UC_LIBRARY} ${ICU_DATA_LIBRARY})
 endif()
 
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "CYGWIN")
