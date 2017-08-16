@@ -158,14 +158,6 @@ $ adb push build/Ninja-ReleaseAssert/swift-linux-x86_64/lib/swift/android/libswi
 $ adb push build/Ninja-ReleaseAssert/swift-linux-x86_64/lib/swift/android/libswiftSwiftExperimental.so /data/local/tmp
 ```
 
-You will also need to push the icu libraries:
-
-```
-adb push /path/to/libicu-android/armeabi-v7a/libicudata.so /data/local/tmp
-adb push /path/to/libicu-android/armeabi-v7a/libicui18n.so /data/local/tmp
-adb push /path/to/libicu-android/armeabi-v7a/libicuuc.so /data/local/tmp
-```
-
 In addition, you'll also need to copy the Android NDK's libc++:
 
 ```
