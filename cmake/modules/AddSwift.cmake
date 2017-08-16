@@ -356,11 +356,10 @@ function(_add_variant_link_flags)
   elseif("${LFLAGS_SDK}" STREQUAL "ANDROID")
     list(APPEND result
         "-ldl" "-llog" "-latomic"
-        "-L${SWIFT_ANDROID_ICU_UC}" "-L${SWIFT_ANDROID_ICU_I18N}" "-L${SWIFT_ANDROID_ICU_DATA}"
-        # FIXME: This is to find libc++_static.a. This will need to be more flexible for different architectures.
-        # NOTE: I'm not sure why I need both lines (to the file and to the path). But without both, the link failed.
-        "-L${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a/libc++_static.a"
-        "-L${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a")
+        "${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a/libc++_static.a"
+        "${SWIFT_ANDROID_ICU_DATA}/libicudata.a"
+        "${SWIFT_ANDROID_ICU_UC}/libicuuc.a"
+        "${SWIFT_ANDROID_ICU_I18N}/icui18n.a")
     list(APPEND library_search_directories
         "${SWIFT_ANDROID_PREBUILT_PATH}/arm-linux-androideabi/lib/armv7-a"
         "${SWIFT_ANDROID_PREBUILT_PATH}/lib/gcc/arm-linux-androideabi/${SWIFT_ANDROID_NDK_GCC_VERSION}.x")
@@ -1194,16 +1193,6 @@ function(_add_swift_library_single target name)
 
   # Do not add code here.
 endfunction()
-
-# ANDROID hack: We want to statically link libc++ to avoid potential downstream conflicts with user binaries.
-# Static linking flags are order sensitive and this must come after all the C++ that uses it.
-# More specifically, this must come after the libicu link flags, though if other C++ libraries are linked, this must always be at the end.
-# Because the order is tricky, there wasn't a very natural place for this block of code, so this seemed like the best place.
-# Note that this must be linked in the target/client library, not the host compiler.
-if("${SWIFTLIB_SINGLE_SDK}" STREQUAL "ANDROID")
-    list(APPEND SWIFTLIB_SINGLE_PRIVATE_LINK_LIBRARIES
-        "-lc++_static")
-endif()
 
 # Add a new Swift library.
 #
