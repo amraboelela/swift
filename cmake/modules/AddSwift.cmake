@@ -355,19 +355,8 @@ function(_add_variant_link_flags)
     endif()
   elseif("${LFLAGS_SDK}" STREQUAL "ANDROID")
     list(APPEND result
-        "-ldl" "-llog" "-latomic"
-
-        # FIXME: This is to find libc++_static.a. This will need to be more flexible for different architectures.
-        # NOTE: I'm not sure why I need both lines (to the file and to the path). But without both, the link failed.
-        "-L${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a/libc++_static.a"
-        "-L${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a"
-        "-L${SWIFT_ANDROID_ICU_DATA}/libicudata.a"
-        "-L${SWIFT_ANDROID_ICU_DATA}"
-        "-L${SWIFT_ANDROID_ICU_UC}/libicuuc.a"
-        "-L${SWIFT_ANDROID_ICU_UC}"
-        "-L${SWIFT_ANDROID_ICU_I18N}/libicui18n.a"
-        "-L${SWIFT_ANDROID_ICU_I18N}"
-        )
+        "-ldl" "-llog" "-latomic" "-licudataswift" "-licui18nswift" "-licuucswift"
+        "${SWIFT_ANDROID_NDK_PATH}/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a/libc++_shared.so")
     list(APPEND library_search_directories
         "${SWIFT_ANDROID_PREBUILT_PATH}/arm-linux-androideabi/lib/armv7-a"
         "${SWIFT_ANDROID_PREBUILT_PATH}/lib/gcc/arm-linux-androideabi/${SWIFT_ANDROID_NDK_GCC_VERSION}.x")
