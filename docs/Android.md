@@ -67,9 +67,108 @@ The steps are as follows:
 3. From the command-line, run `which ndk-build`. Confirm that the path to
    the `ndk-build` executable in the Android NDK you downloaded is displayed.
    If not, you may need to add the Android NDK directory to your `PATH`.
-4. Enter the `libiconv-libicu-android` directory on the command line, then
-   run `build.sh`.
-5. Confirm that the build script created `armeabi-v7a/icu/source/i18n` and
+4. Enter the `libiconv-libicu-android` directory on the command line
+5. Delete armeabi-v7a directory if exists: `rm -rf armeabi-v7a`
+6. Recreate armeabi-v7a directory and generate icu directory from the compressed file icu4c-55_1-src.tgz:
+ 
+```
+$ mkdir armeabi-v7a
+$ cd armeabi-v7a
+$ tar xvf ../icu4c-55_1-src.tgz
+```
+- Edit `icu/source/configure` file and change:
+
+```
+if test "$ICULIBSUFFIX" != ""
+then
+    U_HAVE_LIB_SUFFIX=1
+    ICULIBSUFFIXCNAME=`echo _$ICULIBSUFFIX | sed 's/^A-Za-z0-9_/_/g'`
+    UCONFIG_CPPFLAGS="${UCONFIG_CPPFLAGS} -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=${ICULIBSUFFIXCNAME} "
+else
+    U_HAVE_LIB_SUFFIX=0
+fi
+```
+
+To:
+ 
+```
+#if test "$ICULIBSUFFIX" != ""
+#then
+#    U_HAVE_LIB_SUFFIX=1
+#    ICULIBSUFFIXCNAME=`echo _$ICULIBSUFFIX | sed 's/^A-Za-z0-9_/_/g'`
+#    UCONFIG_CPPFLAGS="${UCONFIG_CPPFLAGS} -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=${ICULIBSUFFIXCNAME} "
+#else
+    U_HAVE_LIB_SUFFIX=0
+#fi
+```
+
+- Edit build.sh file and change:
+
+```
+[ -e ../icu4c-55_1-src.tgz ] || exit 1
+tar xvf ../icu4c-55_1-src.tgz
+```     
+
+To:
+
+```
+#[ -e ../icu4c-55_1-src.tgz ] || exit 1
+#tar xvf ../icu4c-55_1-src.tgz
+``` 
+
+And:
+
+```
+[ -e libicuuc.so ] || {
+```
+
+To:
+
+```
+[ -e libicuucswift.so ] || {
+```
+
+And:
+
+```
+./configure \
+--host=arm-linux-androideabi \
+--prefix=`pwd`/../../ \
+--with-cross-build=`pwd`/cross \
+--enable-static --enable-shared \
+|| exit 1
+```
+To:
+
+```
+./configure \
+--host=arm-linux-androideabi \
+--prefix=`pwd`/../../ \
+--with-library-suffix=swift \
+--with-cross-build=`pwd`/cross \
+--enable-static --enable-shared \
+|| exit 1
+```
+
+And:
+
+```
+for f in libicudata libicutest libicui18n libicuio libicule libiculx libicutu libicuuc; do
+```
+
+To:
+
+```
+for f in libicudataswift libicutestswift libicui18nswift libicuioswift libiculeswift libiculxswift libicutuswift libicuucswift; do
+```
+
+- Then run `build.sh`.
+
+```
+$ ./build.sh
+```
+
+- Confirm that the build script created `armeabi-v7a/icu/source/i18n` and
    `armeabi-v7a/icu/source/common` directories within your
    `libiconv-libicu-android` directory.
 
@@ -88,9 +187,7 @@ $ utils/build-script \
     --android-icu-uc /path/to/libicu-android/armeabi-v7a \
     --android-icu-uc-include /path/to/libicu-android/armeabi-v7a/icu/source/common \
     --android-icu-i18n /path/to/libicu-android/armeabi-v7a \
-    --android-icu-i18n-include /path/to/libicu-android/armeabi-v7a/icu/source/i18n \
-    --android-icu-data /path/to/libicu-android/armeabi-v7a \
-    --android-icu-data-include /path/to/libicu-android/armeabi-v7a/icu/source/data
+    --android-icu-i18n-include /path/to/libicu-android/armeabi-v7a/icu/source/i18n
 ```
 
 ### 3. Compiling `hello.swift` to run on an Android device
@@ -158,6 +255,14 @@ $ adb push build/Ninja-ReleaseAssert/swift-linux-x86_64/lib/swift/android/libswi
 $ adb push build/Ninja-ReleaseAssert/swift-linux-x86_64/lib/swift/android/libswiftSwiftExperimental.so /data/local/tmp
 ```
 
+You will also need to push the icu libraries:
+
+```
+adb push /path/to/libicu-android/armeabi-v7a/libicudataswift.so /data/local/tmp
+adb push /path/to/libicu-android/armeabi-v7a/libicui18nswift.so /data/local/tmp
+adb push /path/to/libicu-android/armeabi-v7a/libicuucswift.so /data/local/tmp
+```
+
 In addition, you'll also need to copy the Android NDK's libc++:
 
 ```
@@ -209,7 +314,5 @@ $ utils/build-script \
   --android-icu-uc ~/libicu-android/armeabi-v7a/libicuuc.so \
   --android-icu-uc-include ~/libicu-android/armeabi-v7a/icu/source/common \
   --android-icu-i18n ~/libicu-android/armeabi-v7a/libicui18n.so \
-  --android-icu-i18n-include ~/libicu-android/armeabi-v7a/icu/source/i18n \
-  --android-icu-data ~/libicu-android/armeabi-v7a/libicui18n.so \
-  --android-icu-data-include ~/libicu-android/armeabi-v7a/icu/source/data
+  --android-icu-i18n-include ~/libicu-android/armeabi-v7a/icu/source/i18n/
 ```
