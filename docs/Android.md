@@ -331,7 +331,5 @@ $ utils/build-script \
   --android-icu-uc ~/libicu-android/armeabi-v7a/libicuuc.so \
   --android-icu-uc-include ~/libicu-android/armeabi-v7a/icu/source/common \
   --android-icu-i18n ~/libicu-android/armeabi-v7a/libicui18n.so \
-  --android-icu-i18n-include ~/libicu-android/armeabi-v7a/icu/source/i18n \
-  --android-icu-data ~/libicu-android/armeabi-v7a/libicui18n.so \
-  --android-icu-data-include ~/libicu-android/armeabi-v7a/icu/source/data
+  --android-icu-i18n-include ~/libicu-android/armeabi-v7a/icu/source/i18n/
 ```
