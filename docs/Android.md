@@ -68,15 +68,16 @@ The steps are as follows:
    the `ndk-build` executable in the Android NDK you downloaded is displayed.
    If not, you may need to add the Android NDK directory to your `PATH`.
 4. Enter the `libiconv-libicu-android` directory on the command line
-5. Delete armeabi-v7a directory if exists: `rm -rf armeabi-v7a`
-6. Recreate armeabi-v7a directory and generate icu directory from the compressed file icu4c-55_1-src.tgz:
+5. Delete armeabi-v7a directory if exists: `rm -rf armeabi-v7a`, then continue with the following steps:
+
+Recreate armeabi-v7a directory and generate icu directory from the compressed file icu4c-55_1-src.tgz:
  
 ```
 $ mkdir armeabi-v7a
 $ cd armeabi-v7a
 $ tar xvf ../icu4c-55_1-src.tgz
 ```
-- Edit `icu/source/configure` file and change:
+Edit `icu/source/configure` file and change:
 
 ```
 if test "$ICULIBSUFFIX" != ""
@@ -102,33 +103,33 @@ To:
 #fi
 ```
 
-- Edit build.sh file and change:
+Edit build.sh file and change
 
 ```
 [ -e ../icu4c-55_1-src.tgz ] || exit 1
 tar xvf ../icu4c-55_1-src.tgz
-```     
+```
 
-To:
+To
 
 ```
 #[ -e ../icu4c-55_1-src.tgz ] || exit 1
 #tar xvf ../icu4c-55_1-src.tgz
-``` 
+```
 
-And:
+Change
 
 ```
 [ -e libicuuc.so ] || {
 ```
 
-To:
+To
 
 ```
 [ -e libicuucswift.so ] || {
 ```
 
-And:
+Change
 
 ```
 ./configure \
@@ -138,7 +139,7 @@ And:
 --enable-static --enable-shared \
 || exit 1
 ```
-To:
+To
 
 ```
 ./configure \
@@ -150,25 +151,25 @@ To:
 || exit 1
 ```
 
-And:
+And change
 
 ```
 for f in libicudata libicutest libicui18n libicuio libicule libiculx libicutu libicuuc; do
 ```
 
-To:
+To
 
 ```
 for f in libicudataswift libicutestswift libicui18nswift libicuioswift libiculeswift libiculxswift libicutuswift libicuucswift; do
 ```
 
-- Then run `build.sh`.
+Then run `build.sh`
 
 ```
 $ ./build.sh
 ```
 
-- Confirm that the build script created `armeabi-v7a/icu/source/i18n` and
+Confirm that the build script created `armeabi-v7a/icu/source/i18n` and
    `armeabi-v7a/icu/source/common` directories within your
    `libiconv-libicu-android` directory.
 
