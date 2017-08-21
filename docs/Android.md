@@ -67,17 +67,22 @@ The steps are as follows:
 3. From the command-line, run `which ndk-build`. Confirm that the path to
    the `ndk-build` executable in the Android NDK you downloaded is displayed.
    If not, you may need to add the Android NDK directory to your `PATH`.
-4. Enter the `libiconv-libicu-android` directory on the command line
-5. Delete armeabi-v7a directory if exists: `rm -rf armeabi-v7a`, then continue with the following steps:
 
-Recreate armeabi-v7a directory and generate icu directory from the compressed file icu4c-55_1-src.tgz:
+#### Adding `swift` suffix to icu libraries
+
+Android OS has its own icu libraries which are different from the ones we are generating and conflicts with ours. In order to resolve this conflict when linking Swift stdlib dependencies in Android devices, we need to change our icu libraries names by adding `swift` suffix at the end. To do that, enter the `libiconv-libicu-android` directory on the command line, then do the following steps:
+
+Create `armeabi-v7a` directory and generate `icu` directory by uncompressing `icu4c-55_1-src.tgz` file, as following:
  
 ```
 $ mkdir armeabi-v7a
 $ cd armeabi-v7a
 $ tar xvf ../icu4c-55_1-src.tgz
 ```
-Edit `icu/source/configure` file and change:
+
+**Edit icu configure file**
+
+In order to prevent icu configuration from adding `swift` suffix to internal symbols as well, edit `icu/source/configure` file and change:
 
 ```
 if test "$ICULIBSUFFIX" != ""
@@ -103,33 +108,41 @@ To:
 #fi
 ```
 
-Edit build.sh file and change
+**Edit build.sh file**
+
+Now go back to the `libiconv-libicu-android` root directory:
+
+```
+$ cd ..
+```
+
+In order to prevent `build.sh` from regenerating the icu directory and override the `configure` file we just edited, edit `build.sh` and change:
 
 ```
 [ -e ../icu4c-55_1-src.tgz ] || exit 1
 tar xvf ../icu4c-55_1-src.tgz
 ```
 
-To
+To:
 
 ```
 #[ -e ../icu4c-55_1-src.tgz ] || exit 1
 #tar xvf ../icu4c-55_1-src.tgz
 ```
 
-Change
+In order to check the existence of `libicuucswift.so` file instead of `libicuuc.so`, change:
 
 ```
 [ -e libicuuc.so ] || {
 ```
 
-To
+To:
 
 ```
 [ -e libicuucswift.so ] || {
 ```
 
-Change
+Then add the `swift` suffix to the call of `configure` file, by changing:
 
 ```
 ./configure \
@@ -139,7 +152,7 @@ Change
 --enable-static --enable-shared \
 || exit 1
 ```
-To
+To:
 
 ```
 ./configure \
@@ -151,19 +164,22 @@ To
 || exit 1
 ```
 
-And change
+Now change the libraries file names on the last step of th build, by adding `swift` at the end of each one, by changing:
 
 ```
 for f in libicudata libicutest libicui18n libicuio libicule libiculx libicutu libicuuc; do
 ```
 
-To
+To:
 
 ```
 for f in libicudataswift libicutestswift libicui18nswift libicuioswift libiculeswift libiculxswift libicutuswift libicuucswift; do
 ```
 
-Then run `build.sh`
+
+**Run build.sh**
+
+Now we are finally ready to run the `build.sh` file
 
 ```
 $ ./build.sh
