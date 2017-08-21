@@ -1282,16 +1282,14 @@ public:
   }
 
   void visitUnconditionalCheckedCastAddrInst(UnconditionalCheckedCastAddrInst *CI) {
-    *this << getCastConsumptionKindName(CI->getConsumptionKind()) << ' '
-          << CI->getSourceType() << " in " << getIDAndType(CI->getSrc())
+    *this << CI->getSourceType() << " in " << getIDAndType(CI->getSrc())
           << " to " << CI->getTargetType() << " in "
           << getIDAndType(CI->getDest());
   }
 
   void visitUnconditionalCheckedCastValueInst(
       UnconditionalCheckedCastValueInst *CI) {
-    *this << getCastConsumptionKindName(CI->getConsumptionKind()) << ' '
-          << getIDAndType(CI->getOperand()) << " to " << CI->getType();
+    *this << getIDAndType(CI->getOperand()) << " to " << CI->getType();
   }
 
   void visitCheckedCastAddrBranchInst(CheckedCastAddrBranchInst *CI) {
@@ -1418,26 +1416,6 @@ public:
 
   void visitDestroyValueInst(DestroyValueInst *I) {
     *this << getIDAndType(I->getOperand());
-  }
-
-  void visitRetainValueInst(RetainValueInst *I) { visitRefCountingInst(I); }
-
-  void visitReleaseValueInst(ReleaseValueInst *I) { visitRefCountingInst(I); }
-
-  void visitRetainValueAddrInst(RetainValueAddrInst *I) {
-    visitRefCountingInst(I);
-  }
-
-  void visitReleaseValueAddrInst(ReleaseValueAddrInst *I) {
-    visitRefCountingInst(I);
-  }
-
-  void visitAutoreleaseValueInst(AutoreleaseValueInst *I) {
-    visitRefCountingInst(I);
-  }
-
-  void visitSetDeallocatingInst(SetDeallocatingInst *I) {
-    visitRefCountingInst(I);
   }
 
   void visitStructInst(StructInst *SI) {
@@ -1658,21 +1636,6 @@ public:
     if (I->isNonAtomic())
       *this << "[nonatomic] ";
     *this << getIDAndType(I->getOperand(0));
-  }
-  void visitStrongRetainInst(StrongRetainInst *RI) { visitRefCountingInst(RI); }
-  void visitStrongReleaseInst(StrongReleaseInst *RI) {
-    visitRefCountingInst(RI);
-  }
-  void visitStrongPinInst(StrongPinInst *PI) { visitRefCountingInst(PI); }
-  void visitStrongUnpinInst(StrongUnpinInst *UI) { visitRefCountingInst(UI); }
-  void visitStrongRetainUnownedInst(StrongRetainUnownedInst *RI) {
-    visitRefCountingInst(RI);
-  }
-  void visitUnownedRetainInst(UnownedRetainInst *RI) {
-    visitRefCountingInst(RI);
-  }
-  void visitUnownedReleaseInst(UnownedReleaseInst *RI) {
-    visitRefCountingInst(RI);
   }
   void visitIsUniqueInst(IsUniqueInst *CUI) {
     *this << getIDAndType(CUI->getOperand());

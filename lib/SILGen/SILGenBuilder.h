@@ -9,10 +9,20 @@
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 //===----------------------------------------------------------------------===//
+///
+/// \file
+///
+/// This file defines SILGenBuilder, a subclass of SILBuilder that provides APIs
+/// that traffic in ManagedValue. The intention is that if one is using a
+/// SILGenBuilder, the SILGenBuilder will handle preserving ownership invariants
+/// (or assert upon failure) freeing the implementor of such concerns.
+///
+//===----------------------------------------------------------------------===//
 
 #ifndef SWIFT_SILGEN_SILGENBUILDER_H
 #define SWIFT_SILGEN_SILGENBUILDER_H
 
+#include "Cleanup.h"
 #include "JumpDest.h"
 #include "ManagedValue.h"
 #include "RValue.h"
@@ -228,7 +238,6 @@ public:
   using SILBuilder::createUnconditionalCheckedCastValue;
   ManagedValue
   createUnconditionalCheckedCastValue(SILLocation loc,
-                                      CastConsumptionKind consumption,
                                       ManagedValue operand, SILType type);
   using SILBuilder::createUnconditionalCheckedCast;
   ManagedValue createUnconditionalCheckedCast(SILLocation loc,
@@ -345,27 +354,6 @@ public:
 
 private:
   SILGenFunction &getSGF() const { return builder.getSILGenFunction(); }
-};
-
-class CleanupCloner {
-  SILGenFunction &SGF;
-  bool hasCleanup;
-  bool isLValue;
-
-public:
-  CleanupCloner(SILGenFunction &SGF, ManagedValue mv)
-      : SGF(SGF), hasCleanup(mv.hasCleanup()), isLValue(mv.isLValue()) {}
-
-  CleanupCloner(SILGenBuilder &builder, ManagedValue mv)
-      : CleanupCloner(builder.getSILGenFunction(), mv) {}
-
-  CleanupCloner(SILGenFunction &SGF, const RValue &rv)
-      : SGF(SGF), hasCleanup(rv.isPlusOne(SGF)), isLValue(false) {}
-
-  CleanupCloner(SILGenBuilder &builder, const RValue &rv)
-      : CleanupCloner(builder.getSILGenFunction(), rv) {}
-
-  ManagedValue clone(SILValue value) const;
 };
 
 } // namespace Lowering
