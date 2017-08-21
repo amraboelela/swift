@@ -123,7 +123,7 @@ In order to prevent `build.sh` from regenerating the icu directory and override 
 tar xvf ../icu4c-55_1-src.tgz
 ```
 
-To:
+To
 
 ```
 #[ -e ../icu4c-55_1-src.tgz ] || exit 1
@@ -136,7 +136,7 @@ In order to check the existence of `libicuucswift.so` file instead of `libicuuc.
 [ -e libicuuc.so ] || {
 ```
 
-To:
+To
 
 ```
 [ -e libicuucswift.so ] || {
@@ -152,7 +152,7 @@ Then add the `swift` suffix to the call of `configure` file, by changing:
 --enable-static --enable-shared \
 || exit 1
 ```
-To:
+To
 
 ```
 ./configure \
@@ -170,7 +170,7 @@ Now change the libraries file names on the last step of th build, by adding `swi
 for f in libicudata libicutest libicui18n libicuio libicule libiculx libicutu libicuuc; do
 ```
 
-To:
+To
 
 ```
 for f in libicudataswift libicutestswift libicui18nswift libicuioswift libiculeswift libiculxswift libicutuswift libicuucswift; do
