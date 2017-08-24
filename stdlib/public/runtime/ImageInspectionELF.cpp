@@ -81,6 +81,7 @@ static SectionInfo getSectionInfo(const char *imageName,
 #endif
     fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
                dlerror());
+#endif
   }
   void *symbol = dlsym(handle, sectionName);
   if (symbol) {
