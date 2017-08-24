@@ -2561,6 +2561,9 @@ void VarDeclUsageChecker::markStoredOrInOutExpr(Expr *E, unsigned Flags) {
     if (KPA->getKeyPath()->getType()->getAnyNominal()
           == C.getWritableKeyPathDecl())
       markStoredOrInOutExpr(KPA->getBase(), RK_Written|RK_Read);
+    if (KPA->getKeyPath()->getType()->getAnyNominal()
+          == C.getReferenceWritableKeyPathDecl())
+      markStoredOrInOutExpr(KPA->getBase(), RK_Read);
     return;
   }
   
@@ -3321,6 +3324,10 @@ static void diagnoseUnintendedOptionalBehavior(TypeChecker &TC, const Expr *E,
     std::pair<bool, Expr *> walkToExprPre(Expr *E) override {
       if (!E || isa<ErrorExpr>(E) || !E->getType())
         return { false, E };
+
+      if (auto *CE = dyn_cast<AbstractClosureExpr>(E))
+        if (!CE->hasSingleExpressionBody())
+          return { false, E };
 
       if (auto *coercion = dyn_cast<CoerceExpr>(E)) {
         if (E->getType()->isAny() && isa<ErasureExpr>(coercion->getSubExpr()))

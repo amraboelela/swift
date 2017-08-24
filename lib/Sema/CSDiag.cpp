@@ -2259,6 +2259,7 @@ private:
   bool visitCoerceExpr(CoerceExpr *CE);
   bool visitIfExpr(IfExpr *IE);
   bool visitRebindSelfInConstructorExpr(RebindSelfInConstructorExpr *E);
+  bool visitCaptureListExpr(CaptureListExpr *CLE);
   bool visitClosureExpr(ClosureExpr *CE);
   bool visitKeyPathExpr(KeyPathExpr *KPE);
 };
@@ -7155,10 +7156,21 @@ bool FailureDiagnosis::visitInOutExpr(InOutExpr *IOE) {
 
 bool FailureDiagnosis::visitCoerceExpr(CoerceExpr *CE) {
   // Coerce the input to whatever type is specified by the CoerceExpr.
-  if (!typeCheckChildIndependently(CE->getSubExpr(),
-                                   CE->getCastTypeLoc().getType(),
-                                   CTP_CoerceOperand))
+  auto expr = typeCheckChildIndependently(CE->getSubExpr(),
+                                          CE->getCastTypeLoc().getType(),
+                                          CTP_CoerceOperand);
+  if (!expr)
     return true;
+
+  auto ref = expr->getReferencedDecl();
+  if (auto *decl = ref.getDecl()) {
+    // Without explicit coercion we might end up
+    // type-checking sub-expression as unavaible
+    // declaration, let's try to diagnose that here.
+    if (AvailableAttr::isUnavailable(decl))
+      return CS.TC.diagnoseExplicitUnavailability(
+          decl, expr->getSourceRange(), CS.DC, dyn_cast<ApplyExpr>(expr));
+  }
 
   return false;
 }
@@ -7232,6 +7244,11 @@ visitRebindSelfInConstructorExpr(RebindSelfInConstructorExpr *E) {
   // Don't walk the children for this node, it leads to multiple diagnostics
   // because of how sema injects this node into the type checker.
   return false;
+}
+
+bool FailureDiagnosis::visitCaptureListExpr(CaptureListExpr *CLE) {
+  // Always walk into the closure of a capture list expression.
+  return visitClosureExpr(CLE->getClosureBody());
 }
 
 static bool isInvalidClosureResultType(Type resultType) {
