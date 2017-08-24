@@ -267,6 +267,10 @@ public:
   ManagedValue createOpenExistentialRef(SILLocation loc, ManagedValue arg,
                                         SILType openedType);
 
+  using SILBuilder::createOpenExistentialValue;
+  ManagedValue createOpenExistentialValue(SILLocation loc,
+                                          ManagedValue original, SILType type);
+
   using SILBuilder::createOptionalSome;
   ManagedValue createOptionalSome(SILLocation Loc, ManagedValue Arg);
   ManagedValue createManagedOptionalNone(SILLocation Loc, SILType Type);
@@ -279,6 +283,11 @@ public:
   /// it.
   ManagedValue createStore(SILLocation loc, ManagedValue value,
                            SILValue address, StoreOwnershipQualifier qualifier);
+
+  using SILBuilder::createSuperMethod;
+  ManagedValue createSuperMethod(SILLocation loc, ManagedValue operand,
+                                 SILDeclRef member, SILType methodTy,
+                                 bool isVolatile = false);
 };
 
 class SwitchCaseFullExpr;

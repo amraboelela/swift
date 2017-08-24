@@ -2526,6 +2526,9 @@ void PrintAST::visitFuncDecl(FuncDecl *decl) {
         if (decl->isMutating() && !decl->getAttrs().hasAttribute<MutatingAttr>()) {
           Printer.printKeyword("mutating");
           Printer << " ";
+        } else if (decl->isConsuming() && !decl->getAttrs().hasAttribute<ConsumingAttr>()) {
+          Printer.printKeyword("__consuming");
+          Printer << " ";
         }
         Printer << tok::kw_func << " ";
       }
@@ -4164,4 +4167,57 @@ void ProtocolConformance::printName(llvm::raw_ostream &os,
 void Substitution::print(llvm::raw_ostream &os,
                          const PrintOptions &PO) const {
   Replacement->print(os, PO);
+}
+
+void swift::printEnumElementsAsCases(
+    llvm::DenseSet<EnumElementDecl *> &UnhandledElements,
+    llvm::raw_ostream &OS) {
+  // Sort the missing elements to a vector because set does not guarantee
+  // orders.
+  SmallVector<EnumElementDecl *, 4> SortedElements;
+  SortedElements.insert(SortedElements.begin(), UnhandledElements.begin(),
+                        UnhandledElements.end());
+  std::sort(SortedElements.begin(), SortedElements.end(),
+            [](EnumElementDecl *LHS, EnumElementDecl *RHS) {
+              return LHS->getNameStr().compare(RHS->getNameStr()) < 0;
+            });
+
+  auto printPayloads = [](EnumElementDecl *EE, llvm::raw_ostream &OS) {
+    // If the enum element has no payloads, return.
+    auto TL = EE->getArgumentTypeLoc();
+    if (TL.isNull())
+      return;
+    TypeRepr *TR = EE->getArgumentTypeLoc().getTypeRepr();
+    if (auto *TTR = dyn_cast<TupleTypeRepr>(TR)) {
+      SmallVector<Identifier, 4> Names;
+      if (TTR->hasElementNames()) {
+        // Get the name from the tuple repr, if exist.
+        TTR->getElementNames(Names);
+      } else {
+        // Create same amount of empty names to the elements.
+        Names.assign(TTR->getNumElements(), Identifier());
+      }
+      OS << "(";
+      // Print each element in the pattern match.
+      for (unsigned I = 0, N = Names.size(); I < N; I++) {
+        auto Id = Names[I];
+        if (Id.empty())
+          OS << "_";
+        else
+          OS << tok::kw_let << " " << Id.str();
+        if (I + 1 != N) {
+          OS << ", ";
+        }
+      }
+      OS << ")";
+    }
+  };
+
+  // Print each enum element name.
+  std::for_each(SortedElements.begin(), SortedElements.end(),
+                [&](EnumElementDecl *EE) {
+                  OS << tok::kw_case << " ." << EE->getNameStr();
+                  printPayloads(EE, OS);
+                  OS << ": " << getCodePlaceholder() << "\n";
+                });
 }
