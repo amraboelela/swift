@@ -69,10 +69,10 @@ static SectionInfo getSectionInfo(const char *imageName,
   void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
 #ifdef __ANDROID__
+    warning(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName, dlerror());
     return sectionInfo;
 #else
-    fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
-               dlerror());
+    fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName, dlerror());
 #endif
   }
   void *symbol = dlsym(handle, sectionName);
