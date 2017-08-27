@@ -62,11 +62,13 @@ getIndirectApplyAbstractionPattern(SILGenFunction &SGF,
   llvm_unreachable("bad representation");
 }
 
-static CanType getDynamicMethodSelfType(SILValue proto, ValueDecl *member) {
+static CanType getDynamicMethodSelfType(SILGenFunction &SGF,
+                                        const ArgumentSource &proto,
+                                        ValueDecl *member) {
   if (member->isInstanceMember()) {
     return member->getASTContext().TheUnknownObjectType;
   } else {
-    return proto->getType().getSwiftRValueType();
+    return proto.getSILSubstType(SGF).getSwiftRValueType();
   }
 }
 
@@ -144,20 +146,15 @@ replaceSelfTypeForDynamicLookup(ASTContext &ctx,
 }
 
 /// Retrieve the type to use for a method found via dynamic lookup.
-static CanSILFunctionType getDynamicMethodLoweredType(SILGenFunction &SGF,
-                                           SILValue proto,
-                                           SILDeclRef methodName,
-                                           CanAnyFunctionType substMemberTy) {
+static CanSILFunctionType
+getDynamicMethodLoweredType(SILGenFunction &SGF, SILValue v,
+                            SILDeclRef methodName,
+                            CanAnyFunctionType substMemberTy) {
   auto &ctx = SGF.getASTContext();
-
-  // Determine the opaque 'self' parameter type.
-  CanType selfTy;
-  if (methodName.getDecl()->isInstanceMember()) {
-    selfTy = proto->getType().getSwiftRValueType();
-    assert(selfTy->is<ArchetypeType>() && "Dynamic lookup needs an archetype");
-  } else {
-    selfTy = proto->getType().getSwiftRValueType();
-  }
+  CanType selfTy = v->getType().getSwiftRValueType();
+  assert((!methodName.getDecl()->isInstanceMember() ||
+          selfTy->is<ArchetypeType>()) &&
+         "Dynamic lookup needs an archetype");
 
   // Replace the 'self' parameter type in the method type with it.
   auto objcFormalTy = substMemberTy.withExtInfo(substMemberTy->getExtInfo()
@@ -214,28 +211,25 @@ static SILValue getOriginalSelfValue(SILValue selfValue) {
   return selfValue;
 }
 
-/// We return the casted value and the borrowed value so we can input the
-/// end_borrow.
-///
-/// TODO: Once end_borrow's 2nd value is eliminated, this should return just a
-/// SILValue.
-static std::pair<SILValue, SILValue> castToOriginalSelfType(SILGenBuilder &builder,
-                                       SILLocation loc,
-                                       SILValue selfValue) {
-  SILValue originalSelfValue = getOriginalSelfValue(selfValue);
-  SILType originalSelfType = originalSelfValue->getType();
+/// Borrow self and then upcast self to its original type. If self is a
+/// metatype, we just return the original metatype since metatypes are trivial.
+static ManagedValue borrowedCastToOriginalSelfType(SILGenFunction &SGF,
+                                                   SILLocation loc,
+                                                   ManagedValue self) {
+  SILValue originalSelf = getOriginalSelfValue(self.getValue());
+  SILType originalSelfType = originalSelf->getType();
 
   // If we have a metatype, then we just return the original self value since
   // metatypes are trivial, so we can avoid ownership concerns.
   if (originalSelfType.getSwiftRValueType()->is<AnyMetatypeType>()) {
-    assert(originalSelfType.isTrivial(builder.getModule()) && "Metatypes should always be trivial");
-    return {originalSelfValue, SILValue()};
+    assert(originalSelfType.isTrivial(SGF.getModule()) &&
+           "Metatypes should always be trivial");
+    return ManagedValue::forUnmanaged(originalSelf);
   }
 
-  // Otherwise, we have a non-metatype. Use an unchecked_ref_cast.
-  SILValue borrowedValue = builder.createBeginBorrow(loc, selfValue);
-  SILValue castValue = builder.createUncheckedRefCast(loc, borrowedValue, originalSelfType);
-  return {castValue, borrowedValue};
+  // Otherwise, we have a non-metatype. Use a borrow+unchecked_ref_cast.
+  return SGF.B.createUncheckedRefCast(loc, self.borrow(SGF, loc),
+                                      originalSelfType);
 }
 
 namespace {
@@ -294,7 +288,7 @@ private:
 
   /// This field is set if we are calling to a SuperMethod or ClassMethod and
   /// thus need to pass self to get the correct implementation.
-  SILValue SelfValue;
+  Optional<ArgumentSource> SelfValue;
 
   /// The abstraction pattern of the callee.
   AbstractionPattern OrigFormalInterfaceType;
@@ -348,22 +342,15 @@ private:
   {
   }
 
-  Callee(Kind methodKind,
-         SILGenFunction &SGF,
-         SILValue selfValue,
-         SILDeclRef methodName,
-         AbstractionPattern origFormalType,
-         CanAnyFunctionType substFormalType,
-         SubstitutionList subs,
-         SILLocation l)
-    : kind(methodKind), Constant(methodName), SelfValue(selfValue),
-      OrigFormalInterfaceType(origFormalType),
-      SubstFormalInterfaceType(getSubstFormalInterfaceType(substFormalType,
-                                                           subs)),
-      Substitutions(subs),
-      Loc(l)
-  {
-  }
+  Callee(Kind methodKind, SILGenFunction &SGF,
+         Optional<ArgumentSource> &&selfValue, SILDeclRef methodName,
+         AbstractionPattern origFormalType, CanAnyFunctionType substFormalType,
+         SubstitutionList subs, SILLocation l)
+      : kind(methodKind), Constant(methodName), SelfValue(std::move(selfValue)),
+        OrigFormalInterfaceType(origFormalType),
+        SubstFormalInterfaceType(
+            getSubstFormalInterfaceType(substFormalType, subs)),
+        Substitutions(subs), Loc(l) {}
 
 public:
 
@@ -384,25 +371,23 @@ public:
                                SILLocation l) {
     assert(isa<EnumElementDecl>(c.getDecl()));
     auto &ci = SGF.getConstantInfo(c);
-    return Callee(Kind::EnumElement, SGF, SILValue(), c,
-                  ci.FormalPattern, ci.FormalType, subs, l);
+    return Callee(Kind::EnumElement, SGF, None, c, ci.FormalPattern,
+                  ci.FormalType, subs, l);
   }
-  static Callee forClassMethod(SILGenFunction &SGF, SILValue selfValue,
-                               SILDeclRef c,
-                               SubstitutionList subs,
+  static Callee forClassMethod(SILGenFunction &SGF, ArgumentSource &&selfValue,
+                               SILDeclRef c, SubstitutionList subs,
                                SILLocation l) {
     auto base = SGF.SGM.Types.getOverriddenVTableEntry(c);
     auto &baseCI = SGF.getConstantInfo(base);
     auto &derivedCI = SGF.getConstantInfo(c);
-    return Callee(Kind::ClassMethod, SGF, selfValue, c,
+    return Callee(Kind::ClassMethod, SGF, std::move(selfValue), c,
                   baseCI.FormalPattern, derivedCI.FormalType, subs, l);
   }
-  static Callee forSuperMethod(SILGenFunction &SGF, SILValue selfValue,
-                               SILDeclRef c,
-                               SubstitutionList subs,
+  static Callee forSuperMethod(SILGenFunction &SGF, ArgumentSource &&selfValue,
+                               SILDeclRef c, SubstitutionList subs,
                                SILLocation l) {
     auto &ci = SGF.getConstantInfo(c);
-    return Callee(Kind::SuperMethod, SGF, selfValue, c,
+    return Callee(Kind::SuperMethod, SGF, std::move(selfValue), c,
                   ci.FormalPattern, ci.FormalType, subs, l);
   }
   static Callee forArchetype(SILGenFunction &SGF,
@@ -414,18 +399,17 @@ public:
     c = c.asForeign(protocol->isObjC());
 
     auto &ci = SGF.getConstantInfo(c);
-    return Callee(Kind::WitnessMethod, SGF, SILValue(), c,
-                  ci.FormalPattern, ci.FormalType, subs, l);
+    return Callee(Kind::WitnessMethod, SGF, None, c, ci.FormalPattern,
+                  ci.FormalType, subs, l);
   }
-  static Callee forDynamic(SILGenFunction &SGF, SILValue proto,
+  static Callee forDynamic(SILGenFunction &SGF, ArgumentSource &&arg,
                            SILDeclRef c, const SubstitutionList &constantSubs,
                            CanAnyFunctionType partialSubstFormalType,
-                           SubstitutionList subs,
-                           SILLocation l) {
+                           SubstitutionList subs, SILLocation l) {
     auto &ci = SGF.getConstantInfo(c);
     AbstractionPattern origFormalType = ci.FormalPattern;
 
-    auto selfType = getDynamicMethodSelfType(proto, c.getDecl());
+    auto selfType = getDynamicMethodSelfType(SGF, arg, c.getDecl());
 
     // Replace the original self type with the partially-applied subst type.
     auto origFormalFnType = cast<AnyFunctionType>(origFormalType.getType());
@@ -450,9 +434,10 @@ public:
                                                 partialSubstFormalType,
                                                 origFormalFnType->getExtInfo());
 
-    return Callee(Kind::DynamicMethod, SGF, proto, c,
-                  origFormalType, substFormalType, subs, l);
+    return Callee(Kind::DynamicMethod, SGF, std::move(arg), c, origFormalType,
+                  substFormalType, subs, l);
   }
+
   Callee(Callee &&) = default;
   Callee &operator=(Callee &&) = default;
 
@@ -500,11 +485,10 @@ public:
     return cast<EnumElementDecl>(Constant.getDecl());
   }
 
-  std::tuple<ManagedValue, CanSILFunctionType,
-             Optional<ForeignErrorConvention>, ImportAsMemberStatus, ApplyOptions>
-  getAtUncurryLevel(SILGenFunction &SGF, unsigned level) const {
+  std::tuple<ManagedValue, CanSILFunctionType, Optional<ForeignErrorConvention>,
+             ImportAsMemberStatus>
+  getAtUncurryLevel(SILGenFunction &SGF, unsigned level) const & {
     ManagedValue mv;
-    ApplyOptions options = ApplyOptions::None;
     Optional<SILDeclRef> constant = None;
 
     if (!Constant) {
@@ -562,11 +546,13 @@ public:
       }
 
       // Otherwise, do the dynamic dispatch inline.
-      SILValue methodVal = SGF.B.createClassMethod(Loc,
-                                                   SelfValue,
-                                                   *constant,
-                                                   /*volatile*/
-                                                     constant->isForeign);
+      Scope S(SGF, Loc);
+      ManagedValue borrowedSelf =
+          SelfValue.getValue().borrow(SGF).getAsSingleValue(SGF);
+      SILValue methodVal =
+          SGF.B.createClassMethod(Loc, borrowedSelf.getValue(), *constant,
+                                  /*volatile*/
+                                  constant->isForeign);
 
       mv = ManagedValue::forUnmanaged(methodVal);
       break;
@@ -574,20 +560,17 @@ public:
     case Kind::SuperMethod: {
       assert(!constant->isCurried);
 
-      SILValue castValue, borrowedValue;
-      std::tie(castValue, borrowedValue) = castToOriginalSelfType(SGF.B, Loc, SelfValue);
+      Scope S(SGF, Loc);
+      ManagedValue self =
+          SelfValue.getValue().borrow(SGF).getAsSingleValue(SGF);
+      ManagedValue castValue = borrowedCastToOriginalSelfType(SGF, Loc, self);
 
       auto base = SGF.SGM.Types.getOverriddenVTableEntry(*constant);
       auto constantInfo = SGF.SGM.Types.getConstantOverrideInfo(*constant, base);
-      auto methodVal = SGF.B.createSuperMethod(Loc, castValue,
-                                               *constant,
-                                               constantInfo.getSILType(),
-                                               /*volatile*/
-                                                 constant->isForeign);
-      if (borrowedValue) {
-        SGF.B.createEndBorrow(Loc, borrowedValue, SelfValue);
-      }
-      mv = ManagedValue::forUnmanaged(methodVal);
+      mv = SGF.B.createSuperMethod(Loc, castValue, *constant,
+                                   constantInfo.getSILType(),
+                                   /*volatile*/
+                                   constant->isForeign);
       break;
     }
     case Kind::WitnessMethod: {
@@ -626,16 +609,18 @@ public:
       auto fnType = SGF.SGM.M.Types
         .getUncachedSILFunctionTypeForConstant(*constant, objcFormalType);
 
-      auto closureType =
-        replaceSelfTypeForDynamicLookup(SGF.getASTContext(), fnType,
-                                SelfValue->getType().getSwiftRValueType(),
-                                Constant);
+      auto closureType = replaceSelfTypeForDynamicLookup(
+          SGF.getASTContext(), fnType,
+          SelfValue.getValue().getSILSubstType(SGF).getSwiftRValueType(),
+          Constant);
 
-      SILValue fn = SGF.B.createDynamicMethod(Loc,
-                          SelfValue,
-                          *constant,
-                          SILType::getPrimitiveObjectType(closureType),
-                          /*volatile*/ Constant.isForeign);
+      Scope S(SGF, Loc);
+      ManagedValue self =
+          SelfValue.getValue().borrow(SGF).getAsSingleValue(SGF);
+      SILValue fn = SGF.B.createDynamicMethod(
+          Loc, self.getValue(), *constant,
+          SILType::getPrimitiveObjectType(closureType),
+          /*volatile*/ Constant.isForeign);
       mv = ManagedValue::forUnmanaged(fn);
       break;
     }
@@ -653,7 +638,7 @@ public:
       mv.getType().castTo<SILFunctionType>()->substGenericArgs(
         SGF.SGM.M, Substitutions);
 
-    return std::make_tuple(mv, substFnType, foreignError, foreignSelf, options);
+    return std::make_tuple(mv, substFnType, foreignError, foreignSelf);
   }
 
   SubstitutionList getSubstitutions() const {
@@ -984,15 +969,16 @@ public:
                     selfValue);
     }
 
-    auto selfValue = self.peekScalarValue();
-
-    setSelfParam(ArgumentSource(thisCallSite->getArg(), std::move(self)),
-                 thisCallSite);
     auto constant = SILDeclRef(afd, kind.getValue())
                         .asForeign(requiresForeignEntryPoint(afd));
 
+    ArgumentSource selfArgSource(thisCallSite->getArg(), std::move(self));
     auto subs = e->getDeclRef().getSubstitutions();
-    setCallee(Callee::forClassMethod(SGF, selfValue, constant, subs, e));
+    SILLocation loc(thisCallSite->getArg());
+    setCallee(Callee::forClassMethod(SGF, selfArgSource.delayedBorrow(SGF),
+                                     constant, subs, e));
+
+    setSelfParam(std::move(selfArgSource), thisCallSite);
     return true;
   }
 
@@ -1167,18 +1153,19 @@ public:
       llvm_unreachable("invalid super callee");
     }
 
-    // *NOTE* Temporary staging variable for refactoring.
-    SILValue superValue = super.peekScalarValue();
-    setSelfParam(ArgumentSource(arg, std::move(super)), apply);
-
+    assert(super.isComplete() && "At this point super should be a complete "
+                                 "rvalue that is not in any special states");
+    ArgumentSource superArgSource(arg, std::move(super));
     if (!canUseStaticDispatch(SGF, constant)) {
       // ObjC super calls require dynamic dispatch.
-      setCallee(
-          Callee::forSuperMethod(SGF, superValue, constant, substitutions, fn));
+      setCallee(Callee::forSuperMethod(SGF, superArgSource.delayedBorrow(SGF),
+                                       constant, substitutions, fn));
     } else {
       // Native Swift super calls to final methods are direct.
       setCallee(Callee::forDirect(SGF, constant, substitutions, fn));
     }
+
+    setSelfParam(std::move(superArgSource), apply);
   }
 
   /// Walk the given \c selfArg expression that produces the appropriate
@@ -1318,10 +1305,8 @@ public:
       }
     }
 
-    setSelfParam(ArgumentSource(arg, RValue(SGF, expr, selfFormalType, self)),
-                 expr);
-
     auto subs = ctorRef->getDeclRef().getSubstitutions();
+    ArgumentSource selfArgSource(arg, RValue(SGF, expr, selfFormalType, self));
 
     // Determine the callee. For structs and enums, this is the allocating
     // constructor (because there is no initializing constructor). For protocol
@@ -1329,9 +1314,10 @@ public:
     // that's the only thing that's witnessed. For classes,
     // this is the initializing constructor, to which we will dynamically
     // dispatch.
-    if (selfParam.getSubstRValueType()->getRValueInstanceType()
-          ->is<ArchetypeType>()
-        && isa<ProtocolDecl>(ctorRef->getDecl()->getDeclContext())) {
+    if (selfArgSource.getSubstRValueType()
+            ->getRValueInstanceType()
+            ->is<ArchetypeType>() &&
+        isa<ProtocolDecl>(ctorRef->getDecl()->getDeclContext())) {
       // Look up the witness for the constructor.
       auto constant = SILDeclRef(ctorRef->getDecl(),
                              useAllocatingCtor
@@ -1343,16 +1329,14 @@ public:
     } else if (getMethodDispatch(ctorRef->getDecl())
                  == MethodDispatch::Class) {
       // Dynamic dispatch to the initializer.
+      Scope S(SGF, expr);
       setCallee(Callee::forClassMethod(
-                  SGF,
-                  self.getValue(),
-                  SILDeclRef(ctorRef->getDecl(),
-                             useAllocatingCtor
-                               ? SILDeclRef::Kind::Allocator
-                             : SILDeclRef::Kind::Initializer)
-                    .asForeign(requiresForeignEntryPoint(ctorRef->getDecl())),
-                  subs,
-                  fn));
+          SGF, selfArgSource.delayedBorrow(SGF),
+          SILDeclRef(ctorRef->getDecl(),
+                     useAllocatingCtor ? SILDeclRef::Kind::Allocator
+                                       : SILDeclRef::Kind::Initializer)
+              .asForeign(requiresForeignEntryPoint(ctorRef->getDecl())),
+          subs, fn));
     } else {
       // Directly call the peer constructor.
       setCallee(
@@ -1366,6 +1350,8 @@ public:
           subs,
           fn));
     }
+
+    setSelfParam(std::move(selfArgSource), expr);
 
     return true;
   }
@@ -1443,13 +1429,8 @@ public:
     // Local function that actually emits the dynamic member reference.
     auto emitDynamicMemberRef = [&] {
       // We found it. Emit the base.
-      ManagedValue base =
-        SGF.emitRValueAsSingleValue(dynamicMemberRef->getBase());
-
-      setSelfParam(ArgumentSource(dynamicMemberRef->getBase(),
-                                  RValue(SGF, dynamicMemberRef,
-                                    base.getType().getSwiftRValueType(), base)),
-                   dynamicMemberRef);
+      ArgumentSource baseArgSource(dynamicMemberRef->getBase(),
+                                   SGF.emitRValue(dynamicMemberRef->getBase()));
 
       // Determine the type of the method we referenced, by replacing the
       // class type of the 'Self' parameter with Builtin.UnknownObject.
@@ -1458,9 +1439,10 @@ public:
       auto substFormalType =
         cast<FunctionType>(dynamicMemberRef->getType()->getCanonicalType()
                                             .getAnyOptionalObjectType());
-      setCallee(Callee::forDynamic(SGF, base.getValue(), member,
-                                   memberRef.getSubstitutions(),
+      setCallee(Callee::forDynamic(SGF, baseArgSource.delayedBorrow(SGF),
+                                   member, memberRef.getSubstitutions(),
                                    substFormalType, {}, e));
+      setSelfParam(std::move(baseArgSource), dynamicMemberRef);
     };
 
     // When we have an open existential, open it and then emit the
@@ -2759,7 +2741,7 @@ private:
 
         auto loc = arg.getKnownRValueLocation();
         SmallVector<RValue, 4> elts;
-        std::move(arg).asKnownRValue().extractElements(elts);
+        std::move(arg).asKnownRValue(SGF).extractElements(elts);
         for (auto i : indices(substArgType.getElementTypes())) {
           emit({ loc, std::move(elts[i]) },
                origParamType.getTupleElementType(i));
@@ -2769,7 +2751,7 @@ private:
 
       auto loc = arg.getKnownRValueLocation();
       SmallVector<RValue, 1> elts;
-      std::move(arg).asKnownRValue().extractElements(elts);
+      std::move(arg).asKnownRValue(SGF).extractElements(elts);
       emit({ loc, std::move(elts[0]) },
            origParamType.getTupleElementType(0));
       return;
@@ -2877,8 +2859,8 @@ private:
       // for one.)  The onus is on the caller to ensure that formal
       // access semantics are honored.
       } else if (arg.isRValue()) {
-        auto address = std::move(arg).asKnownRValue()
-          .getAsSingleValue(SGF, arg.getKnownRValueLocation());
+        auto address = std::move(arg).asKnownRValue(SGF).getAsSingleValue(
+            SGF, arg.getKnownRValueLocation());
         assert(address.isLValue());
         auto substObjectType = cast<InOutType>(substType).getObjectType();
         return LValue::forAddress(address, None,
@@ -3713,7 +3695,7 @@ namespace {
     ClaimedParamsRef
     claimParams(AbstractionPattern origParamType, CanType substParamType,
                 const Optional<ForeignErrorConvention> &foreignError,
-                const ImportAsMemberStatus &foreignSelf) {
+                ImportAsMemberStatus foreignSelf) {
       unsigned count = getFlattenedValueCount(origParamType, substParamType,
                                               foreignSelf);
       if (foreignError) count++;
@@ -3814,7 +3796,7 @@ namespace {
               ParamLowering &lowering, SmallVectorImpl<ManagedValue> &args,
               SmallVectorImpl<DelayedArgument> &delayedArgs,
               const Optional<ForeignErrorConvention> &foreignError,
-              const ImportAsMemberStatus &foreignSelf) && {
+              ImportAsMemberStatus foreignSelf) && {
       auto params = lowering.claimParams(origParamType, getSubstArgType(),
                                          foreignError, foreignSelf);
 
@@ -3967,11 +3949,9 @@ namespace {
 
       // Emit the first level of call.
       CanFunctionType formalType;
-      Optional<ForeignErrorConvention> foreignError;
       ImportAsMemberStatus foreignSelf;
       RValue result =
-          applyFirstLevelCallee(formalType,
-                                foreignError, foreignSelf, uncurryLevel, C);
+          applyFirstLevelCallee(formalType, foreignSelf, uncurryLevel, C);
 
       // End of the initial writeback scope.
       initialWritebackScope.verify();
@@ -3979,7 +3959,7 @@ namespace {
 
       // Then handle the remaining call sites.
       result = applyRemainingCallSites(std::move(result), formalType,
-                                       foreignSelf, foreignError, C);
+                                       foreignSelf, C);
       return result;
     }
 
@@ -3999,95 +3979,98 @@ namespace {
     CallEmission(const CallEmission &) = delete;
     CallEmission &operator=(const CallEmission &) = delete;
 
-    void emitArgumentsForNormalApply(
+    /// Emit all of the arguments for a normal apply. This means an apply that
+    /// is not:
+    ///
+    /// 1. A specialized emitter (e.g. an emitter for a builtin).
+    /// 2. A partially applied super method.
+    /// 3. An enum element constructor.
+    ///
+    /// It is though all other initial calls and subsequent callees that we feed
+    /// the first callee into.
+    ///
+    /// This returns whether or not any arguments were able to throw in
+    /// ApplyOptions.
+    ApplyOptions emitArgumentsForNormalApply(
         CanFunctionType &formalType, AbstractionPattern &origFormalType,
         CanSILFunctionType substFnType,
-        Optional<ForeignErrorConvention> &foreignError,
-        ImportAsMemberStatus &foreignSelf, ApplyOptions &initialOptions,
+        const Optional<ForeignErrorConvention> &foreignError,
+        ImportAsMemberStatus foreignSelf,
         SmallVectorImpl<ManagedValue> &uncurriedArgs,
         Optional<SILLocation> &uncurriedLoc, CanFunctionType &formalApplyType);
 
     RValue
     applySpecializedEmitter(CanFunctionType &formalType,
-                            Optional<ForeignErrorConvention> &foreignError,
-                            ImportAsMemberStatus &foreignSelf,
+                            ImportAsMemberStatus foreignSelf,
                             SpecializedEmitter &specializedEmitter,
                             unsigned uncurryLevel, SGFContext C);
 
     RValue applyPartiallyAppliedSuperMethod(
         CanFunctionType &formalType,
-        Optional<ForeignErrorConvention> &foreignError,
-        ImportAsMemberStatus &foreignSelf, unsigned uncurryLevel, SGFContext C);
+        ImportAsMemberStatus foreignSelf, unsigned uncurryLevel, SGFContext C);
 
     RValue
     applyEnumElementConstructor(CanFunctionType &formalType,
-                                Optional<ForeignErrorConvention> &foreignError,
-                                ImportAsMemberStatus &foreignSelf,
                                 unsigned uncurryLevel, SGFContext C);
 
     RValue applyNormalCall(CanFunctionType &formalType,
-                           Optional<ForeignErrorConvention> &foreignError,
                            ImportAsMemberStatus &foreignSelf,
                            unsigned uncurryLevel, SGFContext C);
 
     RValue applyFirstLevelCallee(CanFunctionType &formalType,
-                                 Optional<ForeignErrorConvention> &foreignError,
                                  ImportAsMemberStatus &foreignSelf,
                                  unsigned uncurryLevel, SGFContext C);
 
     RValue
     applyRemainingCallSites(RValue &&result, CanFunctionType formalType,
                             ImportAsMemberStatus foreignSelf,
-                            Optional<ForeignErrorConvention> foreignError,
                             SGFContext C);
-
-    AbstractionPattern
-    getUncurriedOrigFormalType(AbstractionPattern origFormalType) {
-      for (unsigned i = 0, e = uncurriedSites.size(); i < e; ++i) {
-        claimNextParamClause(origFormalType);
-      }
-
-      return origFormalType;
-    }
   };
 } // end anonymous namespace
 
+/// This function claims param clauses from the passed in formal type until the
+/// type is completely uncurried. This will be the final result type for a
+/// normal call.
+static AbstractionPattern
+getUncurriedOrigFormalResultType(AbstractionPattern origFormalType,
+                                 unsigned numUncurriedSites) {
+  for (unsigned i = 0, e = numUncurriedSites; i < e; ++i) {
+    claimNextParamClause(origFormalType);
+  }
+
+  return origFormalType;
+}
+
 RValue CallEmission::applyFirstLevelCallee(
     CanFunctionType &formalType,
-    Optional<ForeignErrorConvention> &foreignError,
     ImportAsMemberStatus &foreignSelf, unsigned uncurryLevel, SGFContext C) {
-
   // Check for a specialized emitter.
   if (auto emitter = callee.getSpecializedEmitter(SGF.SGM, uncurryLevel)) {
-    return applySpecializedEmitter(formalType,
-                                   foreignError, foreignSelf,
-                                   emitter.getValue(), uncurryLevel, C);
+    return applySpecializedEmitter(formalType, foreignSelf, emitter.getValue(),
+                                   uncurryLevel, C);
   }
 
   if (isPartiallyAppliedSuperMethod(uncurryLevel)) {
-    return applyPartiallyAppliedSuperMethod(formalType, foreignError,
-                                            foreignSelf, uncurryLevel, C);
+    return applyPartiallyAppliedSuperMethod(formalType, foreignSelf,
+                                            uncurryLevel, C);
   }
 
   if (isEnumElementConstructor()) {
-    return applyEnumElementConstructor(formalType,
-                                       foreignError, foreignSelf, uncurryLevel,
-                                       C);
+    return applyEnumElementConstructor(formalType, uncurryLevel, C);
   }
 
-  return applyNormalCall(formalType, foreignError,
-                         foreignSelf, uncurryLevel, C);
+  return applyNormalCall(formalType, foreignSelf, uncurryLevel, C);
 }
 
 RValue CallEmission::applyNormalCall(
     CanFunctionType &formalType,
-    Optional<ForeignErrorConvention> &foreignError,
     ImportAsMemberStatus &foreignSelf, unsigned uncurryLevel, SGFContext C) {
+  Optional<ForeignErrorConvention> foreignError;
+
   // We use the context emit-into initialization only for the
   // outermost call.
   SGFContext uncurriedContext = (extraSites.empty() ? C : SGFContext());
   ManagedValue mv;
-  ApplyOptions initialOptions = ApplyOptions::None;
 
   formalType = callee.getSubstFormalType();
   auto origFormalType = callee.getOrigFormalType();
@@ -4095,7 +4078,7 @@ RValue CallEmission::applyNormalCall(
   CanSILFunctionType substFnType;
 
   // Get the callee type information.
-  std::tie(mv, substFnType, foreignError, foreignSelf, initialOptions) =
+  std::tie(mv, substFnType, foreignError, foreignSelf) =
       callee.getAtUncurryLevel(SGF, uncurryLevel);
 
   // In C language modes, substitute the type of the AbstractionPattern
@@ -4112,7 +4095,8 @@ RValue CallEmission::applyNormalCall(
   }
 
   CalleeTypeInfo calleeTypeInfo(
-      substFnType, getUncurriedOrigFormalType(origFormalType),
+      substFnType,
+      getUncurriedOrigFormalResultType(origFormalType, uncurriedSites.size()),
       uncurriedSites.back().getSubstResultType(), foreignError);
   ResultPlanPtr resultPlan = ResultPlanBuilder::computeResultPlan(
       SGF, calleeTypeInfo, uncurriedSites.back().Loc, uncurriedContext);
@@ -4136,21 +4120,22 @@ RValue CallEmission::applyNormalCall(
   SmallVector<ManagedValue, 4> uncurriedArgs;
   Optional<SILLocation> uncurriedLoc;
   CanFunctionType formalApplyType;
-  emitArgumentsForNormalApply(formalType, origFormalType,
-                              substFnType, foreignError, foreignSelf,
-                              initialOptions, uncurriedArgs, uncurriedLoc,
-                              formalApplyType);
+
+  // *NOTE* We pass in initial options as a reference so that we can pass to
+  // emitApply if any of the arguments could have thrown.
+  ApplyOptions options = emitArgumentsForNormalApply(
+      formalType, origFormalType, substFnType, foreignError, foreignSelf,
+      uncurriedArgs, uncurriedLoc, formalApplyType);
   // Emit the uncurried call.
   return SGF.emitApply(std::move(resultPlan), std::move(argScope),
                        uncurriedLoc.getValue(), mv, callee.getSubstitutions(),
-                       uncurriedArgs, calleeTypeInfo, initialOptions,
+                       uncurriedArgs, calleeTypeInfo, options,
                        uncurriedContext);
 }
 
-RValue CallEmission::applyEnumElementConstructor(
-    CanFunctionType &formalType,
-    Optional<ForeignErrorConvention> &foreignError,
-    ImportAsMemberStatus &foreignSelf, unsigned uncurryLevel, SGFContext C) {
+RValue CallEmission::applyEnumElementConstructor(CanFunctionType &formalType,
+                                                 unsigned uncurryLevel,
+                                                 SGFContext C) {
   assert(!assumedPlusZeroSelf);
   SGFContext uncurriedContext = (extraSites.empty() ? C : SGFContext());
 
@@ -4215,12 +4200,8 @@ RValue CallEmission::applyEnumElementConstructor(
 }
 
 RValue CallEmission::applyPartiallyAppliedSuperMethod(
-    CanFunctionType &formalType,
-    Optional<ForeignErrorConvention> &foreignError,
-    ImportAsMemberStatus &foreignSelf, unsigned uncurryLevel, SGFContext C) {
-
-  ApplyOptions initialOptions = ApplyOptions::None;
-
+    CanFunctionType &formalType, ImportAsMemberStatus foreignSelf,
+    unsigned uncurryLevel, SGFContext C) {
   assert(uncurryLevel == 0);
 
   // We want to emit the arguments as fully-substituted values
@@ -4247,10 +4228,11 @@ RValue CallEmission::applyPartiallyAppliedSuperMethod(
   SmallVector<ManagedValue, 4> uncurriedArgs;
   Optional<SILLocation> uncurriedLoc;
   CanFunctionType formalApplyType;
-  emitArgumentsForNormalApply(formalType, origFormalType,
-                              substFnType, foreignError, foreignSelf,
-                              initialOptions, uncurriedArgs, uncurriedLoc,
-                              formalApplyType);
+  ApplyOptions options = emitArgumentsForNormalApply(
+      formalType, origFormalType, substFnType,
+      Optional<ForeignErrorConvention>(), foreignSelf, uncurriedArgs,
+      uncurriedLoc, formalApplyType);
+  (void)options;
 
   // Emit the uncurried call.
   assert(uncurriedArgs.size() == 1 && "Can only partially apply the "
@@ -4261,16 +4243,17 @@ RValue CallEmission::applyPartiallyAppliedSuperMethod(
   auto loc = uncurriedLoc.getValue();
   auto subs = callee.getSubstitutions();
   auto upcastedSelf = uncurriedArgs.back();
-  SILValue castValue, borrowedValue;
-  std::tie(castValue, borrowedValue) = castToOriginalSelfType(SGF.B, loc, upcastedSelf.getValue());
+
   auto constantInfo = SGF.getConstantInfo(callee.getMethodName());
   auto functionTy = constantInfo.getSILType();
-  SILValue superMethodVal =
-      SGF.B.createSuperMethod(loc, castValue, constant, functionTy,
-                              /*volatile*/
-                              constant.isForeign);
-  if (borrowedValue) {
-    SGF.B.createEndBorrow(loc, borrowedValue, upcastedSelf.getValue());
+  ManagedValue superMethod;
+  {
+    Scope S(SGF, loc);
+    ManagedValue castValue =
+        borrowedCastToOriginalSelfType(SGF, loc, upcastedSelf);
+    superMethod = SGF.B.createSuperMethod(loc, castValue, constant, functionTy,
+                                          /*volatile*/
+                                          constant.isForeign);
   }
   auto closureTy = SILGenBuilder::getPartialApplyResultType(
       constantInfo.getSILType(), 1, SGF.B.getModule(), subs,
@@ -4283,24 +4266,22 @@ RValue CallEmission::applyPartiallyAppliedSuperMethod(
     partialApplyTy = partialApplyTy.substGenericArgs(module, subs);
 
   SILValue partialApply =
-      SGF.B.createPartialApply(loc, superMethodVal, partialApplyTy, subs,
-                               {upcastedSelf.forward(SGF)}, closureTy);
+      SGF.B.createPartialApply(loc, superMethod.getValue(), partialApplyTy,
+                               subs, {upcastedSelf.forward(SGF)}, closureTy);
   return RValue(SGF, loc, formalApplyType.getResult(),
                 ManagedValue::forUnmanaged(partialApply));
 }
 
-RValue CallEmission::applySpecializedEmitter(
-    CanFunctionType &formalType,
-    Optional<ForeignErrorConvention> &foreignError,
-    ImportAsMemberStatus &foreignSelf, SpecializedEmitter &specializedEmitter,
-    unsigned uncurryLevel, SGFContext C) {
-
+RValue
+CallEmission::applySpecializedEmitter(CanFunctionType &formalType,
+                                      ImportAsMemberStatus foreignSelf,
+                                      SpecializedEmitter &specializedEmitter,
+                                      unsigned uncurryLevel, SGFContext C) {
   // We use the context emit-into initialization only for the
   // outermost call.
   SGFContext uncurriedContext = (extraSites.empty() ? C : SGFContext());
 
   ManagedValue mv;
-  ApplyOptions initialOptions = ApplyOptions::None;
 
   assert(uncurryLevel == 0);
 
@@ -4350,10 +4331,9 @@ RValue CallEmission::applySpecializedEmitter(
   SmallVector<ManagedValue, 4> uncurriedArgs;
   Optional<SILLocation> uncurriedLoc;
   CanFunctionType formalApplyType;
-  emitArgumentsForNormalApply(formalType, origFormalType,
-                              substFnType, foreignError, foreignSelf,
-                              initialOptions, uncurriedArgs, uncurriedLoc,
-                              formalApplyType);
+  emitArgumentsForNormalApply(formalType, origFormalType, substFnType,
+                              Optional<ForeignErrorConvention>(), foreignSelf,
+                              uncurriedArgs, uncurriedLoc, formalApplyType);
 
   // Emit the uncurried call.
   if (specializedEmitter.isLateEmitter()) {
@@ -4379,18 +4359,20 @@ RValue CallEmission::applySpecializedEmitter(
                 SGF.emitManagedRValueWithCleanup(resultVal));
 }
 
-void CallEmission::emitArgumentsForNormalApply(
+ApplyOptions CallEmission::emitArgumentsForNormalApply(
     CanFunctionType &formalType, AbstractionPattern &origFormalType,
     CanSILFunctionType substFnType,
-    Optional<ForeignErrorConvention> &foreignError,
-    ImportAsMemberStatus &foreignSelf, ApplyOptions &initialOptions,
+    const Optional<ForeignErrorConvention> &foreignError,
+    ImportAsMemberStatus foreignSelf,
     SmallVectorImpl<ManagedValue> &uncurriedArgs,
     Optional<SILLocation> &uncurriedLoc, CanFunctionType &formalApplyType) {
+  ApplyOptions options = ApplyOptions::None;
+
   SmallVector<SmallVector<ManagedValue, 4>, 2> args;
   SmallVector<DelayedArgument, 2> delayedArgs;
-  auto expectedUncurriedOrigFormalType =
-      getUncurriedOrigFormalType(origFormalType);
-  (void)expectedUncurriedOrigFormalType;
+  auto expectedUncurriedOrigResultFormalType =
+      getUncurriedOrigFormalResultType(origFormalType, uncurriedSites.size());
+  (void)expectedUncurriedOrigResultFormalType;
 
   args.reserve(uncurriedSites.size());
   {
@@ -4400,7 +4382,7 @@ void CallEmission::emitArgumentsForNormalApply(
            (uncurriedSites.size() == 2 && substFnType->hasSelfParam()));
 
     if (!uncurriedSites.back().throws()) {
-      initialOptions |= ApplyOptions::DoesNotThrow;
+      options |= ApplyOptions::DoesNotThrow;
     }
 
     // Collect the captures, if any.
@@ -4434,9 +4416,9 @@ void CallEmission::emitArgumentsForNormalApply(
   assert(uncurriedLoc);
   assert(formalApplyType);
   assert(origFormalType.getType() ==
-             expectedUncurriedOrigFormalType.getType() &&
-         "getUncurriedOrigFormalType and emitArgumentsForNormalCall are out of "
-         "sync");
+             expectedUncurriedOrigResultFormalType.getType() &&
+         "expectedUncurriedOrigResultFormalType and emitArgumentsForNormalCall "
+         "are out of sync");
 
   // Emit any delayed arguments: formal accesses to inout arguments, etc.
   if (!delayedArgs.empty()) {
@@ -4455,12 +4437,14 @@ void CallEmission::emitArgumentsForNormalApply(
                        uncurriedArgs.end() - 1, uncurriedArgs.end());
     uncurriedArgs[foreignSelf.getSelfIndex()] = selfArg;
   }
+
+  return options;
 }
 
-RValue CallEmission::applyRemainingCallSites(
-    RValue &&result, CanFunctionType formalType,
-    ImportAsMemberStatus foreignSelf,
-    Optional<ForeignErrorConvention> foreignError, SGFContext C) {
+RValue CallEmission::applyRemainingCallSites(RValue &&result,
+                                             CanFunctionType formalType,
+                                             ImportAsMemberStatus foreignSelf,
+                                             SGFContext C) {
   // Fast path out if we don't have an extra call sites.
   if (extraSites.empty()) return std::move(result);
 
@@ -4485,7 +4469,6 @@ RValue CallEmission::applyRemainingCallSites(
     // TODO: foreign errors for block or function pointer values?
     assert(substFnType->hasErrorResult() ||
            !cast<FunctionType>(formalType)->getExtInfo().throws());
-    foreignError = None;
 
     AbstractionPattern origParamType = claimNextParamClause(origFormalType);
     AbstractionPattern origResultType = origFormalType;
@@ -4495,23 +4478,21 @@ RValue CallEmission::applyRemainingCallSites(
     // Create the callee type info and initialize our indirect results.
     CalleeTypeInfo calleeTypeInfo(substFnType, origResultType,
                                   extraSites[i].getSubstResultType(),
-                                  foreignError);
+                                  Optional<ForeignErrorConvention>());
     ResultPlanPtr resultPtr =
         ResultPlanBuilder::computeResultPlan(SGF, calleeTypeInfo, loc, context);
     ArgumentScope argScope(SGF, loc);
 
     std::move(extraSites[i])
         .emit(SGF, origParamType, paramLowering, siteArgs, delayedArgs,
-              foreignError, foreignSelf);
+              calleeTypeInfo.foreignError, foreignSelf);
     if (!delayedArgs.empty()) {
       emitDelayedArguments(SGF, delayedArgs, siteArgs);
     }
 
-    ApplyOptions options = ApplyOptions::None;
-
     result = SGF.emitApply(std::move(resultPtr), std::move(argScope), loc,
-                           functionMV, {}, siteArgs, calleeTypeInfo, options,
-                           context);
+                           functionMV, {}, siteArgs, calleeTypeInfo,
+                           ApplyOptions::None, context);
   }
 
   return std::move(result);
@@ -4585,9 +4566,9 @@ SILGenFunction::emitApplyOfLibraryIntrinsic(SILLocation loc,
   CanSILFunctionType substFnType;
   Optional<ForeignErrorConvention> foreignError;
   ImportAsMemberStatus foreignSelf;
-  ApplyOptions options;
-  std::tie(mv, substFnType, foreignError, foreignSelf, options)
-    = callee.getAtUncurryLevel(*this, 0);
+  ApplyOptions options = ApplyOptions::None;
+  std::tie(mv, substFnType, foreignError, foreignSelf) =
+      callee.getAtUncurryLevel(*this, 0);
 
   assert(!foreignError);
   assert(!foreignSelf.isImportAsMember());
@@ -4715,10 +4696,7 @@ static RValue emitApplyAllocatingInitializer(SILGenFunction &SGF,
     ManagedValue v = std::move(result).getAsSingleValue(SGF, loc);
     CanType canOverriddenSelfType = overriddenSelfType->getCanonicalType();
     SILType loweredResultTy = SGF.getLoweredType(canOverriddenSelfType);
-    v = ManagedValue(SGF.B.createUncheckedRefCast(loc,
-                                                  v.getValue(),
-                                                  loweredResultTy),
-                     v.getCleanup());
+    v = SGF.B.createUncheckedRefCast(loc, v, loweredResultTy);
     result = RValue(SGF, loc, canOverriddenSelfType, v);
   }
 
@@ -4918,14 +4896,15 @@ static Callee getBaseAccessorFunctionRef(SILGenFunction &SGF,
 
   // Otherwise, if we have a non-final class dispatch to a normal method,
   // perform a dynamic dispatch.
-  auto self = selfValue.forceAndPeekRValue(SGF).peekScalarValue();
   if (!isSuper)
-    return Callee::forClassMethod(SGF, self, constant, subs, loc);
+    return Callee::forClassMethod(SGF, selfValue.delayedBorrow(SGF), constant,
+                                  subs, loc);
 
   // If this is a "super." dispatch, we do a dynamic dispatch for objc methods
   // or non-final native Swift methods.
   if (!canUseStaticDispatch(SGF, constant))
-    return Callee::forSuperMethod(SGF, self, constant, subs, loc);
+    return Callee::forSuperMethod(SGF, selfValue.delayedBorrow(SGF), constant,
+                                  subs, loc);
 
   return Callee::forDirect(SGF, constant, subs, loc);
 }

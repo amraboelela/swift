@@ -468,6 +468,7 @@ public:
   llvm::PointerType *FullTypeMetadataPtrTy;/// %swift.full_type*
   llvm::StructType *ProtocolDescriptorStructTy; /// %swift.protocol = type { ... }
   llvm::PointerType *ProtocolDescriptorPtrTy; /// %swift.protocol*
+  llvm::StructType *ProtocolRequirementStructTy; /// %swift.protocol_requirement
   union {
     llvm::PointerType *ObjCPtrTy;        /// %objc_object*
     llvm::PointerType *UnknownRefCountedPtrTy;
@@ -485,6 +486,7 @@ public:
   llvm::PointerType *ProtocolConformanceRecordPtrTy;
   llvm::StructType *NominalTypeDescriptorTy;
   llvm::PointerType *NominalTypeDescriptorPtrTy;
+  llvm::StructType *MethodDescriptorStructTy; /// %swift.method_descriptor
   llvm::StructType *TypeMetadataRecordTy;
   llvm::PointerType *TypeMetadataRecordPtrTy;
   llvm::StructType *FieldDescriptorTy;

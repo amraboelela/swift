@@ -138,6 +138,17 @@ InitExistentialValueInst *SILGenBuilder::createInitExistentialValue(
       Loc, ExistentialType, FormalConcreteType, Concrete, Conformances);
 }
 
+ManagedValue SILGenBuilder::createInitExistentialValue(
+    SILLocation loc, SILType existentialType, CanType formalConcreteType,
+    ManagedValue concrete, ArrayRef<ProtocolConformanceRef> conformances) {
+  // *NOTE* we purposely do not use a cleanup cloner here. The reason why is no
+  // matter whether we have a trivial or non-trivial input,
+  // init_existential_value returns a +1 value (the COW box).
+  SILValue v = createInitExistentialValue(
+      loc, existentialType, formalConcreteType, concrete.forward(SGF), conformances);
+  return SGF.emitManagedRValueWithCleanup(v);
+}
+
 InitExistentialMetatypeInst *SILGenBuilder::createInitExistentialMetatype(
     SILLocation loc, SILValue metatype, SILType existentialType,
     ArrayRef<ProtocolConformanceRef> conformances) {
@@ -615,6 +626,15 @@ ManagedValue SILGenBuilder::createUncheckedRefCast(SILLocation loc,
   CleanupCloner cloner(*this, value);
   SILValue cast =
       SILBuilder::createUncheckedRefCast(loc, value.forward(SGF), type);
+  return cloner.clone(cast);
+}
+
+ManagedValue SILGenBuilder::createUncheckedBitCast(SILLocation loc,
+                                                   ManagedValue value,
+                                                   SILType type) {
+  CleanupCloner cloner(*this, value);
+  SILValue cast =
+      SILBuilder::createUncheckedBitCast(loc, value.forward(SGF), type);
   return cloner.clone(cast);
 }
 
