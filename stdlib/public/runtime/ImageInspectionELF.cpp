@@ -26,7 +26,10 @@
 #include <elf.h>
 #include <link.h>
 #include <string.h>
+
+#if efined(__ANDROID__)
 #include "llvm/ADT/StringRef.h"
+#endif
 
 using namespace swift;
 
@@ -70,7 +73,7 @@ static SectionInfo getSectionInfo(const char *imageName,
   void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
 #ifdef __ANDROID__
-      StringRef imagePath = StringRef(imageName);
+      llvm::StringRef imagePath = StringRef(imageName);
       if (imagePath.startswith("/system/lib") || (imageName && !imagePath.endswith(".so"))) {
           warning(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName, dlerror());
           return sectionInfo;
