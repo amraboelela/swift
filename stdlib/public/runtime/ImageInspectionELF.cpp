@@ -69,7 +69,6 @@ static SectionInfo getSectionInfo(const char *imageName,
   void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
 #ifdef __ANDROID__
-
       llvm::StringRef imagePath = imageName;
       if (imagePath.startswith("/system/lib") || (imageName && !imagePath.endswith(".so"))) {
           warning(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName, dlerror());
