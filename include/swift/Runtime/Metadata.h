@@ -1094,16 +1094,34 @@ struct GenericParameterDescriptor {
   // TODO: add meaningful descriptions of the generic requirements.
 };
 
+template <typename Runtime>
+struct TargetMethodDescriptor {
+  /// The method implementation.
+  TargetRelativeDirectPointer<Runtime, void> Impl;
+
+  /// Flags describing the method.
+  MethodDescriptorFlags Flags;
+
+  // TODO: add method types or anything else needed for reflection.
+};
+
 /// Header for a class vtable descriptor. This is a variable-sized
 /// structure that describes how to find and parse a vtable
 /// within the type metadata for a class.
-struct VTableDescriptor {
+template <typename Runtime>
+struct TargetVTableDescriptor {
   /// The offset of the vtable for this class in its metadata, if any.
   uint32_t VTableOffset;
   /// The number of vtable entries, in words.
   uint32_t VTableSize;
 
-  // TODO: add meaningful descriptions of the virtual methods.
+  using MethodDescriptor = TargetMethodDescriptor<Runtime>;
+
+  MethodDescriptor VTable[];
+
+  void *getMethod(unsigned index) const {
+    return VTable[index].Impl.get();
+  }
 };
 
 struct ClassTypeDescriptor;
@@ -1227,7 +1245,7 @@ struct TargetNominalTypeDescriptor {
   ///
   /// Not all type metadata have access functions.
   TargetRelativeDirectPointer<Runtime, NonGenericMetadataAccessFunction,
-                              /*nullable*/ true> AccessFunction;
+                              /*Nullable*/ true> AccessFunction;
 
   /// A pointer to the generic metadata pattern that is used to instantiate
   /// instances of this type. Zero if the type is not generic.
@@ -1247,6 +1265,8 @@ struct TargetNominalTypeDescriptor {
   int32_t offsetToNameOffset() const {
     return offsetof(TargetNominalTypeDescriptor<Runtime>, Name);
   }
+
+  using VTableDescriptor = TargetVTableDescriptor<Runtime>;
 
   const VTableDescriptor *getVTableDescriptor() const {
     if (getKind() != NominalTypeKind::Class ||
@@ -1959,7 +1979,18 @@ struct TargetLiteralProtocolDescriptorList
   {}
 };
 using LiteralProtocolDescriptorList = TargetProtocolDescriptorList<InProcess>;
-  
+
+template <typename Runtime>
+struct TargetProtocolRequirement {
+  ProtocolRequirementFlags Flags;
+  // TODO: name, type
+
+  /// The optional default implementation of the protocol.
+  RelativeDirectPointer<void, /*nullable*/ true> DefaultImplementation;
+};
+
+using ProtocolRequirement = TargetProtocolRequirement<InProcess>;
+
 /// A protocol descriptor. This is not type metadata, but is referenced by
 /// existential type metadata records to describe a protocol constraint.
 /// Its layout is compatible with the Objective-C runtime's 'protocol_t' record
@@ -1991,34 +2022,26 @@ struct TargetProtocolDescriptor {
   /// Additional flags.
   ProtocolDescriptorFlags Flags;
 
-  /// The minimum size of any conforming witness table, in words.
-  ///
-  /// When a conformance is ultimately instantiated from a GenericWitnessTable,
-  /// this value must be greater than or equal to the GenericWitnessTable's
-  /// WitnessTableSizeInWords.
-  ///
-  /// Only meaningful if ProtocolDescriptorFlags::IsResilient is set.
-  uint16_t MinimumWitnessTableSizeInWords;
+  /// The number of non-defaultable requirements in the protocol.
+  uint16_t NumMandatoryRequirements;
 
-  /// The maximum amount to copy from the default requirements in words.
+  /// The number of requirements described by the Requirements array.
   /// If any requirements beyond MinimumWitnessTableSizeInWords are present
   /// in the witness table template, they will be not be overwritten with
   /// defaults.
-  ///
-  /// Only meaningful if ProtocolDescriptorFlags::IsResilient is set.
-  uint16_t DefaultWitnessTableSizeInWords;
+  uint16_t NumRequirements;
 
-  /// Reserved. Really just here to zero-pad the structure on 64-bit.
-  uint32_t Reserved;
+  /// Requirement descriptions.
+  RelativeDirectPointer<TargetProtocolRequirement<Runtime>> Requirements;
 
-  /// Default requirements are tail-allocated here.
-  void **getDefaultWitnesses() const {
-    return (void **) (this + 1);
+  void *getDefaultWitness(unsigned index) const {
+    return Requirements.get()[index].DefaultImplementation.get();
   }
 
+  // This is only used in unittests/Metadata.cpp.
   constexpr TargetProtocolDescriptor<Runtime>(const char *Name,
-                        const TargetProtocolDescriptorList<Runtime> *Inherited,
-                        ProtocolDescriptorFlags Flags)
+                      const TargetProtocolDescriptorList<Runtime> *Inherited,
+                      ProtocolDescriptorFlags Flags)
     : _ObjC_Isa(nullptr), Name(Name), InheritedProtocols(Inherited),
       _ObjC_InstanceMethods(nullptr), _ObjC_ClassMethods(nullptr),
       _ObjC_OptionalInstanceMethods(nullptr),
@@ -2026,8 +2049,9 @@ struct TargetProtocolDescriptor {
       _ObjC_InstanceProperties(nullptr),
       DescriptorSize(sizeof(TargetProtocolDescriptor<Runtime>)),
       Flags(Flags),
-      MinimumWitnessTableSizeInWords(0),
-      DefaultWitnessTableSizeInWords(0)
+      NumMandatoryRequirements(0),
+      NumRequirements(0),
+      Requirements(nullptr)
   {}
 };
 using ProtocolDescriptor = TargetProtocolDescriptor<InProcess>;
@@ -2368,7 +2392,11 @@ struct TargetGenericWitnessTable {
                              void * const *instantiationArgs),
                         /*nullable*/ true> Instantiator;
 
-  void *PrivateData[swift::NumGenericMetadataPrivateDataWords];
+  using PrivateDataType = void *[swift::NumGenericMetadataPrivateDataWords];
+
+  /// Private data for the instantiator.  Out-of-line so that the rest
+  /// of this structure can be constant.
+  RelativeDirectPointer<PrivateDataType> PrivateData;
 };
 using GenericWitnessTable = TargetGenericWitnessTable<InProcess>;
 

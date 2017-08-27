@@ -101,9 +101,13 @@ public:
                             ArrayRef<ProtocolConformanceRef> conformances);
 
   InitExistentialValueInst *
-  createInitExistentialValue(SILLocation Loc, SILType ExistentialType,
-                              CanType FormalConcreteType, SILValue Concrete,
-                              ArrayRef<ProtocolConformanceRef> Conformances);
+  createInitExistentialValue(SILLocation loc, SILType existentialType,
+                             CanType formalConcreteType, SILValue concrete,
+                             ArrayRef<ProtocolConformanceRef> conformances);
+  ManagedValue
+  createInitExistentialValue(SILLocation loc, SILType existentialType,
+                             CanType formalConcreteType, ManagedValue concrete,
+                             ArrayRef<ProtocolConformanceRef> conformances);
 
   InitExistentialMetatypeInst *
   createInitExistentialMetatype(SILLocation loc, SILValue metatype,
@@ -261,6 +265,10 @@ public:
 
   using SILBuilder::createUncheckedRefCast;
   ManagedValue createUncheckedRefCast(SILLocation loc, ManagedValue original,
+                                      SILType type);
+
+  using SILBuilder::createUncheckedBitCast;
+  ManagedValue createUncheckedBitCast(SILLocation loc, ManagedValue original,
                                       SILType type);
 
   using SILBuilder::createOpenExistentialRef;

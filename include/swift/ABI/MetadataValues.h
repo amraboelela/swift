@@ -106,6 +106,47 @@ inline ClassFlags &operator|=(ClassFlags &a, ClassFlags b) {
   return a = (a | b);
 }
 
+/// Flags that go in a MethodDescriptor structure.
+class MethodDescriptorFlags {
+public:
+  typedef uint32_t int_type;
+  enum class Kind {
+    InstanceMethod,
+    StaticMethod,
+    Init,
+    Getter,
+    Setter,
+    MaterializeForSet,
+  };
+
+private:
+  enum : int_type {
+    KindMask = 0x0F,                // 16 kinds should be enough for anybody
+    DynamicMask = 0x10,
+  };
+
+  int_type Value;
+
+public:
+  MethodDescriptorFlags(Kind kind) : Value(unsigned(kind)) {}
+
+  MethodDescriptorFlags withIsDynamic(bool isDynamic) const {
+    auto copy = *this;
+    if (isDynamic)
+      copy.Value |= DynamicMask;
+    else
+      copy.Value &= ~DynamicMask;
+    return copy;
+  }
+
+  Kind getKind() const { return Kind(Value & KindMask); }
+
+  /// Is the method marked 'dynamic'?
+  bool isDynamic() const { return Value & DynamicMask; }
+
+  int_type getIntValue() const { return Value; }
+};
+
 enum : unsigned {
   /// Number of words reserved in generic metadata patterns.
   NumGenericMetadataPrivateDataWords = 16,
@@ -405,6 +446,37 @@ public:
   int_type getIntValue() const {
     return Data;
   }
+};
+
+/// Flags that go in a ProtocolRequirement structure.
+class ProtocolRequirementFlags {
+public:
+  typedef uint32_t int_type;
+  enum class Kind {
+    BaseProtocol,
+    InstanceMethod,
+    StaticMethod,
+    Init,
+    Getter,
+    Setter,
+    MaterializeForSet,
+    AssociatedTypeAccessFunction,
+    AssociatedConformanceAccessFunction,
+  };
+
+private:
+  enum : int_type {
+    KindMask = 0x0F,                // 16 kinds should be enough for anybody
+  };
+
+  int_type Value;
+
+public:
+  ProtocolRequirementFlags(Kind kind) : Value(unsigned(kind)) {}
+
+  Kind getKind() const { return Kind(Value & KindMask); }
+
+  int_type getIntValue() const { return Value; }
 };
 
 /// Flags in an existential type metadata record.

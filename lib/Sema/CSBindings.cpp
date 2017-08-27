@@ -188,9 +188,16 @@ ConstraintSystem::getPotentialBindings(TypeVariableType *typeVar) {
       continue;
 
     switch (constraint->getKind()) {
+    case ConstraintKind::BindParam:
+      if (simplifyType(constraint->getSecondType())
+              ->getAs<TypeVariableType>() == typeVar) {
+        result.IsRHSOfBindParam = true;
+      }
+
+      LLVM_FALLTHROUGH;
+
     case ConstraintKind::Bind:
     case ConstraintKind::Equal:
-    case ConstraintKind::BindParam:
     case ConstraintKind::BindToPointerType:
     case ConstraintKind::Subtype:
     case ConstraintKind::Conversion:
@@ -217,8 +224,11 @@ ConstraintSystem::getPotentialBindings(TypeVariableType *typeVar) {
       // bound (because 'Bind' requires equal types to
       // succeed), or left is bound to Any which is not an
       // [existential] metatype.
-      if (constraint->getFirstType()->isEqual(typeVar))
-        return {};
+      auto dynamicType = constraint->getFirstType();
+      if (auto *tv = dynamicType->getAs<TypeVariableType>()) {
+        if (tv->getImpl().getRepresentative(nullptr) == typeVar)
+          return {};
+      }
 
       // This is right-hand side, let's continue.
       continue;
