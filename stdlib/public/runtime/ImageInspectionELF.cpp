@@ -28,6 +28,10 @@
 #include <string.h>
 #include <stdio.h>
 
+#if defined(__ANDROID__)
+#include "llvm/ADT/StringRef.h"
+#endif
+
 using namespace swift;
 
 /// The symbol name in the image that identifies the beginning of the
@@ -66,27 +70,28 @@ static InspectArgs TypeMetadataRecordArgs = {
 // can be nullptr to specify the main executable.
 static SectionInfo getSectionInfo(const char *imageName,
                                   const char *sectionName) {
-    SectionInfo sectionInfo = { 0, nullptr };
-    void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
-    if (!handle) {
+  SectionInfo sectionInfo = { 0, nullptr };
+  void *handle = dlopen(imageName, RTLD_LAZY | RTLD_NOLOAD);
+  if (!handle) {
 #ifdef __ANDROID__
-        fprintf(stderr, "dlopen failed. imageName: %s, sectionName: %s, dlerror: %s\n", imageName, sectionName, dlerror());
-        return sectionInfo;
-#else
-        fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
-                   dlerror());
+    llvm::StringRef imagePath = llvm::StringRef(imageName);
+    if (imagePath.startswith("/system/lib") ||
+        (imageName && !imagePath.endswith(".so"))) {
+      return sectionInfo;
+    }
 #endif
-    }
-    //fprintf(stderr, "dlopen succeeded. imageName: %s\n", imageName);
-    void *symbol = dlsym(handle, sectionName);
-    if (symbol) {
-        // Extract the size of the section data from the head of the section.
-        const char *section = reinterpret_cast<const char *>(symbol);
-        memcpy(&sectionInfo.size, section, sizeof(uint64_t));
-        sectionInfo.data = section + sizeof(uint64_t);
-    }
-    dlclose(handle);
-    return sectionInfo;
+    fatalError(/* flags = */ 0, "dlopen() failed on `%s': %s", imageName,
+               dlerror());
+  }
+  void *symbol = dlsym(handle, sectionName);
+  if (symbol) {
+    // Extract the size of the section data from the head of the section.
+    const char *section = reinterpret_cast<const char *>(symbol);
+    memcpy(&sectionInfo.size, section, sizeof(uint64_t));
+    sectionInfo.data = section + sizeof(uint64_t);
+  }
+  dlclose(handle);
+  return sectionInfo;
 }
 
 static int iteratePHDRCallback(struct dl_phdr_info *info,
