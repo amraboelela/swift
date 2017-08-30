@@ -25,60 +25,55 @@
 import SwiftShims
 
 extension String {
-    /// A view of a string's contents as a collection of characters.
-    ///
-    /// In Swift, every string provides a view of its contents as characters. In
-    /// this view, many individual characters---for example, "é", "김", and
-    /// "🇮🇳"---can be made up of multiple Unicode code points. These code points
-    /// are combined by Unicode's boundary algorithms into *extended grapheme
-    /// clusters*, represented by the `Character` type. Each element of a
-    /// `CharacterView` collection is a `Character` instance.
-    ///
-    ///     let flowers = "Flowers 💐"
-    ///     for c in flowers.characters {
-    ///         print(c)
-    ///     }
-    ///     // F
-    ///     // l
-    ///     // o
-    ///     // w
-    ///     // e
-    ///     // r
-    ///     // s
-    ///     //
-    ///     // 💐
-    ///
-    /// You can convert a `String.CharacterView` instance back into a string
-    /// using the `String` type's `init(_:)` initializer.
-    ///
-    ///     let name = "Marie Curie"
-    ///     if let firstSpace = name.characters.index(of: " ") {
-    ///         let firstName = String(name.characters[..<firstSpace])
-    ///         print(firstName)
-    ///     }
-    ///     // Prints "Marie"
-    public struct CharacterView {
-        @_versioned
-        internal var _core: _StringCore
-        
-        /// The offset of this view's `_core` from an original core. This works
-        /// around the fact that `_StringCore` is always zero-indexed.
-        /// `_coreOffset` should be subtracted from `UnicodeScalarIndex.encodedOffset`
-        /// before that value is used as a `_core` index.
-        @_versioned
-        internal var _coreOffset: Int
-        
-        /// Creates a view of the given string.
-        public init(_ text: String) {
-            self._core = text._core
-            self._coreOffset = 0
-        }
-        
-        public // @testable
-        init(_ _core: _StringCore, coreOffset: Int = 0) {
-            self._core = _core
-            self._coreOffset = coreOffset
-        }
+  /// A view of a string's contents as a collection of characters.
+  ///
+  /// In Swift, every string provides a view of its contents as characters. In
+  /// this view, many individual characters---for example, "é", "김", and
+  /// "🇮🇳"---can be made up of multiple Unicode code points. These code points
+  /// are combined by Unicode's boundary algorithms into *extended grapheme
+  /// clusters*, represented by the `Character` type. Each element of a
+  /// `CharacterView` collection is a `Character` instance.
+  ///
+  ///     let flowers = "Flowers 💐"
+  ///     for c in flowers.characters {
+  ///         print(c)
+  ///     }
+  ///     // F
+  ///     // l
+  ///     // o
+  ///     // w
+  ///     // e
+  ///     // r
+  ///     // s
+  ///     //
+  ///     // 💐
+  ///
+  /// You can convert a `String.CharacterView` instance back into a string
+  /// using the `String` type's `init(_:)` initializer.
+  ///
+  ///     let name = "Marie Curie"
+  ///     if let firstSpace = name.characters.index(of: " ") {
+  ///         let firstName = String(name.characters[..<firstSpace])
+  ///         print(firstName)
+  ///     }
+  ///     // Prints "Marie"
+  @available(swift, deprecated: 3.2, message:
+    "Please use String or Substring directly")
+  public struct CharacterView {
+    @_versioned
+    internal var _core: _StringCore
+
+    /// The offset of this view's `_core` from an original core. This works
+    /// around the fact that `_StringCore` is always zero-indexed.
+    /// `_coreOffset` should be subtracted from `UnicodeScalarIndex.encodedOffset`
+    /// before that value is used as a `_core` index.
+    @_versioned
+    internal var _coreOffset: Int
+
+    /// Creates a view of the given string.
+    public init(_ text: String) {
+      self._core = text._core
+      self._coreOffset = 0
     }
     
     /// A view of the string's contents as a collection of characters.
@@ -90,49 +85,14 @@ extension String {
             self = String(newValue)
         }
     }
-    
-    /// Applies the given closure to a mutable view of the string's characters.
-    ///
-    /// Do not use the string that is the target of this method inside the
-    /// closure passed to `body`, as it may not have its correct value. Instead,
-    /// use the closure's `CharacterView` argument.
-    ///
-    /// This example below uses the `withMutableCharacters(_:)` method to
-    /// truncate the string `str` at the first space and to return the remainder
-    /// of the string.
-    ///
-    ///     var str = "All this happened, more or less."
-    ///     let afterSpace = str.withMutableCharacters {
-    ///         chars -> String.CharacterView in
-    ///         if let i = chars.index(of: " ") {
-    ///             let result = chars[chars.index(after: i)...]
-    ///             chars.removeSubrange(i...)
-    ///             return result
-    ///         }
-    ///         return String.CharacterView()
-    ///     }
-    ///
-    ///     print(str)
-    ///     // Prints "All"
-    ///     print(String(afterSpace))
-    ///     // Prints "this happened, more or less."
-    ///
-    /// - Parameter body: A closure that takes a character view as its argument.
-    ///   If `body` has a return value, that value is also used as the return
-    ///   value for the `withMutableCharacters(_:)` method. The `CharacterView`
-    ///   argument is valid only for the duration of the closure's execution.
-    /// - Returns: The return value, if any, of the `body` closure parameter.
-    public mutating func withMutableCharacters<R>(
-        _ body: (inout CharacterView) -> R
-        ) -> R {
-        // Naively mutating self.characters forces multiple references to
-        // exist at the point of mutation. Instead, temporarily move the
-        // core of this string into a CharacterView.
-        var tmp = CharacterView("")
-        (_core, tmp._core) = (tmp._core, _core)
-        let r = body(&tmp)
-        (_core, tmp._core) = (tmp._core, _core)
-        return r
+  }
+
+  /// A view of the string's contents as a collection of characters.
+  @available(swift, deprecated: 3.2, message:
+    "Please use String or Substring directly")
+  public var characters: CharacterView {
+    get {
+      return CharacterView(self)
     }
     
     /// Creates a string from the given character view.
