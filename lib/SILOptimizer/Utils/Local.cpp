@@ -225,13 +225,10 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(SILInstruction *I,
 
 void swift::eraseUsesOfInstruction(SILInstruction *Inst,
                                    CallbackTy Callback) {
-  for (auto UI = Inst->use_begin(), E = Inst->use_end(); UI != E;) {
+  while (!Inst->use_empty()) {
+    auto UI = Inst->use_begin();
     auto *User = UI->getUser();
-    UI++;
-    // User have already been deleted by our recursive eraser
-    if (!User) {
-      continue;
-    }
+    assert(User && "User should never be NULL!");
 
     // If the instruction itself has any uses, recursively zap them so that
     // nothing uses this instruction.
@@ -2977,32 +2974,32 @@ bool swift::calleesAreStaticallyKnowable(SILModule &M, SILDeclRef Decl) {
   if (AFD->isDynamic())
     return false;
 
-  if (!AFD->hasAccessibility())
+  if (!AFD->hasAccess())
     return false;
 
   // Only consider 'private' members, unless we are in whole-module compilation.
   switch (AFD->getEffectiveAccess()) {
-  case Accessibility::Open:
+  case AccessLevel::Open:
     return false;
-  case Accessibility::Public:
+  case AccessLevel::Public:
     if (isa<ConstructorDecl>(AFD)) {
       // Constructors are special: a derived class in another module can
       // "override" a constructor if its class is "open", although the
       // constructor itself is not open.
       auto *ND = AFD->getDeclContext()
           ->getAsNominalTypeOrNominalTypeExtensionContext();
-      if (ND->getEffectiveAccess() == Accessibility::Open)
+      if (ND->getEffectiveAccess() == AccessLevel::Open)
         return false;
     }
     LLVM_FALLTHROUGH;
-  case Accessibility::Internal:
+  case AccessLevel::Internal:
     return M.isWholeModule();
-  case Accessibility::FilePrivate:
-  case Accessibility::Private:
+  case AccessLevel::FilePrivate:
+  case AccessLevel::Private:
     return true;
   }
 
-  llvm_unreachable("Unhandled Accessibility in switch.");
+  llvm_unreachable("Unhandled access level in switch.");
 }
 
 void swift::hoistAddressProjections(Operand &Op, SILInstruction *InsertBefore,

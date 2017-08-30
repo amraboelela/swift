@@ -35,7 +35,6 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/TargetSelect.h"
 #include <mutex>
 
 // FIXME: Portability.
@@ -90,11 +89,6 @@ static void onDocumentUpdateNotification(StringRef DocumentName) {
 static SourceKit::Context *GlobalCtx = nullptr;
 
 void sourcekitd::initialize() {
-  llvm::InitializeAllTargets();
-  llvm::InitializeAllTargetMCs();
-  llvm::InitializeAllAsmPrinters();
-  llvm::InitializeAllAsmParsers();
-
   GlobalCtx = new SourceKit::Context(sourcekitd::getRuntimeLibPath(),
                                      SourceKit::createSwiftLangSupport);
   GlobalCtx->getNotificationCenter().addDocumentUpdateNotificationReceiver(
@@ -124,7 +118,7 @@ static sourcekitd_response_t reportDocInfo(llvm::MemoryBuffer *InputBuf,
                                            StringRef ModuleName,
                                            ArrayRef<const char *> Args);
 
-static void reportCursorInfo(const CursorInfo &Info, ResponseReceiver Rec);
+static void reportCursorInfo(const CursorInfoData &Info, ResponseReceiver Rec);
 
 static void reportRangeInfo(const RangeInfo &Info, ResponseReceiver Rec);
 
@@ -764,12 +758,12 @@ handleSemanticRequest(RequestDict Req,
       Req.getInt64(KeyRetrieveRefactorActions, Actionables, /*isOptional=*/true);
       return Lang.getCursorInfo(
           *SourceFile, Offset, Length, Actionables, CancelOnSubsequentRequest,
-          Args, [Rec](const CursorInfo &Info) { reportCursorInfo(Info, Rec); });
+          Args, [Rec](const CursorInfoData &Info) { reportCursorInfo(Info, Rec); });
     }
     if (auto USR = Req.getString(KeyUSR)) {
       return Lang.getCursorInfoFromUSR(
           *SourceFile, *USR, CancelOnSubsequentRequest, Args,
-          [Rec](const CursorInfo &Info) { reportCursorInfo(Info, Rec); });
+          [Rec](const CursorInfoData &Info) { reportCursorInfo(Info, Rec); });
     }
 
     return Rec(createErrorRequestInvalid(
@@ -1451,7 +1445,7 @@ bool SKDocConsumer::handleDiagnostic(const DiagnosticEntryInfo &Info) {
 // ReportCursorInfo
 //===----------------------------------------------------------------------===//
 
-static void reportCursorInfo(const CursorInfo &Info, ResponseReceiver Rec) {
+static void reportCursorInfo(const CursorInfoData &Info, ResponseReceiver Rec) {
 
   if (Info.IsCancelled)
     return Rec(createErrorRequestCancelled());
