@@ -1289,13 +1289,23 @@ std::string ClangImporter::getBridgingHeaderContents(StringRef headerPath,
 
   std::string result;
   bool success = llvm::CrashRecoveryContext().RunSafelyOnThread([&] {
-    clang::RewriteIncludesAction action;
-    action.BeginSourceFile(rewriteInstance,
-                           invocation->getFrontendOpts().Inputs.front());
+    // A much simpler version of clang::RewriteIncludesAction that lets us
+    // write to an in-memory buffer.
+    class RewriteIncludesAction : public clang::PreprocessorFrontendAction {
+      raw_ostream &OS;
+
+      void ExecuteAction() override {
+        clang::CompilerInstance &compiler = getCompilerInstance();
+        clang::RewriteIncludesInInput(compiler.getPreprocessor(), &OS,
+                                      compiler.getPreprocessorOutputOpts());
+      }
+    public:
+      explicit RewriteIncludesAction(raw_ostream &os) : OS(os) {}
+    };
+
     llvm::raw_string_ostream os(result);
-    clang::RewriteIncludesInInput(rewriteInstance.getPreprocessor(), &os,
-                                  rewriteInstance.getPreprocessorOutputOpts());
-    action.EndSourceFile();
+    RewriteIncludesAction action(os);
+    rewriteInstance.ExecuteAction(action);
   });
 
   success |= !rewriteInstance.getDiagnostics().hasErrorOccurred();
@@ -2056,13 +2066,12 @@ public:
   }
 };
 
-/// A hack to blacklist particular types in the Darwin module on
-/// Apple platforms.
-class DarwinBlacklistDeclConsumer : public swift::VisibleDeclConsumer {
+/// A hack to hide particular types in the "Darwin" module on Apple platforms.
+class DarwinLegacyFilterDeclConsumer : public swift::VisibleDeclConsumer {
   swift::VisibleDeclConsumer &NextConsumer;
   clang::ASTContext &ClangASTContext;
 
-  bool isBlacklisted(ValueDecl *VD) {
+  bool shouldDiscard(ValueDecl *VD) {
     if (!VD->hasClangNode())
       return false;
 
@@ -2094,7 +2103,7 @@ class DarwinBlacklistDeclConsumer : public swift::VisibleDeclConsumer {
 
     if (clangModule->Parent &&
         clangModule->Parent->Name == "OSServices") {
-      // Note that this is a blacklist rather than a whitelist.
+      // Note that this is a list of things to /drop/ rather than to /keep/.
       // We're more likely to see new, modern headers added to OSServices.
       return llvm::StringSwitch<bool>(clangModule->Name)
           .Cases("IconStorage", "KeychainCore", "Power", true)
@@ -2107,17 +2116,17 @@ class DarwinBlacklistDeclConsumer : public swift::VisibleDeclConsumer {
   }
 
 public:
-  DarwinBlacklistDeclConsumer(swift::VisibleDeclConsumer &consumer,
-                              clang::ASTContext &clangASTContext)
+  DarwinLegacyFilterDeclConsumer(swift::VisibleDeclConsumer &consumer,
+                                 clang::ASTContext &clangASTContext)
       : NextConsumer(consumer), ClangASTContext(clangASTContext) {}
 
-  static bool needsBlacklist(const clang::Module *topLevelModule) {
+  static bool needsFiltering(const clang::Module *topLevelModule) {
     return topLevelModule && (topLevelModule->Name == "Darwin" ||
                               topLevelModule->Name == "CoreServices");
   }
 
   void foundDecl(ValueDecl *VD, DeclVisibilityKind Reason) override {
-    if (!isBlacklisted(VD))
+    if (!shouldDiscard(VD))
       NextConsumer.foundDecl(VD, Reason);
   }
 };
@@ -2270,13 +2279,13 @@ void ClangModuleUnit::lookupVisibleDecls(ModuleDecl::AccessPathTy accessPath,
   // FIXME: Respect the access path.
   FilteringVisibleDeclConsumer filterConsumer(consumer, this);
 
-  DarwinBlacklistDeclConsumer darwinBlacklistConsumer(filterConsumer,
+  DarwinLegacyFilterDeclConsumer darwinFilterConsumer(filterConsumer,
                                                       getClangASTContext());
 
   swift::VisibleDeclConsumer *actualConsumer = &filterConsumer;
   if (lookupKind == NLKind::UnqualifiedLookup &&
-      DarwinBlacklistDeclConsumer::needsBlacklist(clangModule)) {
-    actualConsumer = &darwinBlacklistConsumer;
+      DarwinLegacyFilterDeclConsumer::needsFiltering(clangModule)) {
+    actualConsumer = &darwinFilterConsumer;
   }
 
   // Find the corresponding lookup table.
@@ -2302,15 +2311,15 @@ public:
 void ClangModuleUnit::getTopLevelDecls(SmallVectorImpl<Decl*> &results) const {
   VectorDeclPtrConsumer consumer(results);
   FilteringDeclaredDeclConsumer filterConsumer(consumer, this);
-  DarwinBlacklistDeclConsumer blacklistConsumer(filterConsumer,
-                                                getClangASTContext());
+  DarwinLegacyFilterDeclConsumer darwinFilterConsumer(filterConsumer,
+                                                      getClangASTContext());
 
   const clang::Module *topLevelModule =
     clangModule ? clangModule->getTopLevelModule() : nullptr;
 
   swift::VisibleDeclConsumer *actualConsumer = &filterConsumer;
-  if (DarwinBlacklistDeclConsumer::needsBlacklist(topLevelModule))
-    actualConsumer = &blacklistConsumer;
+  if (DarwinLegacyFilterDeclConsumer::needsFiltering(topLevelModule))
+    actualConsumer = &darwinFilterConsumer;
 
   // Find the corresponding lookup table.
   if (auto lookupTable = owner.findLookupTable(topLevelModule)) {
@@ -2414,13 +2423,13 @@ void ClangModuleUnit::lookupValue(ModuleDecl::AccessPathTy accessPath,
   VectorDeclConsumer vectorWriter(results);
   FilteringVisibleDeclConsumer filteringConsumer(vectorWriter, this);
 
-  DarwinBlacklistDeclConsumer darwinBlacklistConsumer(filteringConsumer,
+  DarwinLegacyFilterDeclConsumer darwinFilterConsumer(filteringConsumer,
                                                       getClangASTContext());
 
   swift::VisibleDeclConsumer *consumer = &filteringConsumer;
   if (lookupKind == NLKind::UnqualifiedLookup &&
-      DarwinBlacklistDeclConsumer::needsBlacklist(clangModule)) {
-    consumer = &darwinBlacklistConsumer;
+      DarwinLegacyFilterDeclConsumer::needsFiltering(clangModule)) {
+    consumer = &darwinFilterConsumer;
   }
 
   // Find the corresponding lookup table.

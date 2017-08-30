@@ -38,7 +38,6 @@
 #include "clang/AST/Decl.h"
 #include "clang/Basic/Module.h"
 #include "clang/Index/USRGeneration.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Compiler.h"
@@ -285,7 +284,7 @@ void getSwiftDocKeyword(const Decl* D, CommandWordsPairs &Words) {
 
 static bool shouldHideDeclFromCompletionResults(const ValueDecl *D) {
   // Hide private stdlib declarations.
-  if (D->isPrivateStdlibDecl(/*whitelistProtocols*/false) ||
+  if (D->isPrivateStdlibDecl(/*treatNonBuiltinProtocolsAsPublic*/false) ||
       // ShowInInterfaceAttr is for decls to show in interface as exception but
       // they are not intended to be used directly.
       D->getAttrs().hasAttribute<ShowInInterfaceAttr>())
@@ -1290,7 +1289,6 @@ class CodeCompletionCallbacksImpl : public CodeCompletionCallbacks {
   SourceLoc DotLoc;
   TypeLoc ParsedTypeLoc;
   DeclContext *CurDeclContext = nullptr;
-  Decl *CStyleForLoopIterationVariable = nullptr;
   DeclAttrKind AttrKind;
   int AttrParamIndex;
   bool IsInSil;
@@ -1624,9 +1622,6 @@ class CompletionLookup final : public swift::VisibleDeclConsumer {
   /// \brief Innermost method that the code completion point is in.
   const AbstractFunctionDecl *CurrentMethod = nullptr;
 
-  /// \brief Declarations that should get ExpressionSpecific semantic context.
-  llvm::SmallSet<const Decl *, 4> ExpressionSpecificDecls;
-
   Optional<SemanticContextKind> ForcedSemanticContext = None;
   bool IsUnresolvedMember = false;
 
@@ -1797,10 +1792,6 @@ public:
     IncludeInstanceMembers = true;
   }
 
-  void addExpressionSpecificDecl(const Decl *D) {
-    ExpressionSpecificDecls.insert(D);
-  }
-
   void addSubModuleNames(std::vector<std::pair<std::string, bool>>
       &SubModuleNameVisibilityPairs) {
     for (auto &Pair : SubModuleNameVisibilityPairs) {
@@ -1888,8 +1879,6 @@ public:
     case DeclVisibilityKind::LocalVariable:
     case DeclVisibilityKind::FunctionParameter:
     case DeclVisibilityKind::GenericParameter:
-      if (ExpressionSpecificDecls.count(D))
-        return SemanticContextKind::ExpressionSpecific;
       return SemanticContextKind::Local;
 
     case DeclVisibilityKind::MemberOfCurrentNominal:
@@ -2068,7 +2057,7 @@ public:
 
   void addVarDeclRef(const VarDecl *VD, DeclVisibilityKind Reason) {
     if (!VD->hasName() ||
-        (VD->hasAccessibility() && !VD->isAccessibleFrom(CurrDeclContext)) ||
+        (VD->hasAccess() && !VD->isAccessibleFrom(CurrDeclContext)) ||
         shouldHideDeclFromCompletionResults(VD))
       return;
 
@@ -2722,7 +2711,7 @@ public:
                          DeclVisibilityKind Reason,
                          bool HasTypeContext) {
     if (!EED->hasName() ||
-        (EED->hasAccessibility() && !EED->isAccessibleFrom(CurrDeclContext)) ||
+        (EED->hasAccess() && !EED->isAccessibleFrom(CurrDeclContext)) ||
         shouldHideDeclFromCompletionResults(EED))
       return;
 
@@ -4159,12 +4148,12 @@ public:
   void addAccessControl(const ValueDecl *VD,
                         CodeCompletionResultBuilder &Builder) {
     assert(CurrDeclContext->getAsNominalTypeOrNominalTypeExtensionContext());
-    auto AccessibilityOfContext =
+    auto AccessOfContext =
       CurrDeclContext->getAsNominalTypeOrNominalTypeExtensionContext()
         ->getFormalAccess();
-    auto Access = std::min(VD->getFormalAccess(), AccessibilityOfContext);
+    auto Access = std::min(VD->getFormalAccess(), AccessOfContext);
     // Only emit 'public', not needed otherwise.
-    if (Access >= Accessibility::Public)
+    if (Access >= AccessLevel::Public)
       Builder.addAccessControlKeyword(Access);
   }
 
@@ -4453,8 +4442,6 @@ void CodeCompletionCallbacksImpl::completeStmtOrExpr() {
   assert(P.Tok.is(tok::code_complete));
   Kind = CompletionKind::StmtOrExpr;
   CurDeclContext = P.CurDeclContext;
-  CStyleForLoopIterationVariable =
-      CodeCompletionCallbacks::CStyleForLoopIterationVariable;
 }
 
 void CodeCompletionCallbacksImpl::completePostfixExprBeginning(CodeCompletionExpr *E) {
@@ -4475,8 +4462,6 @@ void CodeCompletionCallbacksImpl::completePostfixExprBeginning(CodeCompletionExp
 
 
   CurDeclContext = P.CurDeclContext;
-  CStyleForLoopIterationVariable =
-      CodeCompletionCallbacks::CStyleForLoopIterationVariable;
   CodeCompleteTokenExpr = E;
 }
 
@@ -5176,8 +5161,6 @@ void CodeCompletionCallbacksImpl::doneParsing() {
     Lookup.setPreferFunctionReferencesToCalls();
 
   auto DoPostfixExprBeginning = [&] (){
-    if (CStyleForLoopIterationVariable)
-      Lookup.addExpressionSpecificDecl(CStyleForLoopIterationVariable);
     SourceLoc Loc = P.Context.SourceMgr.getCodeCompletionLoc();
     Lookup.getValueCompletionsInDeclContext(Loc);
   };
