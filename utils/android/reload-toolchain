@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -e
+
+cd "$(dirname $0)/../../.." || exit
+
+rm -r swift-android-toolchain
+scp ${SWIFT_MACHINE_USERNAME}@${SWIFT_MACHINE_ADDRESS}:swift/swift-android-toolchain.zip .
+unzip swift-android-toolchain.zip
+rm swift-android-toolchain.zip
