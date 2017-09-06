@@ -1,6 +1,8 @@
 #!/bin/bash
 
-source ~/.bashrc
+#source ~/.bashrc
+export SWIFT_PATH=~/swift
+export PATH=/home/amr/resources/git-plus:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games
 
 PARAM=x$1
 PARAM2=x$2
