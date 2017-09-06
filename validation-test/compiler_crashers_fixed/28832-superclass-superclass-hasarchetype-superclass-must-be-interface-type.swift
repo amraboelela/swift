@@ -6,8 +6,5 @@
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
 // REQUIRES: asserts
-// RUN: not --crash %target-swift-frontend %s -emit-ir
-protocol P{typealias a{}class a
-{}typealias a{}class a
-}{extension{class a:P
-protocol A:A
+// RUN: not %target-swift-frontend %s -emit-ir
+extension CountableRange{{}class a:a&a.a{func a

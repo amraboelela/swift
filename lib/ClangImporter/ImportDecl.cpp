@@ -4970,6 +4970,9 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
       decl->getUnderlyingType(), ImportTypeKind::Value, isInSystemModule(dc),
       Bridgeability::None, OTK_None);
 
+  if (!storedUnderlyingType)
+    return nullptr;
+
   if (auto objTy = storedUnderlyingType->getAnyOptionalObjectType())
     storedUnderlyingType = objTy;
 
@@ -5346,7 +5349,7 @@ Decl *SwiftDeclConverter::importGlobalAsMethod(
               dc->getAsNominalTypeOrNominalTypeExtensionContext()) {
         if (auto clangDCTy = dyn_cast_or_null<clang::TypedefNameDecl>(
                 nominalTypeDecl->getClangDecl()))
-          if (auto newtypeAttr = getSwiftNewtypeAttr(clangDCTy, getVersion()))
+          if (getSwiftNewtypeAttr(clangDCTy, getVersion()))
             if (clangDCTy->getUnderlyingType().getCanonicalType() !=
                 selfParamTy->getPointeeType().getCanonicalType())
               selfIsInOut = false;

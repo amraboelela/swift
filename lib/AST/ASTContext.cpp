@@ -261,6 +261,9 @@ FOR_KNOWN_FOUNDATION_TYPES(CACHE_FOUNDATION_DECL)
   /// The single-parameter generic signature with no constraints, <T>.
   CanGenericSignature SingleGenericParameterSignature;
 
+  /// The existential signature <T : P> for each P.
+  llvm::DenseMap<CanType, CanGenericSignature> ExistentialSignatures;
+
   /// \brief Structure that captures data that is segregated into different
   /// arenas.
   struct Arena {
@@ -1458,12 +1461,18 @@ bool ASTContext::canImportModule(std::pair<Identifier, SourceLoc> ModulePath) {
   if (getLoadedModule(ModulePath) != nullptr)
     return true;
 
+  // If we've failed loading this module before, don't look for it again.
+  if (FailedModuleImportNames.count(ModulePath.first))
+    return false;
+
   // Otherwise, ask the module loaders.
   for (auto &importer : Impl.ModuleLoaders) {
     if (importer->canImportModule(ModulePath)) {
       return true;
     }
   }
+
+  FailedModuleImportNames.insert(ModulePath.first);
   return false;
 }
 
@@ -4501,6 +4510,35 @@ CanGenericSignature ASTContext::getSingleGenericParameterSignature() const {
   auto canonicalSig = CanGenericSignature(sig);
   Impl.SingleGenericParameterSignature = canonicalSig;
   return canonicalSig;
+}
+
+CanGenericSignature ASTContext::getExistentialSignature(CanType existential,
+                                                        ModuleDecl *mod) {
+  auto found = Impl.ExistentialSignatures.find(existential);
+  if (found != Impl.ExistentialSignatures.end())
+    return found->second;
+
+  assert(existential.isExistentialType());
+
+  GenericSignatureBuilder builder(*this, LookUpConformanceInModule(mod));
+
+  auto genericParam = GenericTypeParamType::get(0, 0, *this);
+  builder.addGenericParameter(genericParam);
+
+  Requirement requirement(RequirementKind::Conformance, genericParam,
+                          existential);
+  auto source =
+    GenericSignatureBuilder::FloatingRequirementSource::forAbstract();
+  builder.addRequirement(requirement, source, nullptr);
+
+  CanGenericSignature genericSig(builder.computeGenericSignature(SourceLoc()));
+
+  auto result = Impl.ExistentialSignatures.insert(
+    std::make_pair(existential, genericSig));
+  assert(result.second);
+  (void) result;
+
+  return genericSig;
 }
 
 SILLayout *SILLayout::get(ASTContext &C,

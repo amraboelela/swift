@@ -2465,7 +2465,7 @@ diagnoseTypeMemberOnInstanceLookup(Type baseObjTy,
       Diag.emplace(diagnose(loc,
                             diag::assoc_type_outside_of_protocol,
                             ATD->getName()));
-    } else if (auto CD = dyn_cast<ConstructorDecl>(member)) {
+    } else if (isa<ConstructorDecl>(member)) {
       Diag.emplace(diagnose(loc,
                             diag::construct_protocol_by_name,
                             metatypeTy->getInstanceType()));
@@ -5508,13 +5508,13 @@ static bool isRawRepresentableMismatch(Type fromType, Type toType,
   // First check if this is an attempt to convert from something to
   // raw representable.
   if (conformsToKnownProtocol(fromType, kind, CS)) {
-    if (auto rawType = isRawRepresentable(toType, kind, CS))
+    if (isRawRepresentable(toType, kind, CS))
       return true;
   }
 
   // Otherwise, it might be an attempt to convert from raw representable
   // to its raw value.
-  if (auto rawType = isRawRepresentable(fromType, kind, CS)) {
+  if (isRawRepresentable(fromType, kind, CS)) {
     if (conformsToKnownProtocol(toType, kind, CS))
       return true;
   }
@@ -9530,6 +9530,11 @@ void FailureDiagnosis::diagnoseAmbiguity(Expr *E) {
 }
 
 bool ConstraintSystem::salvage(SmallVectorImpl<Solution> &viable, Expr *expr) {
+  if (TC.getLangOpts().DebugConstraintSolver) {
+    auto &log = TC.Context.TypeCheckerDebug->getStream();
+    log << "---Attempting to salvage and emit diagnostics---\n";
+  }
+
   // Attempt to solve again, capturing all states that come from our attempts to
   // select overloads or bind type variables.
   //

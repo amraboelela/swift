@@ -2025,77 +2025,96 @@ LValue SILGenFunction::emitLValue(Expr *e, AccessKind accessKind,
   return r;
 }
 
-LValue SILGenLValue::visitRec(Expr *e, AccessKind accessKind,
-                              LValueOptions options,
-                              AbstractionPattern orig) {
-  // First see if we have an lvalue type. If we do, then quickly handle that and
-  // return.
-  if (e->getType()->is<LValueType>() || e->isSemanticallyInOutExpr()) {
-    auto lv = visit(e, accessKind, options);
-    // If necessary, handle reabstraction with a SubstToOrigComponent that
-    // handles
-    // writeback in the original representation.
-    if (orig.isValid()) {
-      auto &origTL = SGF.getTypeLowering(orig, e->getType()->getRValueType());
-      if (lv.getTypeOfRValue() != origTL.getLoweredType().getObjectType())
-        lv.addSubstToOrigComponent(orig,
-                                   origTL.getLoweredType().getObjectType());
-    }
-    return lv;
+static LValue visitRecInOut(SILGenLValue &SGL, Expr *e, AccessKind accessKind,
+                            LValueOptions options, AbstractionPattern orig) {
+  auto lv = SGL.visit(e, accessKind, options);
+  // If necessary, handle reabstraction with a SubstToOrigComponent that handles
+  // writeback in the original representation.
+  if (orig.isValid()) {
+    auto &origTL = SGL.SGF.getTypeLowering(orig, e->getType()->getRValueType());
+    if (lv.getTypeOfRValue() != origTL.getLoweredType().getObjectType())
+      lv.addSubstToOrigComponent(orig, origTL.getLoweredType().getObjectType());
   }
 
-  // Otherwise we have a non-lvalue type (references, values, metatypes,
-  // etc). These act as the root of a logical lvalue.
-  SGFContext Ctx;
-  ManagedValue rv;
+  return lv;
+}
 
-  // Calls through opaque protocols can be done with +0 rvalues.  This allows
-  // us to avoid materializing copies of existentials.
-  if (SGF.SGM.Types.isIndirectPlusZeroSelfParameter(e->getType()))
-    Ctx = SGFContext::AllowGuaranteedPlusZero;
-  else if (auto *DRE = dyn_cast<DeclRefExpr>(e)) {
+// Otherwise we have a non-lvalue type (references, values, metatypes,
+// etc). These act as the root of a logical lvalue.
+static ManagedValue visitRecNonInOutBase(SILGenLValue &SGL, Expr *e,
+                                         AccessKind accessKind,
+                                         LValueOptions options,
+                                         AbstractionPattern orig) {
+  auto &SGF = SGL.SGF;
+
+  // For an rvalue base, apply the reabstraction (if any) eagerly, since
+  // there's no need for writeback.
+  if (orig.isValid()) {
+    return SGF.emitRValueAsOrig(
+        e, orig, SGF.getTypeLowering(orig, e->getType()->getRValueType()));
+  }
+
+  // Ok, at this point we know that re-abstraction is not required.
+  SGFContext ctx;
+
+  if (auto *dre = dyn_cast<DeclRefExpr>(e)) {
     // Any reference to "self" can be done at +0 so long as it is a direct
     // access, since we know it is guaranteed.
+    //
     // TODO: it would be great to factor this even lower into SILGen to the
     // point where we can see that the parameter is +0 guaranteed.  Note that
     // this handles the case in initializers where there is actually a stack
     // allocation for it as well.
-    if (isa<ParamDecl>(DRE->getDecl()) &&
-        DRE->getDecl()->getFullName() == SGF.getASTContext().Id_self &&
-        DRE->getDecl()->isImplicit()) {
-      Ctx = SGFContext::AllowGuaranteedPlusZero;
+    if (isa<ParamDecl>(dre->getDecl()) &&
+        dre->getDecl()->getFullName() == SGF.getASTContext().Id_self &&
+        dre->getDecl()->isImplicit()) {
+      ctx = SGFContext::AllowGuaranteedPlusZero;
       if (SGF.SelfInitDelegationState != SILGenFunction::NormalSelf) {
         // This needs to be inlined since there is a Formal Evaluation Scope
         // in emitRValueForDecl that causing any borrow for this LValue to be
         // popped too soon.
-        auto *vd = cast<ParamDecl>(DRE->getDecl());
+        auto *vd = cast<ParamDecl>(dre->getDecl());
         ManagedValue selfLValue =
-            SGF.emitLValueForDecl(DRE, vd, DRE->getType()->getCanonicalType(),
-                                  AccessKind::Read, DRE->getAccessSemantics());
-        rv = SGF.emitRValueForSelfInDelegationInit(
-                    e, DRE->getType()->getCanonicalType(),
-                    selfLValue.getLValueAddress(), Ctx)
-                 .getScalarValue();
+            SGF.emitLValueForDecl(dre, vd, dre->getType()->getCanonicalType(),
+                                  AccessKind::Read, dre->getAccessSemantics());
+        selfLValue = SGF.emitFormalEvaluationRValueForSelfInDelegationInit(
+                            e, dre->getType()->getCanonicalType(),
+                            selfLValue.getLValueAddress(), ctx)
+                         .getAsSingleValue(SGF, e);
+
+        return selfLValue;
       }
-    } else if (auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+    }
+
+    if (auto *VD = dyn_cast<VarDecl>(dre->getDecl())) {
       // All let values are guaranteed to be held alive across their lifetime,
       // and won't change once initialized.  Any loaded value is good for the
       // duration of this expression evaluation.
-      if (VD->isLet())
-        Ctx = SGFContext::AllowGuaranteedPlusZero;
+      if (VD->isLet()) {
+        ctx = SGFContext::AllowGuaranteedPlusZero;
+      }
     }
   }
 
-  if (!rv) {
-    // For an rvalue base, apply the reabstraction (if any) eagerly, since
-    // there's no need for writeback.
-    if (orig.isValid())
-      rv = SGF.emitRValueAsOrig(
-          e, orig, SGF.getTypeLowering(orig, e->getType()->getRValueType()));
-    else
-      rv = SGF.emitRValueAsSingleValue(e, Ctx);
+  if (SGF.SGM.Types.isIndirectPlusZeroSelfParameter(e->getType())) {
+    ctx = SGFContext::AllowGuaranteedPlusZero;
   }
 
+  return SGF.emitRValueAsSingleValue(e, ctx);
+}
+
+LValue SILGenLValue::visitRec(Expr *e, AccessKind accessKind,
+                              LValueOptions options, AbstractionPattern orig) {
+  // First see if we have an lvalue type. If we do, then quickly handle that and
+  // return.
+  if (e->getType()->is<LValueType>() || e->isSemanticallyInOutExpr()) {
+    return visitRecInOut(*this, e, accessKind, options, orig);
+  }
+
+  // Otherwise we have a non-lvalue type (references, values, metatypes,
+  // etc). These act as the root of a logical lvalue. Compute the root value,
+  // wrap it in a ValueComponent, and return it for our caller.
+  ManagedValue rv = visitRecNonInOutBase(*this, e, accessKind, options, orig);
   CanType formalType = getSubstFormalRValueType(e);
   auto typeData = getValueTypeData(formalType, rv.getValue());
   LValue lv;
@@ -2700,18 +2719,19 @@ LValue SILGenFunction::emitPropertyLValue(SILLocation loc, ManagedValue base,
   return lv;
 }
 
+// This is emitLoad that will handle re-abstraction and bridging for the client.
 ManagedValue SILGenFunction::emitLoad(SILLocation loc, SILValue addr,
                                       AbstractionPattern origFormalType,
                                       CanType substFormalType,
                                       const TypeLowering &rvalueTL,
                                       SGFContext C, IsTake_t isTake,
-                                      bool isGuaranteedValid) {
+                                      bool isAddressGuaranteed) {
   assert(addr->getType().isAddress());
   SILType addrRValueType = addr->getType().getReferenceStorageReferentType();
 
   // Fast path: the types match exactly.
   if (addrRValueType == rvalueTL.getLoweredType().getAddressType()) {
-    return emitLoad(loc, addr, rvalueTL, C, isTake, isGuaranteedValid);
+    return emitLoad(loc, addr, rvalueTL, C, isTake, isAddressGuaranteed);
   }
 
   // Otherwise, we need to reabstract or bridge.
@@ -2725,7 +2745,7 @@ ManagedValue SILGenFunction::emitLoad(SILLocation loc, SILValue addr,
   return emitConvertedRValue(loc, conversion, C,
       [&](SILGenFunction &SGF, SILLocation loc, SGFContext C) {
     return SGF.emitLoad(loc, addr, getTypeLowering(addrRValueType),
-                        C, isTake, isGuaranteedValid);
+                        C, isTake, isAddressGuaranteed);
   });
 }
 
@@ -2733,13 +2753,13 @@ ManagedValue SILGenFunction::emitLoad(SILLocation loc, SILValue addr,
 ///
 /// \param rvalueTL - the type lowering for the type-of-rvalue
 ///   of the address
-/// \param isGuaranteedValid - true if the value in this address
+/// \param isAddrGuaranteed - true if the value in this address
 ///   is guaranteed to be valid for the duration of the current
 ///   evaluation (see SGFContext::AllowGuaranteedPlusZero)
 ManagedValue SILGenFunction::emitLoad(SILLocation loc, SILValue addr,
                                       const TypeLowering &rvalueTL,
                                       SGFContext C, IsTake_t isTake,
-                                      bool isGuaranteedValid) {
+                                      bool isAddrGuaranteed) {
   // Get the lowering for the address type.  We can avoid a re-lookup
   // in the very common case of this being equivalent to the r-value
   // type.
@@ -2749,7 +2769,7 @@ ManagedValue SILGenFunction::emitLoad(SILLocation loc, SILValue addr,
 
   // Never do a +0 load together with a take.
   bool isPlusZeroOk = (isTake == IsNotTake &&
-                       (isGuaranteedValid ? C.isGuaranteedPlusZeroOk()
+                       (isAddrGuaranteed ? C.isGuaranteedPlusZeroOk()
                                           : C.isImmediatePlusZeroOk()));
 
   if (rvalueTL.isAddressOnly() && silConv.useLoweredAddresses()) {
@@ -2758,7 +2778,7 @@ ManagedValue SILGenFunction::emitLoad(SILLocation loc, SILValue addr,
     // address RValue.
     if (isPlusZeroOk && rvalueTL.getLoweredType() == addrTL.getLoweredType())
       return ManagedValue::forUnmanaged(addr);
-        
+
     // Copy the address-only value.
     return B.bufferForExpr(
         loc, rvalueTL.getLoweredType(), rvalueTL, C,
@@ -2784,14 +2804,14 @@ ManagedValue SILGenFunction::emitLoad(SILLocation loc, SILValue addr,
 ///
 /// \param rvalueTL - the type lowering for the type-of-rvalue
 ///   of the address
-/// \param isGuaranteedValid - true if the value in this address
+/// \param isAddressGuaranteed - true if the value in this address
 ///   is guaranteed to be valid for the duration of the current
 ///   evaluation (see SGFContext::AllowGuaranteedPlusZero)
 ManagedValue SILGenFunction::emitFormalAccessLoad(SILLocation loc,
                                                   SILValue addr,
                                                   const TypeLowering &rvalueTL,
                                                   SGFContext C, IsTake_t isTake,
-                                                  bool isGuaranteedValid) {
+                                                  bool isAddressGuaranteed) {
   // Get the lowering for the address type.  We can avoid a re-lookup
   // in the very common case of this being equivalent to the r-value
   // type.
@@ -2801,7 +2821,7 @@ ManagedValue SILGenFunction::emitFormalAccessLoad(SILLocation loc,
 
   // Never do a +0 load together with a take.
   bool isPlusZeroOk =
-      (isTake == IsNotTake && (isGuaranteedValid ? C.isGuaranteedPlusZeroOk()
+      (isTake == IsNotTake && (isAddressGuaranteed ? C.isGuaranteedPlusZeroOk()
                                                  : C.isImmediatePlusZeroOk()));
 
   if (rvalueTL.isAddressOnly() && silConv.useLoweredAddresses()) {
@@ -3188,7 +3208,7 @@ static ArgumentSource emitBaseValueForAccessor(SILGenFunction &SGF,
 }
 
 RValue SILGenFunction::emitLoadOfLValue(SILLocation loc, LValue &&src,
-                                        SGFContext C, bool isGuaranteedValid) {
+                                        SGFContext C, bool isBaseGuaranteed) {
   // Any writebacks should be scoped to after the load.
   FormalEvaluationScope scope(*this);
 
@@ -3206,7 +3226,7 @@ RValue SILGenFunction::emitLoadOfLValue(SILLocation loc, LValue &&src,
     return RValue(*this, loc, substFormalType,
                   emitLoad(loc, addr.getValue(),
                            rvalueTL, C, IsNotTake,
-                           isGuaranteedValid));
+                           isBaseGuaranteed));
   }
 
   // If the last component is logical, emit a get.

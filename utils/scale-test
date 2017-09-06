@@ -170,6 +170,11 @@ def run_many(args):
 
     ast = gyb.parse_template(args.file.name, args.file.read())
     rng = range(args.begin, args.end, args.step)
+    if args.step > (args.end - args.begin):
+        print("Step value", args.step,
+              "is too large for the range", str((args.begin, args.end)) + ".",
+              "Have you forgotten to override it?")
+        exit(1)
     if args.multi_file or args.sum_multi:
         return (rng, [run_once(args, ast, range(i)) for i in rng])
     else:
@@ -501,7 +506,8 @@ def report(args, rng, runs):
         except ValueError:
             pass
         if not one_fit:
-            print("failed to fit either polynomial or exponential model")
+            print("failed to fit either polynomial or exponential model to " +
+                  repr(vals))
             return True
         if p_r2 >= e_r2:
             # polynomial is best
@@ -527,6 +533,9 @@ def report(args, rng, runs):
             print("O(%s) : %s" % (formatted, k))
             if args.values:
                 print("                = ", vals)
+
+    if args.invert_result:
+        bad = not bad
     return bad
 
 
@@ -595,6 +604,9 @@ def main():
     parser.add_argument(
         '--expected-exit-code', type=int, default=0,
         help='exit code expected from the compiler invocation')
+    parser.add_argument(
+        '--invert-result', action='store_true',
+        default=False, help='invert the result of the data fitting')
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument(

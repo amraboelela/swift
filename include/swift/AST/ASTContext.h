@@ -262,6 +262,9 @@ private:
   llvm::DenseMap<const Pattern *, DeclContext *>
     DelayedPatternContexts;
 
+  /// Cache of module names that fail the 'canImport' test in this context.
+  llvm::SmallPtrSet<Identifier, 8> FailedModuleImportNames;
+  
 public:
   /// \brief Retrieve the allocator for the given arena.
   llvm::BumpPtrAllocator &
@@ -862,6 +865,11 @@ public:
   /// Retrieve a generic signature with a single unconstrained type parameter,
   /// like `<T>`.
   CanGenericSignature getSingleGenericParameterSignature() const;
+
+  /// Retrieve a generic signature with a single type parameter conforming
+  /// to the given existential type.
+  CanGenericSignature getExistentialSignature(CanType existential,
+                                              ModuleDecl *mod);
 
   /// Whether our effective Swift version is in the Swift 3 family.
   bool isSwiftVersion3() const { return LangOpts.isSwiftVersion3(); }

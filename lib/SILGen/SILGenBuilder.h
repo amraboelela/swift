@@ -284,6 +284,10 @@ public:
   ManagedValue createOpenExistentialValue(SILLocation loc,
                                           ManagedValue original, SILType type);
 
+  using SILBuilder::createOpenExistentialBoxValue;
+  ManagedValue createOpenExistentialBoxValue(SILLocation loc,
+                                          ManagedValue original, SILType type);
+
   using SILBuilder::createOptionalSome;
   ManagedValue createOptionalSome(SILLocation Loc, ManagedValue Arg);
   ManagedValue createManagedOptionalNone(SILLocation Loc, SILType Type);
@@ -301,6 +305,10 @@ public:
   ManagedValue createSuperMethod(SILLocation loc, ManagedValue operand,
                                  SILDeclRef member, SILType methodTy,
                                  bool isVolatile = false);
+
+  using SILBuilder::createValueMetatype;
+  ManagedValue createValueMetatype(SILLocation loc, SILType metatype,
+                                   ManagedValue base);
 };
 
 class SwitchCaseFullExpr;

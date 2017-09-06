@@ -665,6 +665,15 @@ ManagedValue SILGenBuilder::createOpenExistentialValue(SILLocation loc,
   return ManagedValue::forUnmanaged(openedExistential);
 }
 
+ManagedValue SILGenBuilder::createOpenExistentialBoxValue(SILLocation loc,
+                                                          ManagedValue original,
+                                                          SILType type) {
+  ManagedValue borrowedExistential = original.borrow(SGF, loc);
+  SILValue openedExistential = SILBuilder::createOpenExistentialBoxValue(
+      loc, borrowedExistential.getValue(), type);
+  return ManagedValue::forUnmanaged(openedExistential);
+}
+
 ManagedValue SILGenBuilder::createStore(SILLocation loc, ManagedValue value,
                                         SILValue address,
                                         StoreOwnershipQualifier qualifier) {
@@ -683,6 +692,13 @@ ManagedValue SILGenBuilder::createSuperMethod(SILLocation loc,
                                               bool isVolatile) {
   SILValue v = SILBuilder::createSuperMethod(loc, operand.getValue(), member,
                                              methodTy, isVolatile);
+  return ManagedValue::forUnmanaged(v);
+}
+
+ManagedValue SILGenBuilder::
+createValueMetatype(SILLocation loc, SILType metatype,
+                    ManagedValue base) {
+  SILValue v = createValueMetatype(loc, metatype, base.getValue());
   return ManagedValue::forUnmanaged(v);
 }
 
