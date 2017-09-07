@@ -19,10 +19,13 @@ ANDROID_NDK_DIR="${ANDROID_NDK_DIR:?Please set the Android NDK directory in the 
 ANDROID_ICU_DIR="${ANDROID_ICU_DIR:?Please set the libiconv-libicu-android directory in the ANDROID_ICU_DIR environment variable}"
 
 SWIFT_TOOLCHAIN_DIR="${SRC_DIR}/../swift-android-toolchain"
-SWIFT_LINUX_DIR="${SRC_DIR}/../build/buildbot_linux/swift-linux-x86_64"
+SWIFT_LINUX_DIR="${SRC_DIR}/../build/Ninja-ReleaseAssert/swift-linux-x86_64"
 
-./utils/build-script --preset=buildbot_linux_armv7 \
+#    --preset "buildbot_linux_armv7" \
+
+./utils/build-script \
     -R \
+    --install-swiftpm \
     --android \
     --android-ndk "${ANDROID_NDK_DIR}" \
     --android-api-level 21 \
