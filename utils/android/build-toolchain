@@ -34,6 +34,8 @@ SWIFT_LINUX_DIR="${SRC_DIR}/../build/Ninja-ReleaseAssert/swift-linux-x86_64"
     --install-foundation \
     --install-swiftpm \
     --install-xctest \
+    --install-destdir "${SRC_DIR}/swift-android-install" \
+    --installable-package "${SRC_DIR}/swift-android-install.tar.gz" \
     --android \
     --android-ndk "${ANDROID_NDK_DIR}" \
     --android-api-level 21 \
