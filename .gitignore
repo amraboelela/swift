@@ -45,7 +45,6 @@ xcuserdata
 *.xccheckout
 
 swift-nightly-install
-swift-android-install
 *.tar.gz
 #==============================================================================#
 # Ignore compile database
