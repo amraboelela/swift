@@ -8,8 +8,7 @@ cd $SWIFT_PATH
 
 if [ ${PARAM} = "x-c" ] ; then
 echo ========== Cleaning ===========
-rm -rf build
-rm -f swift/*.tar.gz
+rm -rf build/Ninja-ReleaseAssert
 fi
 
 if [ ${PARAM} = "x-u" ] || [ ${PARAM2} = "x-u" ] ; then
@@ -25,12 +24,7 @@ echo ========== Running script ==========
 echo ========== Finishing ==========
 cd $SWIFT_PATH
 
-#test -e swift-android-toolchain || exit 
-#rm -rf toolchains/swift-android-toolchain-$(date "+%u")
-#cp swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
-
-test -e swift/swift-android-install || exit
+test -e swift-android-toolchain || exit
 rm -rf toolchains/swift-android-toolchain-$(date "+%u")
-mv swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
-cp -r swift/swift-android-install toolchains/swift-android-toolchain
+cp swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
 
