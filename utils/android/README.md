@@ -1,5 +1,5 @@
 
-# Build Android toolchain
+# Build Android Toolchain
 
 To build the toolchain run:
 
