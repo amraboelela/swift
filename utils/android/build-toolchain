@@ -13,28 +13,38 @@
 set -e
 
 cd "$(dirname $0)/../.." || exit
-SRC_DIR=$PWD
+SRC_PATH=$PWD
 
-ANDROID_NDK_DIR="${ANDROID_NDK_DIR:?Please set the Android NDK directory in the ANDROID_NDK_DIR environment variable}"
-ANDROID_ICU_DIR="${ANDROID_ICU_DIR:?Please set the libiconv-libicu-android directory in the ANDROID_ICU_DIR environment variable}"
+ANDROID_NDK_PATH="${ANDROID_NDK_PATH:?Please set the Android NDK path in the ANDROID_NDK_PATH environment variable}"
+ANDROID_ICU_PATH="${ANDROID_ICU_PATH:?Please set the libiconv-libicu-android path in the ANDROID_ICU_PATH environment variable}"
 
-SWIFT_TOOLCHAIN_DIR="${SRC_DIR}/../swift-android-toolchain"
-SWIFT_LINUX_DIR="${SRC_DIR}/../build/Ninja-ReleaseAssert/swift-linux-x86_64"
+SWIFT_ANDROID_TOOLCHAIN_PATH="${SRC_PATH}/../swift-android-toolchain"
+SWIFT_ANDROID_BUILD_PATH="${SRC_PATH}/../build/Ninja-ReleaseAssert"
 
 ./utils/build-script \
     -R \
     --android \
-    --android-ndk "${ANDROID_NDK_DIR}" \
+    --android-ndk ${ANDROID_NDK_PATH} \
     --android-api-level 21 \
-    --android-icu-uc "${ANDROID_ICU_DIR}/armeabi-v7a" \
-    --android-icu-uc-include "${ANDROID_ICU_DIR}/armeabi-v7a/icu/source/common" \
-    --android-icu-i18n "${ANDROID_ICU_DIR}/armeabi-v7a" \
-    --android-icu-i18n-include "${ANDROID_ICU_DIR}/armeabi-v7a/icu/source/i18n" || exit
+    --android-icu-uc "${ANDROID_ICU_PATH}/armeabi-v7a" \
+    --android-icu-uc-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/common" \
+    --android-icu-i18n "${ANDROID_ICU_PATH}/armeabi-v7a" \
+    --android-icu-i18n-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/i18n" \
+    --libdispatch --install-libdispatch \
+    --foundation --install-foundation \
+    --llbuild --install-llbuild \
+    --lldb --install-lldb \
+    --swiftpm --install-swiftpm \
+    --xctest --install-xctest \
+    --install-swift \
+    '--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
+    --install-prefix=/usr \
+    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} \
+    --installable-package "${SWIFT_ANDROID_TOOLCHAIN_PATH}.tar.gz" || exit
 
-test -e ${SWIFT_LINUX_DIR} || exit
-rm -rf ${SWIFT_TOOLCHAIN_DIR}
-mkdir -p ${SWIFT_TOOLCHAIN_DIR}/usr
 
-cp -r ${SWIFT_LINUX_DIR}/{bin,lib,include} ${SWIFT_TOOLCHAIN_DIR}/usr
-cp ${ANDROID_ICU_DIR}/armeabi-v7a/*.so ${SWIFT_TOOLCHAIN_DIR}/usr/lib/swift/android
+test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
+test -e ${SWIFT_ANDROID_BUILD_PATH} || exit
+cp -r ${SWIFT_ANDROID_BUILD_PATH}/swift-linux-x86_64/{bin,lib,include} ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
+cp -r ${SWIFT_ANDROID_BUILD_PATH}/swiftpm-linux-x86_64/.bootstrap/lib ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
 
