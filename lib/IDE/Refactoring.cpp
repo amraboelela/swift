@@ -1025,7 +1025,7 @@ getNotableRegions(StringRef SourceText, unsigned NameOffset, StringRef Name,
 
   std::vector<NoteRegion> NoteRegions(Renamer.Ranges.size());
   std::transform(Ranges.begin(), Ranges.end(), NoteRegions.begin(),
-                 [&SM, BufferId](RenameRangeDetail &Detail) -> NoteRegion {
+                 [&SM](RenameRangeDetail &Detail) -> NoteRegion {
     auto Start = SM.getLineAndColumn(Detail.Range.getStart());
     auto End = SM.getLineAndColumn(Detail.Range.getEnd());
     return {Detail.RangeKind, Start.first, Start.second, End.first, End.second, Detail.Index};
@@ -1257,15 +1257,10 @@ struct SimilarExprCollector: public SourceEntityWalker {
 
   /// Find all tokens included by an expression.
   llvm::ArrayRef<Token> getExprSlice(Expr *E) {
-    auto TokenComp = [&](const Token &LHS, SourceLoc Loc) {
-      return SM.isBeforeInBuffer(LHS.getLoc(), Loc);
-    };
     SourceLoc StartLoc = E->getStartLoc();
     SourceLoc EndLoc = E->getEndLoc();
-    auto StartIt = std::lower_bound(AllTokens.begin(), AllTokens.end(),
-                                    StartLoc, TokenComp);
-    auto EndIt = std::lower_bound(AllTokens.begin(), AllTokens.end(),
-                                  EndLoc, TokenComp);
+    auto StartIt = token_lower_bound(AllTokens, StartLoc);
+    auto EndIt = token_lower_bound(AllTokens, EndLoc);
     assert(StartIt->getLoc() == StartLoc);
     assert(EndIt->getLoc() == EndLoc);
     return AllTokens.slice(StartIt - AllTokens.begin(), EndIt - StartIt + 1);
@@ -1333,16 +1328,16 @@ bool RefactoringActionExtractExprBase::performChange() {
     Collector.walk(BS);
 
     if (ExtractRepeated) {
-      unsigned BufferId = *TheFile->getBufferID();
-
       // Tokenize the brace statement; all expressions should have their tokens
       // in this array.
-      std::vector<Token> AllToks(tokenize(Ctx.LangOpts, SM, BufferId,
-          /*start offset*/SM.getLocOffsetInBuffer(BS->getStartLoc(), BufferId),
-          /*end offset*/SM.getLocOffsetInBuffer(BS->getEndLoc(), BufferId)));
+      auto AllTokens = TheFile->getAllTokens();
+      auto StartIt = token_lower_bound(AllTokens, BS->getStartLoc());
+      auto EndIt = token_lower_bound(AllTokens, BS->getEndLoc());
 
       // Collect all expressions we are going to extract.
-      SimilarExprCollector(SM, SelectedExpr, AllToks, AllExpressions).walk(BS);
+      SimilarExprCollector(SM, SelectedExpr,
+        AllTokens.slice(StartIt - AllTokens.begin(), EndIt - StartIt + 1),
+                           AllExpressions).walk(BS);
     } else {
       AllExpressions.insert(SelectedExpr);
     }
@@ -2135,10 +2130,8 @@ resolveRenameLocations(ArrayRef<RenameLoc> RenameLocs, SourceFile &SF,
     });
   }
 
-  std::vector<Token> Tokens =
-      swift::tokenize(SF.getASTContext().LangOpts, SM, BufferID, 0, 0, true);
   NameMatcher Resolver(SF);
-  return Resolver.resolve(UnresolvedLocs, Tokens);
+  return Resolver.resolve(UnresolvedLocs, SF.getAllTokens());
 }
 
 int swift::ide::syntacticRename(SourceFile *SF, ArrayRef<RenameLoc> RenameLocs,

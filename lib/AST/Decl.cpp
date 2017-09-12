@@ -3352,63 +3352,6 @@ void ProtocolDecl::setDefaultWitness(ValueDecl *requirement, Witness witness) {
   (void) pair;
 }
 
-/// \brief Return true if the 'getter' is mutating, i.e. that it requires an
-/// lvalue base to be accessed.
-bool AbstractStorageDecl::isGetterMutating() const {
-  switch (getStorageKind()) {
-  case AbstractStorageDecl::Stored:
-    return false;
-    
-  case AbstractStorageDecl::StoredWithObservers:
-  case AbstractStorageDecl::StoredWithTrivialAccessors:
-  case AbstractStorageDecl::InheritedWithObservers:
-  case AbstractStorageDecl::ComputedWithMutableAddress:
-  case AbstractStorageDecl::Computed:
-  case AbstractStorageDecl::AddressedWithTrivialAccessors:
-  case AbstractStorageDecl::AddressedWithObservers:
-    assert(getGetter());
-    return getGetter()->isMutating();
-    
-  case AbstractStorageDecl::Addressed:
-    assert(getAddressor());
-    return getAddressor()->isMutating();
-  }
-
-  llvm_unreachable("Unhandled AbstractStorageDecl in switch.");
-}
-
-/// \brief Return true if the 'setter' is nonmutating, i.e. that it can be
-/// called even on an immutable base value.
-bool AbstractStorageDecl::isSetterNonMutating() const {
-  // Setters declared in reference type contexts are never mutating.
-  if (auto contextType = getDeclContext()->getDeclaredInterfaceType()) {
-    if (contextType->hasReferenceSemantics())
-      return true;
-  }
-
-  switch (getStorageKind()) {
-  case AbstractStorageDecl::Stored:
-  case AbstractStorageDecl::StoredWithTrivialAccessors:
-    // Instance member setters are mutating; static property setters and
-    // top-level setters are not.
-    return !isInstanceMember();
-    
-  case AbstractStorageDecl::StoredWithObservers:
-  case AbstractStorageDecl::InheritedWithObservers:
-  case AbstractStorageDecl::Computed:
-    assert(getSetter());
-    return !getSetter()->isMutating();
-    
-  case AbstractStorageDecl::Addressed:
-  case AbstractStorageDecl::AddressedWithTrivialAccessors:
-  case AbstractStorageDecl::AddressedWithObservers:
-  case AbstractStorageDecl::ComputedWithMutableAddress:
-    assert(getMutableAddressor());
-    return !getMutableAddressor()->isMutating();
-  }
-  llvm_unreachable("bad storage kind");
-}
-
 FuncDecl *AbstractStorageDecl::getAccessorFunction(AccessorKind kind) const {
   switch (kind) {
   case AccessorKind::IsGetter: return getGetter();
@@ -5341,18 +5284,6 @@ PrecedenceGroupDecl::PrecedenceGroupDecl(DeclContext *dc,
          higherThan.size() * sizeof(Relation));
   memcpy(getLowerThanBuffer(), lowerThan.data(),
          lowerThan.size() * sizeof(Relation));
-}
-
-void PrecedenceGroupDecl::collectOperatorKeywordRanges(
-                                    SmallVectorImpl<CharSourceRange> &Ranges) {
-  auto AddToRange = [&] (SourceLoc Loc, StringRef Word) {
-    if (Loc.isValid())
-      Ranges.push_back(CharSourceRange(Loc, strlen(Word.data())));
-  };
-  AddToRange(AssociativityKeywordLoc, "associativity");
-  AddToRange(AssignmentKeywordLoc, "assignment");
-  AddToRange(HigherThanLoc, "higherThan");
-  AddToRange(LowerThanLoc, "lowerThan");
 }
 
 bool FuncDecl::isDeferBody() const {

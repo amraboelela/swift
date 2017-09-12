@@ -38,12 +38,10 @@ static bool inheritsConformanceTo(ClassDecl *target, ProtocolDecl *proto) {
   if (!target->hasSuperclass())
     return false;
 
-  auto &C = target->getASTContext();
   auto *superclassDecl = target->getSuperclassDecl();
   auto *superclassModule = superclassDecl->getModuleContext();
   return (bool)superclassModule->lookupConformance(target->getSuperclass(),
-                                                   proto,
-                                                   C.getLazyResolver());
+                                                   proto);
 }
 
 /// Returns whether the superclass of the given class conforms to Encodable.
@@ -246,7 +244,22 @@ validateCodingKeysEnum(TypeChecker &tc, EnumDecl *codingKeysDecl,
   if (!properties.empty() &&
       proto->isSpecificProtocol(KnownProtocolKind::Decodable)) {
     for (auto it = properties.begin(); it != properties.end(); ++it) {
-      if (it->second->getParentInitializer() != nullptr) {
+      auto *varDecl = it->second;
+
+      // Optional vars (not lets!) have an implicit default value of nil.
+      if (!varDecl->isLet()) {
+        if (!varDecl->hasType())
+          tc.validateDecl(varDecl);
+
+        if (varDecl->hasType()) {
+          auto varTypeDecl = varDecl->getType()->getAnyNominal();
+          if (varTypeDecl == tc.Context.getOptionalDecl() ||
+              varTypeDecl == tc.Context.getImplicitlyUnwrappedOptionalDecl())
+            continue;
+        }
+      }
+
+      if (varDecl->getParentInitializer() != nullptr) {
         // Var has a default value.
         continue;
       }

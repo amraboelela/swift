@@ -411,6 +411,10 @@ public:
       Result.IndentToStrip = 0;
       return Result;
     }
+
+    SourceLoc getEndLoc() {
+      return Loc.getAdvancedLoc(Length);
+    }
   };
   
   /// \brief Compute the bytes that the actual string literal should codegen to.
@@ -532,6 +536,16 @@ private:
   bool tryLexConflictMarker();
 };
   
+/// Given an ordered token \param Array , get the iterator pointing to the first
+/// token that is not before \param Loc .
+template<typename ArrayTy, typename Iterator = typename ArrayTy::iterator>
+Iterator token_lower_bound(ArrayTy &Array, SourceLoc Loc) {
+  return std::lower_bound(Array.begin(), Array.end(), Loc,
+    [](const Token &T, SourceLoc L) {
+      return T.getLoc().getOpaquePointerValue() < L.getOpaquePointerValue();
+  });
+}
+
 } // end namespace swift
 
 #endif

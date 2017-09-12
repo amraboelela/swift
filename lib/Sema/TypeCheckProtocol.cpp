@@ -5518,7 +5518,7 @@ Optional<ProtocolConformanceRef> TypeChecker::conformsToProtocol(
 
   // Look up conformance in the module.
   ModuleDecl *M = DC->getParentModule();
-  auto lookupResult = M->lookupConformance(T, Proto, this);
+  auto lookupResult = M->lookupConformance(T, Proto);
   if (!lookupResult) {
     if (ComplainLoc.isValid())
       diagnoseConformanceFailure(*this, T, Proto, DC, ComplainLoc);
@@ -6835,6 +6835,7 @@ void TypeChecker::recordKnownWitness(NormalProtocolConformance *conformance,
                                      ValueDecl *req, ValueDecl *witness) {
   // Match the witness. This should never fail, but it does allow renaming
   // (because property behaviors rely on renaming).
+  validateDecl(witness);
   auto dc = conformance->getDeclContext();
   RequirementEnvironment reqEnvironment(*this, dc, req, conformance);
   auto match = matchWitness(*this, conformance->getProtocol(), conformance,

@@ -174,7 +174,7 @@ namespace swift {
 
     /// \brief The upper bound to number of sub-expressions unsolved
     /// before termination of the shrink phrase of the constraint solver.
-    unsigned SolverShrinkUnsolvedThreshold = 5;
+    unsigned SolverShrinkUnsolvedThreshold = 10;
 
     /// The maximum depth to which to test decl circularity.
     unsigned MaxCircularityDepth = 500;
@@ -244,6 +244,11 @@ namespace swift {
     /// FIXME: Remove this flag when void subscripts are implemented.
     /// This is used to guard preemptive testing for the fix-it.
     bool FixStringToSubstringConversions = false;
+
+    /// Whether to keep track of a refined token stream in SourceFile while
+    /// parsing. This is set true usually for tooling purposes like semantic
+    /// coloring.
+    bool KeepTokensInSourceFile = false;
 
     /// Sets the target we are building for and updates platform conditions
     /// to match.

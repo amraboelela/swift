@@ -2270,6 +2270,14 @@ public:
                                      TypeMatchOptions flags,
                                      ConstraintLocatorBuilder locator);
 
+  /// \brief Subroutine of \c matchTypes(), used to bind a type to a
+  /// type variable.
+  SolutionKind
+  matchTypesBindTypeVar(TypeVariableType *typeVar, Type type,
+                        ConstraintKind kind, TypeMatchOptions flags,
+                        ConstraintLocatorBuilder locator,
+                        std::function<SolutionKind()> formUnsolvedResult);
+
 public: // FIXME: public due to statics in CSSimplify.cpp
   /// \brief Attempt to match up types \c type1 and \c type2, which in effect
   /// is solving the given type constraint between these two types.
@@ -2611,7 +2619,8 @@ private:
       }
     }
 
-    void dump(llvm::raw_ostream &out, unsigned indent =0) const {
+    void dump(llvm::raw_ostream &out,
+              unsigned indent = 0) const LLVM_ATTRIBUTE_USED {
       out.indent(indent);
       if (FullyBound)
         out << "fully_bound ";
@@ -2655,13 +2664,18 @@ private:
       }
     }
 
+    void dump(ConstraintSystem *cs,
+              unsigned indent = 0) const LLVM_ATTRIBUTE_USED {
+      dump(cs->getASTContext().TypeCheckerDebug->getStream());
+    }
+
     void dump(TypeVariableType *typeVar, llvm::raw_ostream &out,
-              unsigned indent =0) const {
+              unsigned indent = 0) const LLVM_ATTRIBUTE_USED {
       out.indent(indent);
       out << "(";
       if (typeVar)
         out << "$T" << typeVar->getImpl().getID();
-      dump(out);
+      dump(out, 1);
       out << ")\n";
     }
   };

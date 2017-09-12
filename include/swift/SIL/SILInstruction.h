@@ -68,6 +68,12 @@ enum class SILInstructionKind : std::underlying_type<ValueKind>::type {
 #include "SILNodes.def"
 };
 
+/// Map SILInstruction's mnemonic name to its SILInstructionKind.
+SILInstructionKind getSILInstructionKind(StringRef InstName);
+
+/// Map SILInstructionKind to a corresponding SILInstruction name.
+StringRef getSILInstructionName(SILInstructionKind Kind);
+
 /// This is the root class for all instructions that can be used as the contents
 /// of a Swift SILBasicBlock.
 class SILInstruction : public ValueBase,public llvm::ilist_node<SILInstruction>{
@@ -96,10 +102,21 @@ class SILInstruction : public ValueBase,public llvm::ilist_node<SILInstruction>{
   /// SILClonerWithScope instead.
   void setDebugScope(SILBuilder &B, const SILDebugScope *DS);
 
+  /// Total number of created and deleted SILInstructions.
+  /// It is used only for collecting the compiler statistics.
+  static int NumCreatedInstructions;
+  static int NumDeletedInstructions;
+
 protected:
   SILInstruction(ValueKind Kind, SILDebugLocation DebugLoc,
                  SILType Ty = SILType())
-      : ValueBase(Kind, Ty), ParentBB(0), Location(DebugLoc) {}
+      : ValueBase(Kind, Ty), ParentBB(0), Location(DebugLoc) {
+    NumCreatedInstructions++;
+  }
+
+  ~SILInstruction() {
+    NumDeletedInstructions++;
+  }
 
 public:
   /// Instructions should be allocated using a dedicated instruction allocation
@@ -335,6 +352,16 @@ public:
   /// Verify that all operands of this instruction have compatible ownership
   /// with this instruction.
   void verifyOperandOwnership() const;
+
+  /// Get the number of created SILInstructions.
+  static int getNumCreatedInstructions() {
+    return NumCreatedInstructions;
+  }
+
+  /// Get the number of deleted SILInstructions.
+  static int getNumDeletedInstructions() {
+    return NumDeletedInstructions;
+  }
 };
 
 /// Returns the combined behavior of \p B1 and \p B2.
@@ -6527,6 +6554,16 @@ public:
   /// The substitutions used to bind the generic arguments of this function.
   MutableArrayRef<Substitution> getSubstitutions() const {
     FOREACH_IMPL_RETURN(getSubstitutions());
+  }
+
+  /// Return a begin iterator for the substitution array.
+  auto subs_begin() const -> decltype(getSubstitutions().begin()) {
+    return getSubstitutions().begin();
+  }
+
+  /// Return an end iterator for the substitution array.
+  auto subs_end() const -> decltype(getSubstitutions().end()) {
+    return getSubstitutions().end();
   }
 
   /// The arguments passed to this instruction.

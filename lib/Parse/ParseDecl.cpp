@@ -187,7 +187,7 @@ bool Parser::parseTopLevel() {
 
   // Prime the lexer.
   if (Tok.is(tok::NUM_TOKENS))
-    consumeToken();
+    consumeTokenWithoutFeedingReceiver();
 
   // Parse the body of the file.
   SmallVector<ASTNode, 128> Items;
@@ -268,6 +268,10 @@ bool Parser::parseTopLevel() {
   // attach it to the token.
   State->markParserPosition(Tok.getCommentRange().getStart(), PreviousLoc,
                             InPoundLineEnvironment);
+
+  // If we are done parsing the whole file, finalize the token receiver.
+  if (Tok.is(tok::eof))
+    TokReceiver->finalize();
 
   return FoundTopLevelCodeToExecute;
 }
@@ -2511,7 +2515,7 @@ void Parser::parseDeclDelayed() {
 
   // ParserPositionRAII needs a primed parser to restore to.
   if (Tok.is(tok::NUM_TOKENS))
-    consumeToken();
+    consumeTokenWithoutFeedingReceiver();
 
   // Ensure that we restore the parser state at exit.
   ParserPositionRAII PPR(*this);
@@ -3751,6 +3755,11 @@ bool Parser::parseGetSetImpl(ParseDeclOptions Flags,
         return true;
       }
 
+      // Correct the token kind to be contextual keyword.
+      if (AccessorKeywordLoc.isValid()) {
+        Tok.setKind(tok::contextual_keyword);
+      }
+
       FuncDecl *&TheDecl = *TheDeclPtr;
       SourceLoc Loc = consumeToken();
 
@@ -3868,6 +3877,11 @@ bool Parser::parseGetSetImpl(ParseDeclOptions Flags,
       Kind = AccessorKind::IsGetter;
       TheDeclPtr = &accessors.Get;
       isImplicitGet = true;
+    }
+
+    // Set the contextual keyword kind properly.
+    if (AccessorKeywordLoc.isValid()) {
+      Tok.setKind(tok::contextual_keyword);
     }
 
     IsFirstAccessor = false;
@@ -3993,7 +4007,7 @@ void Parser::parseAccessorBodyDelayed(AbstractFunctionDecl *AFD) {
 
   // ParserPositionRAII needs a primed parser to restore to.
   if (Tok.is(tok::NUM_TOKENS))
-    consumeToken();
+    consumeTokenWithoutFeedingReceiver();
 
   // Ensure that we restore the parser state at exit.
   ParserPositionRAII PPR(*this);
@@ -4937,7 +4951,7 @@ bool Parser::parseAbstractFunctionBodyDelayed(AbstractFunctionDecl *AFD) {
 
   // ParserPositionRAII needs a primed parser to restore to.
   if (Tok.is(tok::NUM_TOKENS))
-    consumeToken();
+    consumeTokenWithoutFeedingReceiver();
 
   // Ensure that we restore the parser state at exit.
   ParserPositionRAII PPR(*this);
@@ -6040,6 +6054,9 @@ Parser::parseDeclPrecedenceGroup(ParseDeclOptions flags,
     auto attrName = Tok.getText();
 
     if (attrName == "associativity") {
+      // "associativity" is considered as a contextual keyword.
+      TokReceiver->registerTokenKindChange(Tok.getLoc(),
+                                           tok::contextual_keyword);
       parseAttributePrefix(associativityKeywordLoc);
 
       if (!Tok.is(tok::identifier)) {
@@ -6065,6 +6082,9 @@ Parser::parseDeclPrecedenceGroup(ParseDeclOptions flags,
     if (attrName == "assignment") {
       parseAttributePrefix(assignmentKeywordLoc);
 
+      // "assignment" is considered as a contextual keyword.
+      TokReceiver->registerTokenKindChange(assignmentKeywordLoc,
+                                           tok::contextual_keyword);
       if (consumeIf(tok::kw_true, assignmentValueLoc)) {
         assignment = true;
       } else if (consumeIf(tok::kw_false, assignmentValueLoc)) {
@@ -6079,6 +6099,9 @@ Parser::parseDeclPrecedenceGroup(ParseDeclOptions flags,
     bool isLowerThan = false;
     if (attrName == "higherThan" ||
         (isLowerThan = (attrName == "lowerThan"))) {
+      // "lowerThan" and "higherThan" are contextual keywords.
+      TokReceiver->registerTokenKindChange(Tok.getLoc(),
+                                           tok::contextual_keyword);
       parseAttributePrefix(isLowerThan ? lowerThanKeywordLoc
                                        : higherThanKeywordLoc);
       auto &relations = (isLowerThan ? lowerThan : higherThan);

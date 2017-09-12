@@ -677,7 +677,7 @@ static bool doesStorageProduceLValue(TypeChecker &TC,
   // getter and setter are nonmutating.
   return !storage->hasStorage() &&
       !storage->isGetterMutating() &&
-      storage->isSetterNonMutating();
+      !storage->isSetterMutating();
 }
 
 Type TypeChecker::getUnopenedTypeOfReference(VarDecl *value, Type baseType,
@@ -1735,8 +1735,7 @@ Type simplifyTypeImpl(ConstraintSystem &cs, Type type, Fn getFixedTypeFn) {
         // If we're accessing a type member of the IUO itself,
         // stop here. Ugh...
         if (module->lookupConformance(lookupBaseType,
-                                      assocType->getProtocol(),
-                                      &cs.getTypeChecker())) {
+                                      assocType->getProtocol())) {
           break;
         }
 
