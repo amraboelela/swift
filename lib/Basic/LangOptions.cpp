@@ -120,7 +120,7 @@ bool LangOptions::
 checkPlatformCondition(PlatformConditionKind Kind, StringRef Value) const {
   // Check a special case that "macOS" is an alias of "OSX".
   if (Kind == PlatformConditionKind::OS && Value == "macOS")
-    return true;
+    return checkPlatformCondition(Kind, "OSX");
 
   for (auto &Opt : reversed(PlatformConditionValues)) {
     if (Opt.first == Kind)
