@@ -30,7 +30,6 @@ SWIFT_ANDROID_BUILD_PATH="${SRC_PATH}/../build/Ninja-ReleaseAssert"
     --android-icu-uc-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/common" \
     --android-icu-i18n "${ANDROID_ICU_PATH}/armeabi-v7a" \
     --android-icu-i18n-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/i18n" \
-    --libdispatch --install-libdispatch \
     --foundation --install-foundation \
     --llbuild --install-llbuild \
     --lldb --install-lldb \
