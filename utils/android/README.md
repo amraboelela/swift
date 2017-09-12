@@ -1,9 +1,10 @@
-##Build Android toolchain
+
+# Build Android toolchain
 
 To build the toolchain run:
 
 ```
-android$ ./build_toolchain
+android$ ./build-toolchain
 ```
 
 It will be built on:
