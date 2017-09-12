@@ -13,13 +13,13 @@
 set -e
 
 cd "$(dirname $0)/../.." || exit
-SRC_DIR=$PWD
+SRC_PATH=$PWD
 
-ANDROID_NDK_PATH="${ANDROID_NDK_DIR:?Please set the Android NDK directory in the ANDROID_NDK_DIR environment variable}"
-ANDROID_ICU_PATH="${ANDROID_ICU_DIR:?Please set the libiconv-libicu-android directory in the ANDROID_ICU_DIR environment variable}"
+ANDROID_NDK_PATH="${ANDROID_NDK_PATH:?Please set the Android NDK path in the ANDROID_NDK_PATH environment variable}"
+ANDROID_ICU_PATH="${ANDROID_ICU_PATH:?Please set the libiconv-libicu-android path in the ANDROID_ICU_PATH environment variable}"
 
-SWIFT_ANDROID_TOOLCHAIN_PATH="${SRC_DIR}/../swift-android-toolchain"
-SWIFT_ANDROID_BUILD_PATH="${SRC_DIR}/../build/Ninja-ReleaseAssert"
+SWIFT_ANDROID_TOOLCHAIN_PATH="${SRC_PATH}/../swift-android-toolchain"
+SWIFT_ANDROID_BUILD_PATH="${SRC_PATH}/../build/Ninja-ReleaseAssert"
 
 ./utils/build-script \
     -R \
@@ -43,7 +43,7 @@ SWIFT_ANDROID_BUILD_PATH="${SRC_DIR}/../build/Ninja-ReleaseAssert"
     --installable-package "${SWIFT_ANDROID_TOOLCHAIN_PATH}.tar.gz" || exit
 
 
-test -e ${SWIFT_ANDROID_TOOLCHAIN_DIR} || exit
+test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
 test -e ${SWIFT_ANDROID_BUILD_PATH} || exit
 cp -r ${SWIFT_ANDROID_BUILD_PATH}/swift-linux-x86_64/{bin,lib,include} ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
 cp -r ${SWIFT_ANDROID_BUILD_PATH}/swiftpm-linux-x86_64/.bootstrap/lib ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
