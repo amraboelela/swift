@@ -12,14 +12,12 @@
 
 set -e
 
-cd "$(dirname $0)/../.." || exit
-SRC_PATH=$PWD
-
+SWIFT_PATH="${SWIFT_PATH:?Please provide the swift source path in SWIFT_PATH environment variable}"
 ANDROID_NDK_PATH="${ANDROID_NDK_PATH:?Please set the Android NDK path in the ANDROID_NDK_PATH environment variable}"
 ANDROID_ICU_PATH="${ANDROID_ICU_PATH:?Please set the libiconv-libicu-android path in the ANDROID_ICU_PATH environment variable}"
 
-SWIFT_ANDROID_TOOLCHAIN_PATH="${SRC_PATH}/../swift-android-toolchain"
-SWIFT_ANDROID_BUILD_PATH="${SRC_PATH}/../build/Ninja-ReleaseAssert"
+SWIFT_ANDROID_TOOLCHAIN_PATH="${SWIFT_PATH}/swift-android-toolchain"
+SWIFT_ANDROID_BUILD_PATH="${SWIFT_PATH}/build/Ninja-ReleaseAssert"
 
 ./utils/build-script \
     -R \
