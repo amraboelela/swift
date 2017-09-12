@@ -38,10 +38,7 @@ SWIFT_ANDROID_BUILD_PATH="${SRC_PATH}/../build/Ninja-ReleaseAssert"
     --xctest --install-xctest \
     --install-swift \
     '--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
-    --install-prefix=/usr \
-    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} \
-    --installable-package "${SWIFT_ANDROID_TOOLCHAIN_PATH}.tar.gz" || exit
-
+    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
 
 test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
 test -e ${SWIFT_ANDROID_BUILD_PATH} || exit
