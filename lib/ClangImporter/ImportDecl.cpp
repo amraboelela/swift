@@ -35,6 +35,7 @@
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/Stmt.h"
 #include "swift/AST/Types.h"
+#include "swift/Basic/Defer.h"
 #include "swift/Basic/PrettyStackTrace.h"
 #include "swift/ClangImporter/ClangModule.h"
 #include "swift/Parse/Lexer.h"
@@ -1211,34 +1212,31 @@ createValueConstructor(ClangImporter::Implementation &Impl,
   return constructor;
 }
 
-static void populateInheritedTypes(NominalTypeDecl *nominal,
-                                   ArrayRef<ProtocolDecl *> protocols,
-                                   Type superclass = Type()) {
+/// Add protocol conformances and synthesized protocol attributes
+static void
+populateInheritedTypes(ClangImporter::Implementation &Impl,
+                       NominalTypeDecl *nominal,
+                       ArrayRef<KnownProtocolKind> synthesizedProtocolAttrs,
+                       Type superclass = Type()) {
   SmallVector<TypeLoc, 4> inheritedTypes;
   if (superclass)
     inheritedTypes.push_back(TypeLoc::withoutLoc(superclass));
-  inheritedTypes.resize(protocols.size() + (superclass ? 1 : 0));
-  for_each(MutableArrayRef<TypeLoc>(inheritedTypes).drop_front(superclass?1:0),
-           protocols,
-           [](TypeLoc &tl, ProtocolDecl *proto) {
-             tl = TypeLoc::withoutLoc(proto->getDeclaredType());
-           });
+
+  for (auto protoKind : synthesizedProtocolAttrs) {
+    if (auto *protoDecl = Impl.SwiftContext.getProtocol(protoKind)) {
+      auto protoType = protoDecl->getDeclaredType();
+      inheritedTypes.push_back(TypeLoc::withoutLoc(protoType));
+    }
+  }
+
   nominal->setInherited(nominal->getASTContext().AllocateCopy(inheritedTypes));
   nominal->setCheckedInheritanceClause();
-}
-
-/// Add protocol conformances and synthesized protocol attributes
-static void
-addProtocolsToStruct(ClangImporter::Implementation &Impl,
-                     StructDecl *structDecl,
-                     ArrayRef<KnownProtocolKind> synthesizedProtocolAttrs,
-                     ArrayRef<ProtocolDecl *> protocols) {
-  populateInheritedTypes(structDecl, protocols);
 
   // Note synthesized protocols
-  for (auto kind : synthesizedProtocolAttrs)
-    structDecl->getAttrs().add(new (Impl.SwiftContext)
-                                   SynthesizedProtocolAttr(kind, &Impl));
+  for (auto kind : synthesizedProtocolAttrs) {
+    nominal->getAttrs().add(new (Impl.SwiftContext)
+                                 SynthesizedProtocolAttr(kind, &Impl));
+  }
 }
 
 /// Add a synthesized typealias to the given nominal type.
@@ -1263,7 +1261,6 @@ static void addSynthesizedTypealias(NominalTypeDecl *nominal, Identifier name,
 /// \param structDecl the struct to make a raw value for
 /// \param underlyingType the type of the raw value
 /// \param synthesizedProtocolAttrs synthesized protocol attributes to add
-/// \param protocols the protocols to make this struct conform to
 /// \param setterAccess the access level of the raw value's setter
 ///
 /// This will perform most of the work involved in making a new Swift struct
@@ -1274,11 +1271,11 @@ static void addSynthesizedTypealias(NominalTypeDecl *nominal, Identifier name,
 static void makeStructRawValued(
     ClangImporter::Implementation &Impl, StructDecl *structDecl,
     Type underlyingType, ArrayRef<KnownProtocolKind> synthesizedProtocolAttrs,
-    ArrayRef<ProtocolDecl *> protocols,
     MakeStructRawValuedOptions options = getDefaultMakeStructRawValuedOptions(),
     AccessLevel setterAccess = AccessLevel::Private) {
   auto &ctx = Impl.SwiftContext;
-  addProtocolsToStruct(Impl, structDecl, synthesizedProtocolAttrs, protocols);
+
+  populateInheritedTypes(Impl, structDecl, synthesizedProtocolAttrs);
 
   // Create a variable to store the underlying value.
   VarDecl *var;
@@ -1355,7 +1352,6 @@ static ConstructorDecl *createRawValueBridgingConstructor(
 /// \param storedUnderlyingType the type of the stored raw value
 /// \param bridgedType the type of the 'rawValue' computed property bridge
 /// \param synthesizedProtocolAttrs synthesized protocol attributes to add
-/// \param protocols the protocols to make this struct conform to
 ///
 /// This will perform most of the work involved in making a new Swift struct
 /// be backed by a stored raw value and computed raw value of bridged type.
@@ -1367,9 +1363,10 @@ static void makeStructRawValuedWithBridge(
     ClangImporter::Implementation &Impl, StructDecl *structDecl,
     Type storedUnderlyingType, Type bridgedType,
     ArrayRef<KnownProtocolKind> synthesizedProtocolAttrs,
-    ArrayRef<ProtocolDecl *> protocols, bool makeUnlabeledValueInit = false) {
+    bool makeUnlabeledValueInit = false) {
   auto &ctx = Impl.SwiftContext;
-  addProtocolsToStruct(Impl, structDecl, synthesizedProtocolAttrs, protocols);
+
+  populateInheritedTypes(Impl, structDecl, synthesizedProtocolAttrs);
 
   auto storedVarName = ctx.getIdentifier("_rawValue");
   auto computedVarName = ctx.Id_rawValue;
@@ -2410,7 +2407,6 @@ namespace {
       if (!dc)
         return nullptr;
       
-      ASTContext &ctx = Impl.SwiftContext;
       auto name = importedName.getDeclName().getBaseIdentifier();
 
       // Create the enum declaration and record it.
@@ -2439,19 +2435,14 @@ namespace {
           AccessLevel::Public, Loc, name, Loc, None, nullptr, dc);
         structDecl->computeType();
 
-        ProtocolDecl *protocols[]
-          = {ctx.getProtocol(KnownProtocolKind::RawRepresentable),
-             ctx.getProtocol(KnownProtocolKind::Equatable)};
-        if (!protocols[0] || !protocols[1])
-          return nullptr;
-
         auto options = getDefaultMakeStructRawValuedOptions();
         options |= MakeStructRawValuedFlags::MakeUnlabeledValueInit;
         options -= MakeStructRawValuedFlags::IsLet;
         options -= MakeStructRawValuedFlags::IsImplicit;
 
         makeStructRawValued(Impl, structDecl, underlyingType,
-                            {KnownProtocolKind::RawRepresentable}, protocols,
+                            {KnownProtocolKind::RawRepresentable,
+                             KnownProtocolKind::Equatable},
                             options, /*setterAccess=*/AccessLevel::Public);
 
         result = structDecl;
@@ -2494,15 +2485,8 @@ namespace {
           errorWrapper->setAccess(AccessLevel::Public);
 
           // Add inheritance clause.
-          TypeLoc inheritedTypes[1] = {
-            TypeLoc::withoutLoc(bridgedNSError->getDeclaredType())
-          };
-          errorWrapper->setInherited(C.AllocateCopy(inheritedTypes));
-          errorWrapper->setCheckedInheritanceClause();
-
-          // Set up error conformance to be lazily expanded
-          errorWrapper->getAttrs().add(new (C) SynthesizedProtocolAttr(
-              KnownProtocolKind::BridgedStoredNSError, &Impl));
+          populateInheritedTypes(Impl, errorWrapper,
+                                 {KnownProtocolKind::BridgedStoredNSError});
 
           // Create the _nsError member.
           //   public let _nsError: NSError
@@ -2564,6 +2548,10 @@ namespace {
         if (errorWrapper) {
           inheritedTypes.push_back(
             TypeLoc::withoutLoc(errorCodeProto->getDeclaredType()));
+
+          enumDecl->getAttrs().add(new (Impl.SwiftContext)
+                  SynthesizedProtocolAttr(KnownProtocolKind::ErrorCodeProtocol,
+                                          &Impl));
         }
         enumDecl->setInherited(C.AllocateCopy(inheritedTypes));
         enumDecl->setCheckedInheritanceClause();
@@ -4805,14 +4793,8 @@ SwiftDeclConverter::importCFClassType(const clang::TypedefNameDecl *decl,
   addObjCAttribute(theClass, None);
   Impl.registerExternalDecl(theClass);
 
-  auto *cfObjectProto =
-      Impl.SwiftContext.getProtocol(KnownProtocolKind::CFObject);
-  if (cfObjectProto) {
-    populateInheritedTypes(theClass, cfObjectProto, superclass);
-    auto *attr = new (Impl.SwiftContext) SynthesizedProtocolAttr(
-        KnownProtocolKind::CFObject, &Impl);
-    theClass->getAttrs().add(attr);
-  }
+  populateInheritedTypes(Impl, theClass, {KnownProtocolKind::CFObject},
+                         superclass);
 
   // Look for bridging attributes on the clang record.  We can
   // just check the most recent redeclaration, which will inherit
@@ -5000,15 +4982,11 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
 
   // Determine the set of protocols to which the synthesized
   // type will conform.
-  SmallVector<ProtocolDecl *, 4> protocols;
   SmallVector<KnownProtocolKind, 4> synthesizedProtocols;
 
   // Local function to add a known protocol.
   auto addKnown = [&](KnownProtocolKind kind) {
-    if (auto proto = ctx.getProtocol(kind)) {
-      protocols.push_back(proto);
-      synthesizedProtocols.push_back(kind);
-    }
+    synthesizedProtocols.push_back(kind);
   };
 
   // Add conformances that are always available.
@@ -5031,7 +5009,6 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
     if (conformsToProtocolInOriginalModule(computedNominal, proto,
                                            Impl.tryLoadFoundationModule(),
                                            Impl.getTypeResolver())) {
-      protocols.push_back(proto);
       synthesizedProtocols.push_back(kind);
       return true;
     }
@@ -5054,13 +5031,13 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
       options |= MakeStructRawValuedFlags::MakeUnlabeledValueInit;
 
     makeStructRawValued(Impl, structDecl, storedUnderlyingType,
-                        synthesizedProtocols, protocols, options);
+                        synthesizedProtocols, options);
   } else {
     // We need to make a stored rawValue or storage type, and a
     // computed one of bridged type.
     makeStructRawValuedWithBridge(Impl, structDecl, storedUnderlyingType,
                                   computedPropertyUnderlyingType,
-                                  synthesizedProtocols, protocols,
+                                  synthesizedProtocols,
                                   /*makeUnlabeledValueInit=*/unlabeledCtor);
 
     if (transferredObjCBridgeable)
@@ -5219,9 +5196,8 @@ SwiftDeclConverter::importAsOptionSetType(DeclContext *dc, Identifier name,
       decl, AccessLevel::Public, Loc, name, Loc, None, nullptr, dc);
   structDecl->computeType();
 
-  ProtocolDecl *protocols[] = {ctx.getProtocol(KnownProtocolKind::OptionSet)};
   makeStructRawValued(Impl, structDecl, underlyingType,
-                      {KnownProtocolKind::OptionSet}, protocols);
+                      {KnownProtocolKind::OptionSet});
   auto selfType = structDecl->getDeclaredInterfaceType();
   addSynthesizedTypealias(structDecl, ctx.Id_Element, selfType);
   addSynthesizedTypealias(structDecl, ctx.Id_ArrayLiteralElement, selfType);
@@ -7358,17 +7334,92 @@ void ClangImporter::Implementation::finishPendingActions() {
   }
 }
 
-void ClangImporter::Implementation::finishNormalConformance(
-    NormalProtocolConformance *conformance,
-    uint64_t unused) {
-  (void)unused;
-  const ProtocolDecl *proto = conformance->getProtocol();
+/// Look up associated type requirements in the conforming type.
+static void finishTypeWitnesses(
+    NormalProtocolConformance *conformance) {
+  auto *proto = conformance->getProtocol();
+  auto *nominal = conformance->getType()->getAnyNominal();
 
-  PrettyStackTraceType trace(SwiftContext, "completing conformance for",
-                             conformance->getType());
-  PrettyStackTraceDecl traceTo("... to", proto);
+  for (auto *req : proto->getMembers()) {
+    if (auto *assocType = dyn_cast<AssociatedTypeDecl>(req)) {
+      // FIXME: This should not happen?
+      if (conformance->hasTypeWitness(assocType)) continue;
 
-  // Create witnesses for requirements not already met.
+      bool satisfied = false;
+
+      for (auto member : nominal->lookupDirect(assocType->getFullName())) {
+        auto memberType = dyn_cast<TypeDecl>(member);
+        if (!memberType) continue;
+
+        conformance->setTypeWitness(assocType,
+                                    nominal->mapTypeIntoContext(
+                                      memberType->getDeclaredInterfaceType()),
+                                    memberType);
+        satisfied = true;
+        break;
+      }
+
+      if (!satisfied) {
+        llvm::errs() << ("Cannot look up associated type for "
+                         "imported conformance:\n");
+        conformance->getType().dump(llvm::errs());
+        assocType->dump(llvm::errs());
+        abort();
+      }
+    }
+  }
+}
+
+/// Make sure any inherited conformances also get completed, if necessary.
+static void finishInheritedConformances(
+    NormalProtocolConformance *conformance) {
+  auto *proto = conformance->getProtocol();
+
+  SmallVector<ProtocolDecl *, 2> inheritedProtos;
+  for (auto *inherited : proto->getInheritedProtocols())
+    inheritedProtos.push_back(inherited);
+
+  // Sort for deterministic import.
+  ProtocolType::canonicalizeProtocols(inheritedProtos);
+
+  // Schedule any that aren't complete.
+  for (auto *inherited : inheritedProtos) {
+    ModuleDecl *M = conformance->getDeclContext()->getParentModule();
+    auto inheritedConformance = M->lookupConformance(conformance->getType(),
+                                                     inherited);
+    assert(inheritedConformance && inheritedConformance->isConcrete() &&
+           "inherited conformance not found");
+  }
+}
+
+/// Collect conformances for the requirement signature.
+static void finishSignatureConformances(
+    NormalProtocolConformance *conformance) {
+  auto *proto = conformance->getProtocol();
+
+  SmallVector<ProtocolConformanceRef, 4> reqConformances;
+  for (const auto &req : proto->getRequirementSignature()) {
+    if (req.getKind() != RequirementKind::Conformance)
+      continue;
+
+    assert(req.getFirstType()->isEqual(proto->getSelfInterfaceType()));
+    auto reqProto = req.getSecondType()->castTo<ProtocolType>()->getDecl();
+
+    ModuleDecl *M = conformance->getDeclContext()->getParentModule();
+    auto reqConformance = M->lookupConformance(conformance->getType(),
+                                               reqProto);
+    assert(reqConformance && reqConformance->isConcrete() &&
+           "required conformance not found");
+    reqConformances.push_back(*reqConformance);
+  }
+  conformance->setSignatureConformances(reqConformances);
+}
+
+/// Create witnesses for requirements not already met.
+static void finishMissingOptionalWitnesses(
+    NormalProtocolConformance *conformance) {
+  auto *proto = conformance->getProtocol();
+
   for (auto req : proto->getMembers()) {
     auto valueReq = dyn_cast<ValueDecl>(req);
     if (!valueReq)
@@ -7391,60 +7442,37 @@ void ClangImporter::Implementation::finishNormalConformance(
       auto witness = conformance->getWitness(valueReq, nullptr).getDecl();
       if (auto ctor = dyn_cast_or_null<ConstructorDecl>(witness)) {
         if (!ctor->getAttrs().hasAttribute<RequiredAttr>()) {
-          ctor->getAttrs().add(
-            new (SwiftContext) RequiredAttr(/*IsImplicit=*/true));
+          auto &ctx = proto->getASTContext();
+          ctor->getAttrs().add(new (ctx) RequiredAttr(/*IsImplicit=*/true));
         }
       }
     }
   }
+}
 
-  // And make sure any inherited conformances also get completed, if necessary.
-  SmallVector<ProtocolDecl *, 8> inheritedProtos;
-  for (auto *inherited : proto->getInheritedProtocols()) {
-    inheritedProtos.push_back(inherited);
-  }
-  // Sort for deterministic import.
-  llvm::array_pod_sort(inheritedProtos.begin(),
-                       inheritedProtos.end(),
-                       [](ProtocolDecl * const *left,
-                          ProtocolDecl * const *right) -> int {
-    // We know all Objective-C protocols in a translation unit have unique
-    // names, so go by the Objective-C name.
-    auto getDeclName = [](const ProtocolDecl *proto) -> StringRef {
-      if (auto *objCAttr = proto->getAttrs().getAttribute<ObjCAttr>())
-        if (auto name = objCAttr->getName())
-          return name.getValue().getSelectorPieces().front().str();
-      return proto->getName().str();
-    };
-    return getDeclName(*left).compare(getDeclName(*right));
-  });
+void ClangImporter::Implementation::finishNormalConformance(
+    NormalProtocolConformance *conformance,
+    uint64_t unused) {
+  (void)unused;
 
-  // Schedule any that aren't complete.
-  for (auto *inherited : inheritedProtos) {
-    ModuleDecl *M = conformance->getDeclContext()->getParentModule();
-    auto inheritedConformance = M->lookupConformance(conformance->getType(),
-                                                     inherited);
-    assert(inheritedConformance && inheritedConformance->isConcrete() &&
-           "inherited conformance not found");
-  }
+  auto *proto = conformance->getProtocol();
+  PrettyStackTraceType trace(SwiftContext, "completing conformance for",
+                             conformance->getType());
+  PrettyStackTraceDecl traceTo("... to", proto);
 
-  // Collect conformances for the requirement signature.
-  SmallVector<ProtocolConformanceRef, 4> reqConformances;
-  for (const auto &req : proto->getRequirementSignature()) {
-    if (req.getKind() != RequirementKind::Conformance)
-      continue;
+  finishTypeWitnesses(conformance);
+  finishInheritedConformances(conformance);
+  finishSignatureConformances(conformance);
 
-    assert(req.getFirstType()->isEqual(proto->getSelfInterfaceType()));
-    auto reqProto = req.getSecondType()->castTo<ProtocolType>()->getDecl();
+  // Imported conformances to @objc protocols also require additional
+  // initialization to complete the requirement to witness mapping.
+  if (!proto->isObjC())
+    return;
 
-    ModuleDecl *M = conformance->getDeclContext()->getParentModule();
-    auto reqConformance = M->lookupConformance(conformance->getType(),
-                                               reqProto);
-    assert(reqConformance && reqConformance->isConcrete() &&
-           "required conformance not found");
-    reqConformances.push_back(*reqConformance);
-  }
-  conformance->setSignatureConformances(reqConformances);
+  assert(conformance->isComplete());
+  conformance->setState(ProtocolConformanceState::Incomplete);
+
+  finishMissingOptionalWitnesses(conformance);
 
   conformance->setState(ProtocolConformanceState::Complete);
 }
