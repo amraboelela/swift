@@ -27,7 +27,7 @@ env \
     CC="$SWIFT_ANDROID_BUILD_PATH/llvm-linux-x86_64/bin/clang" \
     CXX="$SWIFT_ANDROID_BUILD_PATH/llvm-linux-x86_64/bin/clang++" \
     SWIFTC="$SWIFT_ANDROID_BUILD_PATH/swift-linux-x86_64/bin/swiftc" \
-    CFLAGS="-DTRASHIT=''" \
+    CFLAGS="-DTRASHIT='' -I/usr/include" \
     LIBS="-L/tmp/placeholder" \
     ./configure \
         --with-swift-toolchain="$SWIFT_ANDROID_TOOLCHAIN_PATH" \
