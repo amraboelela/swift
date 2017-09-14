@@ -19,11 +19,10 @@ ANDROID_NDK_PATH="${ANDROID_NDK_PATH:?Please set the Android NDK path in the AND
 
 SWIFT_ANDROID_TOOLCHAIN_PATH="${SWIFT_PATH}/swift-android-toolchain"
 SWIFT_ANDROID_BUILD_PATH="${SWIFT_PATH}/build/Ninja-ReleaseAssert"
-LIBDISPATCH_PATH=${SWIFT_PATH}/libiconv-libicu-android
+LIBDISPATCH_PATH=${SWIFT_PATH}/swift-corelibs-libdispatch
 
-cd LIBDISPATCH_PATH
-make clean
-sh autogen.sh
+cd ${LIBDISPATCH_PATH}
+./autogen.sh
 env \
     CC="$SWIFT_ANDROID_BUILD_PATH/llvm-linux-x86_64/bin/clang" \
     CXX="$SWIFT_ANDROID_BUILD_PATH/llvm-linux-x86_64/bin/clang++" \
