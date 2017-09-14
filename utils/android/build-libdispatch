@@ -36,7 +36,8 @@ env \
         --host=arm-linux-androideabi \
         --with-android-ndk=$ANDROID_NDK_PATH \
         --with-android-api-level=21 \
-        --disable-build-tests
+        --disable-build-tests \
+        --prefix=usr
 
 #sed -ie "s@-L/tmp/placeholder@-L$SWIFT_ANDROID_TOOLCHAIN_PATH/usr/lib/swift/android -lswiftCore -L$ANDROID_NDK_PATH/toolchains/arm-linux-androideabi-4.9/prebuilt/linux-x86_64/arm-linux-androideabi/lib/armv7-a -latomic@" src/Makefile
 
