@@ -23,6 +23,8 @@ ANDROID_ICU_PATH=${SWIFT_PATH}/libiconv-libicu-android
 SWIFT_ANDROID_TOOLCHAIN_PATH="${SWIFT_PATH}/swift-android-toolchain"
 SWIFT_ANDROID_BUILD_PATH="${SWIFT_PATH}/build/Ninja-ReleaseAssert"
 
+rm -rf ${SWIFT_ANDROID_TOOLCHAIN_PATH}
+
 ./swift/utils/build-script \
     -R \
     --android \
