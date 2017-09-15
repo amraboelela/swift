@@ -37,9 +37,9 @@ ${SWIFT_PATH}/swift/utils/build-script \
     --foundation --install-foundation \
     --llbuild --install-llbuild \
     --lldb --install-lldb \
+    --install-swift \
     --swiftpm --install-swiftpm \
     --xctest --install-xctest \
-    --install-swift \
     --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
 
     #'--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
