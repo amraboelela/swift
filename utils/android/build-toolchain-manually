@@ -25,6 +25,6 @@ echo ========== Finishing ==========
 cd $SWIFT_PATH
 
 test -e swift-android-toolchain || exit
-rm -rf toolchains/swift-android-toolchain-$(date "+%u")
-cp swift-android-toolchain toolchains/swift-android-toolchain-$(date "+%u")
+rm -rf ~/backup/swift-android-toolchain-$(date "+%u")
+cp swift-android-toolchain ~/backup/swift-android-toolchain-$(date "+%u")
 
