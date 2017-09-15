@@ -25,7 +25,7 @@ SWIFT_ANDROID_BUILD_PATH="${SWIFT_PATH}/build/Ninja-ReleaseAssert"
 
 rm -rf ${SWIFT_ANDROID_TOOLCHAIN_PATH}
 
-./swift/utils/build-script \
+${SWIFT_PATH}/swift/utils/build-script \
     -R \
     --android \
     --android-ndk ${ANDROID_NDK_PATH} \
@@ -40,12 +40,14 @@ rm -rf ${SWIFT_ANDROID_TOOLCHAIN_PATH}
     --swiftpm --install-swiftpm \
     --xctest --install-xctest \
     --install-swift \
-    '--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
     --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
+
+    #'--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
 
 test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
 test -e ${SWIFT_ANDROID_BUILD_PATH} || exit
 cp -r ${SWIFT_ANDROID_BUILD_PATH}/swift-linux-x86_64/{bin,lib,include} ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
 cp -r ${SWIFT_ANDROID_BUILD_PATH}/swiftpm-linux-x86_64/.bootstrap/lib ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
 
-./build-libdispatch
+${SWIFT_PATH}/swift-corelibs-libdispatch/build-android
+
