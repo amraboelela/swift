@@ -325,7 +325,7 @@ void Lexer::skipUpToEndOfLine() {
         return;
       default:
         // If this is a "high" UTF-8 character, validate it.
-        if (*((signed char *)CurPtr) < 0) {
+        if (*reinterpret_cast<const signed char *>(CurPtr) < 0) {
           const char *CharStart = CurPtr;
           if (validateUTF8CharacterAndAdvance(CurPtr, BufferEnd) == ~0U)
             diagnose(CharStart, diag::lex_invalid_utf8);
@@ -2642,4 +2642,14 @@ StringRef Lexer::getIndentationForLine(SourceManager &SM, SourceLoc Loc) {
     ++EndOfIndentation;
 
   return StringRef(StartOfLine, EndOfIndentation - StartOfLine);
+}
+
+ArrayRef<Token> swift::
+slice_token_array(ArrayRef<Token> AllTokens, SourceLoc StartLoc,
+                  SourceLoc EndLoc) {
+  assert(StartLoc.isValid() && EndLoc.isValid());
+  auto StartIt = token_lower_bound(AllTokens, StartLoc);
+  auto EndIt = token_lower_bound(AllTokens, EndLoc);
+  assert(StartIt->getLoc() == StartLoc && EndIt->getLoc() == EndLoc);
+  return AllTokens.slice(StartIt - AllTokens.begin(), EndIt - StartIt + 1);
 }

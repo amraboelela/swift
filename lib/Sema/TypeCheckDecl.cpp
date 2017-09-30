@@ -244,30 +244,24 @@ void TypeChecker::resolveRawType(EnumDecl *enumDecl) {
   ITC.satisfy(requestTypeCheckRawType(enumDecl));
 }
 
-void TypeChecker::validateWhereClauses(ProtocolDecl *protocol) {
-  ProtocolRequirementTypeResolver resolver;
+void TypeChecker::validateWhereClauses(ProtocolDecl *protocol,
+                                       GenericTypeResolver *resolver) {
   TypeResolutionOptions options;
 
   if (auto whereClause = protocol->getTrailingWhereClause()) {
-    DeclContext *lookupDC = protocol;
-    for (auto &req : whereClause->getRequirements()) {
-      // FIXME: handle error?
-      (void)validateRequirement(whereClause->getWhereLoc(), req,
-                                lookupDC, options, &resolver);
-    }
+    revertGenericRequirements(whereClause->getRequirements());
+    validateRequirements(whereClause->getWhereLoc(),
+                         whereClause->getRequirements(), protocol,
+                         options, resolver);
   }
 
   for (auto member : protocol->getMembers()) {
     if (auto assocType = dyn_cast<AssociatedTypeDecl>(member)) {
       if (auto whereClause = assocType->getTrailingWhereClause()) {
-        DeclContext *lookupDC = assocType->getDeclContext();
-
-        for (auto &req : whereClause->getRequirements()) {
-          if (!validateRequirement(whereClause->getWhereLoc(), req,
-                                   lookupDC, options, &resolver))
-            // FIXME handle error?
-            continue;
-        }
+        revertGenericRequirements(whereClause->getRequirements());
+        validateRequirements(whereClause->getWhereLoc(),
+                             whereClause->getRequirements(),
+                             protocol, options, resolver);
       }
     }
   }
@@ -277,7 +271,8 @@ void TypeChecker::resolveInheritedProtocols(ProtocolDecl *protocol) {
   IterativeTypeChecker ITC(*this);
   ITC.satisfy(requestInheritedProtocols(protocol));
 
-  validateWhereClauses(protocol);
+  ProtocolRequirementTypeResolver resolver;
+  validateWhereClauses(protocol, &resolver);
 }
 
 void TypeChecker::resolveInheritanceClause(
@@ -440,7 +435,7 @@ void TypeChecker::checkInheritanceClause(Decl *decl,
   Type superclassTy;
   SourceRange superclassRange;
   llvm::SmallSetVector<ProtocolDecl *, 4> allProtocols;
-  llvm::SmallDenseMap<CanType, SourceRange> inheritedTypes;
+  llvm::SmallDenseMap<CanType, std::pair<unsigned, SourceRange>> inheritedTypes;
   addImplicitConformances(*this, decl, allProtocols);
   for (unsigned i = 0, n = inheritedClause.size(); i != n; ++i) {
     auto &inherited = inheritedClause[i];
@@ -475,15 +470,33 @@ void TypeChecker::checkInheritanceClause(Decl *decl,
     CanType inheritedCanTy = inheritedTy->getCanonicalType();
     auto knownType = inheritedTypes.find(inheritedCanTy);
     if (knownType != inheritedTypes.end()) {
+      // If the duplicated type is 'AnyObject', check whether the first was
+      // written as 'class'. Downgrade the error to a warning in such cases
+      // for backward compatibility with Swift <= 4.
+      if (!Context.LangOpts.isSwiftVersionAtLeast(5) &&
+          inheritedTy->isAnyObject() &&
+          (isa<ProtocolDecl>(decl) || isa<AbstractTypeParamDecl>(decl)) &&
+          Lexer::getTokenAtLocation(Context.SourceMgr,
+                                    knownType->second.second.Start)
+            .is(tok::kw_class)) {
+        SourceLoc classLoc = knownType->second.second.Start;
+        SourceRange removeRange = getRemovalRange(knownType->second.first);
+
+        diagnose(classLoc, diag::duplicate_anyobject_class_inheritance)
+          .fixItRemoveChars(removeRange.Start, removeRange.End);
+        inherited.setInvalidType(Context);
+        continue;
+      }
+
       auto removeRange = getRemovalRange(i);
       diagnose(inherited.getSourceRange().Start,
                diag::duplicate_inheritance, inheritedTy)
         .fixItRemoveChars(removeRange.Start, removeRange.End)
-        .highlight(knownType->second);
+        .highlight(knownType->second.second);
       inherited.setInvalidType(Context);
       continue;
     }
-    inheritedTypes[inheritedCanTy] = inherited.getSourceRange();
+    inheritedTypes[inheritedCanTy] = { i, inherited.getSourceRange() };
 
     // If this is a protocol or protocol composition type, record the
     // protocols.
@@ -809,7 +822,8 @@ TypeChecker::handleSILGenericParams(GenericParamList *genericParams,
     prepareGenericParamList(genericParams, DC);
 
     parentEnv = checkGenericEnvironment(genericParams, DC, parentSig,
-                                        /*allowConcreteGenericParams=*/true);
+                                        /*allowConcreteGenericParams=*/true,
+                                        /*ext=*/nullptr);
     parentSig = parentEnv->getGenericSignature();
 
     // Compute the final set of archetypes.
@@ -820,88 +834,6 @@ TypeChecker::handleSILGenericParams(GenericParamList *genericParams,
   }
 
   return parentEnv;
-}
-
-/// Check whether the given type representation will be
-/// default-initializable.
-static bool isDefaultInitializable(TypeRepr *typeRepr) {
-  // Look through most attributes.
-  if (auto attributed = dyn_cast<AttributedTypeRepr>(typeRepr)) {
-    // Weak ownership implies optionality.
-    if (attributed->getAttrs().getOwnership() == Ownership::Weak)
-      return true;
-    
-    return isDefaultInitializable(attributed->getTypeRepr());
-  }
-
-  // Optional types are default-initializable.
-  if (isa<OptionalTypeRepr>(typeRepr) ||
-      isa<ImplicitlyUnwrappedOptionalTypeRepr>(typeRepr))
-    return true;
-
-  // Tuple types are default-initializable if all of their element
-  // types are.
-  if (auto tuple = dyn_cast<TupleTypeRepr>(typeRepr)) {
-    // ... but not variadic ones.
-    if (tuple->hasEllipsis())
-      return false;
-
-    for (auto elt : tuple->getElements()) {
-      if (!isDefaultInitializable(elt.Type))
-        return false;
-    }
-
-    return true;
-  }
-
-  // Not default initializable.
-  return false;
-}
-
-// @NSManaged properties never get default initialized, nor do debugger
-// variables and immutable properties.
-static bool isNeverDefaultInitializable(Pattern *p) {
-  bool result = false;
-
-  p->forEachVariable([&](VarDecl *var) {
-    if (var->getAttrs().hasAttribute<NSManagedAttr>())
-      return;
-
-    if (var->isDebuggerVar() ||
-        var->isLet())
-      result = true;
-  });
-
-  return result;
-}
-
-/// Determine whether the given pattern binding declaration either has
-/// an initializer expression, or is default initialized, without performing
-/// any type checking on it.
-static bool isDefaultInitializable(PatternBindingDecl *pbd) {
-  assert(pbd->hasStorage());
-
-  for (auto entry : pbd->getPatternList()) {
-    // If it has an initializer expression, this is trivially true.
-    if (entry.getInit())
-      continue;
-
-    if (isNeverDefaultInitializable(entry.getPattern()))
-      return false;
-
-    // If the pattern is typed as optional (or tuples thereof), it is
-    // default initializable.
-    if (auto typedPattern = dyn_cast<TypedPattern>(entry.getPattern())) {
-      if (auto typeRepr = typedPattern->getTypeLoc().getTypeRepr())
-        if (isDefaultInitializable(typeRepr))
-          continue;
-    }
-
-    // Otherwise, we can't default initialize this binding.
-    return false;
-  }
-  
-  return true;
 }
 
 /// Build a default initializer for the given type.
@@ -4000,6 +3932,10 @@ public:
       : TC(TC), IsFirstPass(IsFirstPass), IsSecondPass(IsSecondPass) {}
 
   void visit(Decl *decl) {
+    UnifiedStatsReporter::FrontendStatsTracer Tracer;
+    if (TC.Context.Stats)
+      Tracer = TC.Context.Stats->getStatsTracer("type-checking",
+                                                decl->getSourceRange());
     PrettyStackTraceDecl StackTrace("type-checking", decl);
     
     DeclVisitor<DeclChecker>::visit(decl);
@@ -4103,6 +4039,7 @@ public:
           Misc,
           GenericTypes,
           Classes,
+          ProtocolExtensions
         };
         auto unimplementedStatic = [&](unsigned diagSel) {
           auto staticLoc = PBD->getStaticLoc();
@@ -4120,6 +4057,8 @@ public:
 
         // Stored type variables in a generic context need to logically
         // occur once per instantiation, which we don't yet handle.
+        } else if (DC->getAsProtocolExtensionContext()) {
+            unimplementedStatic(ProtocolExtensions);
         } else if (DC->isGenericContext()
                && !DC->getGenericSignatureOfContext()->areAllParamsConcrete()) {
           unimplementedStatic(GenericTypes);
@@ -4204,7 +4143,7 @@ public:
             TC.checkTypeModifyingDeclAttributes(var);
 
           // Decide whether we should suppress default initialization.
-          if (isNeverDefaultInitializable(PBD->getPattern(i)))
+          if (!PBD->isDefaultInitializable(i))
             continue;
 
           auto type = PBD->getPattern(i)->getType();
@@ -4581,7 +4520,7 @@ public:
         continue;
 
       if (pbd->isStatic() || !pbd->hasStorage() || 
-          isDefaultInitializable(pbd) || pbd->isInvalid())
+          pbd->isDefaultInitializable() || pbd->isInvalid())
         continue;
 
       // The variables in this pattern have not been
@@ -4788,7 +4727,6 @@ public:
 
     if (!IsSecondPass) {
       checkUnsupportedNestedType(PD);
-      TC.validateWhereClauses(PD);
     }
 
     if (IsSecondPass) {
@@ -4798,6 +4736,9 @@ public:
         checkAccessControl(TC, member);
       }
       TC.checkInheritanceClause(PD);
+
+      GenericTypeToArchetypeResolver resolver(PD);
+      TC.validateWhereClauses(PD, &resolver);
       return;
     }
 
@@ -5290,10 +5231,18 @@ public:
       // Revert the types within the signature so it can be type-checked with
       // archetypes below.
       TC.revertGenericFuncSignature(FD);
-    } else if (FD->getDeclContext()->getGenericSignatureOfContext()) {
-      (void)TC.validateGenericFuncSignature(FD);
-      // Revert all of the types within the signature of the function.
-      TC.revertGenericFuncSignature(FD);
+    } else if (auto genericSig =
+                 FD->getDeclContext()->getGenericSignatureOfContext()) {
+      if (!FD->getAccessorStorageDecl()) {
+        (void)TC.validateGenericFuncSignature(FD);
+
+        // Revert all of the types within the signature of the function.
+        TC.revertGenericFuncSignature(FD);
+      } else {
+        // We've inherited all of the type information already.
+        TC.configureInterfaceType(FD, genericSig);
+      }
+
       FD->setGenericEnvironment(
           FD->getDeclContext()->getGenericEnvironmentOfContext());
     }
@@ -7165,8 +7114,11 @@ public:
   }
 
   void visitDestructorDecl(DestructorDecl *DD) {
-    if (DD->isInvalid()) {
+    auto enclosingClass = dyn_cast<ClassDecl>(DD->getDeclContext());
+    if (DD->isInvalid() ||
+        enclosingClass == nullptr) {
       DD->setInterfaceType(ErrorType::get(TC.Context));
+      DD->setInvalid();
       return;
     }
 
@@ -7188,8 +7140,11 @@ public:
 
     TC.checkDeclAttributesEarly(DD);
     if (!DD->hasAccess()) {
-      auto enclosingClass = cast<ClassDecl>(DD->getParent());
       DD->setAccess(enclosingClass->getFormalAccess());
+    }
+
+    if (enclosingClass->getAttrs().hasAttribute<VersionedAttr>()) {
+      DD->getAttrs().add(new (TC.Context) VersionedAttr(/*implicit=*/true));
     }
 
     configureImplicitSelf(TC, DD);
@@ -7712,25 +7667,13 @@ void TypeChecker::validateDecl(ValueDecl *D) {
 
     break;
   }
-      
-  case DeclKind::Func: {
-    typeCheckDecl(D, true);
-    break;
-  }
 
+  case DeclKind::Func:
   case DeclKind::Subscript:
   case DeclKind::Constructor:
-    typeCheckDecl(D, true);
-    break;
-
   case DeclKind::Destructor:
   case DeclKind::EnumElement: {
-    if (auto container = dyn_cast<NominalTypeDecl>(D->getDeclContext())) {
-      validateDecl(container);
-      typeCheckDecl(D, true);
-    } else {
-      D->setInterfaceType(ErrorType::get(Context));
-    }
+    typeCheckDecl(D, true);
     break;
   }
   }
@@ -8084,8 +8027,7 @@ checkExtensionGenericParams(TypeChecker &tc, ExtensionDecl *ext, Type type,
   // Local function used to infer requirements from the extended type.
   auto inferExtendedTypeReqs = [&](GenericSignatureBuilder &builder) {
     auto source =
-      GenericSignatureBuilder::FloatingRequirementSource::forInferred(
-                                          nullptr, /*quietly=*/false);
+      GenericSignatureBuilder::FloatingRequirementSource::forInferred(nullptr);
 
     builder.inferRequirements(*ext->getModuleContext(),
                               TypeLoc::withoutLoc(extInterfaceType),
@@ -8096,7 +8038,7 @@ checkExtensionGenericParams(TypeChecker &tc, ExtensionDecl *ext, Type type,
   auto *env = tc.checkGenericEnvironment(genericParams,
                                          ext->getDeclContext(), nullptr,
                                          /*allowConcreteGenericParams=*/true,
-                                         inferExtendedTypeReqs);
+                                         ext, inferExtendedTypeReqs);
 
   // Validate the generic parameters for the last time, to splat down
   // actual archetypes.
@@ -8354,8 +8296,8 @@ static void diagnoseClassWithoutInitializers(TypeChecker &tc,
     if (!pbd)
       continue;
 
-    if (pbd->isStatic() || !pbd->hasStorage() || isDefaultInitializable(pbd) ||
-        pbd->isInvalid())
+    if (pbd->isStatic() || !pbd->hasStorage() ||
+        pbd->isDefaultInitializable() || pbd->isInvalid())
       continue;
    
     for (auto entry : pbd->getPatternList()) {
@@ -8483,7 +8425,7 @@ static void diagnoseMissingRequiredInitializer(
   // Complain.
   TC.diagnose(insertionLoc, diag::required_initializer_missing,
               superInitializer->getFullName(),
-              superInitializer->getDeclContext()->getDeclaredTypeOfContext())
+              superInitializer->getDeclContext()->getDeclaredInterfaceType())
     .fixItInsert(insertionLoc, initializerText);
 
   TC.diagnose(findNonImplicitRequiredInit(superInitializer),
@@ -8638,7 +8580,7 @@ void TypeChecker::addImplicitConstructors(NominalTypeDecl *decl) {
           
           // If we cannot default initialize the property, we cannot
           // synthesize a default initializer for the class.
-          if (CheckDefaultInitializer && !isDefaultInitializable(pbd))
+          if (CheckDefaultInitializer && !pbd->isDefaultInitializable())
             SuppressDefaultInitializer = true;
         }
       continue;

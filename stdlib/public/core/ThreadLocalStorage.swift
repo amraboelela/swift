@@ -25,6 +25,8 @@ let _destroyTLSCounter = _stdlib_AtomicInt()
 // pointer. Similarly, shouldn't be created, except by
 // _initializeThreadLocalStorage.
 //
+@_versioned // FIXME(sil-serialize-all)
+@_fixed_layout // FIXME(sil-serialize-all)
 internal struct _ThreadLocalStorage {
   // TODO: might be best to absract uBreakIterator handling and caching into
   // separate struct. That would also make it easier to maintain multiple ones
@@ -37,7 +39,8 @@ internal struct _ThreadLocalStorage {
   // UBreakIterator than recreating one.
   //
   // private
-  var uBreakIterator: OpaquePointer
+  @_versioned // FIXME(sil-serialize-all)
+  internal var uBreakIterator: OpaquePointer
 
   // TODO: Consider saving two, e.g. for character-by-character comparison
 
@@ -55,16 +58,20 @@ internal struct _ThreadLocalStorage {
   // TODO: unowned reference to string owner, base address, and _countAndFlags
 
   // private: Should only be called by _initializeThreadLocalStorage
-  init(_uBreakIterator: OpaquePointer) {
+  @_inlineable // FIXME(sil-serialize-all)
+  @_versioned // FIXME(sil-serialize-all)
+  internal init(_uBreakIterator: OpaquePointer) {
     self.uBreakIterator = _uBreakIterator
   }
 
   // Get the current thread's TLS pointer. On first call for a given thread,
   // creates and initializes a new one.
+  @_inlineable // FIXME(sil-serialize-all)
+  @_versioned // FIXME(sil-serialize-all)
   static internal func getPointer()
     -> UnsafeMutablePointer<_ThreadLocalStorage>
   {
-    let tlsRawPtr = _swift_stdlib_pthread_getspecific(_tlsKey)
+    let tlsRawPtr = _swift_stdlib_thread_getspecific(_tlsKey)
     if _fastPath(tlsRawPtr != nil) {
       return tlsRawPtr._unsafelyUnwrappedUnchecked.assumingMemoryBound(
         to: _ThreadLocalStorage.self)
@@ -75,6 +82,8 @@ internal struct _ThreadLocalStorage {
 
   // Retrieve our thread's local uBreakIterator and set it up for the given
   // StringCore.
+  @_inlineable // FIXME(sil-serialize-all)
+  @_versioned // FIXME(sil-serialize-all)
   static internal func getUBreakIterator(
     for core: _StringCore
   ) -> OpaquePointer {
@@ -84,6 +93,8 @@ internal struct _ThreadLocalStorage {
     return getUBreakIterator(
       for: UnsafeBufferPointer(start: corePtr, count: core.count))
   }
+  @_inlineable // FIXME(sil-serialize-all)
+  @_versioned // FIXME(sil-serialize-all)
   static internal func getUBreakIterator(
     for bufPtr: UnsafeBufferPointer<UTF16.CodeUnit>
   ) -> OpaquePointer {
@@ -101,6 +112,9 @@ internal struct _ThreadLocalStorage {
 
 // Destructor to register with pthreads. Responsible for deallocating any memory
 // owned.
+@_inlineable // FIXME(sil-serialize-all)
+@_versioned // FIXME(sil-serialize-all)
+@_silgen_name("_swift_stdlib_destroyTLS")
 internal func _destroyTLS(_ ptr: UnsafeMutableRawPointer?) {
   _sanityCheck(ptr != nil,
     "_destroyTLS was called, but with nil...")
@@ -116,20 +130,23 @@ internal func _destroyTLS(_ ptr: UnsafeMutableRawPointer?) {
 }
 
 // Lazily created global key for use with pthread TLS
-internal let _tlsKey: __swift_pthread_key_t = {
-  let sentinelValue = __swift_pthread_key_t.max
-  var key: __swift_pthread_key_t = sentinelValue
-  let success = _swift_stdlib_pthread_key_create(&key, _destroyTLS)
+@_versioned // FIXME(sil-serialize-all)
+internal let _tlsKey: __swift_thread_key_t = {
+  let sentinelValue = __swift_thread_key_t.max
+  var key: __swift_thread_key_t = sentinelValue
+  let success = _swift_stdlib_thread_key_create(&key, _destroyTLS)
   _sanityCheck(success == 0, "somehow failed to create TLS key")
   _sanityCheck(key != sentinelValue, "Didn't make a new key")
   return key
 }()
 
+@_inlineable // FIXME(sil-serialize-all)
+@_versioned // FIXME(sil-serialize-all)
 @inline(never)
 internal func _initializeThreadLocalStorage()
   -> UnsafeMutablePointer<_ThreadLocalStorage>
 {
-  _sanityCheck(_swift_stdlib_pthread_getspecific(_tlsKey) == nil,
+  _sanityCheck(_swift_stdlib_thread_getspecific(_tlsKey) == nil,
     "already initialized")
 
   // Create and initialize one.
@@ -146,7 +163,7 @@ internal func _initializeThreadLocalStorage()
   tlsPtr.initialize(
     to: _ThreadLocalStorage(_uBreakIterator: newUBreakIterator)
   )
-  let success = _swift_stdlib_pthread_setspecific(_tlsKey, tlsPtr)
+  let success = _swift_stdlib_thread_setspecific(_tlsKey, tlsPtr)
   _sanityCheck(success == 0, "setspecific failed")
   return tlsPtr
 }

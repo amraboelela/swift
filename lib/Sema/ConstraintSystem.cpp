@@ -624,6 +624,14 @@ Type ConstraintSystem::getFixedTypeRecursive(Type type,
     }
 
     if (auto typeVar = type->getAs<TypeVariableType>()) {
+      bool hasRepresentative = false;
+      if (auto *repr = getRepresentative(typeVar)) {
+        if (typeVar != repr) {
+          hasRepresentative = true;
+          typeVar = repr;
+        }
+      }
+
       if (auto fixed = getFixedType(typeVar)) {
         if (wantRValue)
           fixed = fixed->getRValueType();
@@ -631,6 +639,12 @@ Type ConstraintSystem::getFixedTypeRecursive(Type type,
         type = fixed;
         continue;
       }
+
+      // If type variable has a representative but
+      // no fixed type, reflect that in the type itself.
+      if (hasRepresentative)
+        type = typeVar;
+
       break;
     }
 
@@ -1225,7 +1239,7 @@ ConstraintSystem::getTypeOfMemberReference(
     // If self is a value type and the base type is an lvalue, wrap it in an
     // inout type.
     auto selfFlags = ParameterTypeFlags();
-    if (!outerDC->getDeclaredTypeOfContext()->hasReferenceSemantics() &&
+    if (!outerDC->getDeclaredInterfaceType()->hasReferenceSemantics() &&
         baseTy->is<LValueType>() &&
         !selfTy->hasError())
       selfFlags = selfFlags.withInOut(true);

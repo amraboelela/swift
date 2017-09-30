@@ -2560,7 +2560,7 @@ diagnoseTypeMemberOnInstanceLookup(Type baseObjTy,
       ->getAsNominalTypeOrNominalTypeExtensionContext();
   SmallString<32> typeName;
   llvm::raw_svector_ostream typeNameStream(typeName);
-  typeNameStream << nominal->getName() << ".";
+  typeNameStream << nominal->getSelfInterfaceType() << ".";
 
   Diag->fixItInsert(loc, typeNameStream.str());
   return;
@@ -2698,7 +2698,7 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
                instanceTy, memberName)
         .highlight(baseRange).highlight(nameLoc.getSourceRange());
       return;
-    case MemberLookupResult::UR_InstanceMemberOnType:
+    case MemberLookupResult::UR_InstanceMemberOnType: {
       // If the base is an implicit self type reference, and we're in a
       // an initializer, then the user wrote something like:
       //
@@ -2744,11 +2744,28 @@ diagnoseUnviableLookupResults(MemberLookupResult &result, Type baseObjTy,
           return;
         }
       }
-        
-      diagnose(loc, diag::could_not_use_instance_member_on_type,
-               instanceTy, memberName)
-        .highlight(baseRange).highlight(nameLoc.getSourceRange());
+
+      // Check whether the instance member is declared on parent context and if so
+      // provide more specialized message.
+      auto memberTypeContext = member->getDeclContext()->getInnermostTypeContext();
+      auto currentTypeContext = CS.DC->getInnermostTypeContext();
+      if (memberTypeContext && currentTypeContext &&
+          memberTypeContext->getSemanticDepth() <
+          currentTypeContext->getSemanticDepth()) {
+        diagnose(loc, diag::could_not_use_instance_member_on_type,
+                 currentTypeContext->getDeclaredInterfaceType(), memberName,
+                 memberTypeContext->getDeclaredInterfaceType(),
+                 true)
+          .highlight(baseRange).highlight(nameLoc.getSourceRange());
+      } else {
+        diagnose(loc, diag::could_not_use_instance_member_on_type,
+                 instanceTy, memberName,
+                 instanceTy,
+                 false)
+         .highlight(baseRange).highlight(nameLoc.getSourceRange());
+      }
       return;
+    }
 
     case MemberLookupResult::UR_TypeMemberOnInstance:
       diagnoseTypeMemberOnInstanceLookup(baseObjTy, baseExpr,
@@ -3272,17 +3289,41 @@ namespace {
           patternElt.first->setType(patternElt.second);
       
       for (auto paramDeclElt : ParamDeclTypes)
-        if (!paramDeclElt.first->hasType())
-          paramDeclElt.first->setType(paramDeclElt.second);
+        if (!paramDeclElt.first->hasType()) {
+          paramDeclElt.first->setType(getParamBaseType(paramDeclElt));
+        }
 
       for (auto paramDeclIfaceElt : ParamDeclInterfaceTypes)
-        if (!paramDeclIfaceElt.first->hasInterfaceType())
-          paramDeclIfaceElt.first->setInterfaceType(paramDeclIfaceElt.second);
+        if (!paramDeclIfaceElt.first->hasInterfaceType()) {
+          paramDeclIfaceElt.first->setInterfaceType(
+              getParamBaseType(paramDeclIfaceElt));
+        }
 
       if (!PossiblyInvalidDecls.empty())
         for (auto D : PossiblyInvalidDecls)
           if (D->hasInterfaceType())
             D->setInvalid(D->getInterfaceType()->hasError());
+    }
+
+  private:
+    static Type getParamBaseType(std::pair<ParamDecl *, Type> &storedParam) {
+      ParamDecl *param;
+      Type storedType;
+
+      std::tie(param, storedType) = storedParam;
+
+      // FIXME: We are currently in process of removing `InOutType`
+      //        so `VarDecl::get{Interface}Type` is going to wrap base
+      //        type into `InOutType` if its flag indicates that it's
+      //        an `inout` parameter declaration. But such type can't
+      //        be restored directly using `VarDecl::set{Interface}Type`
+      //        caller needs additional logic to extract base type.
+      if (auto *IOT = storedType->getAs<InOutType>()) {
+        assert(param->isInOut());
+        return IOT->getObjectType();
+      }
+
+      return storedType;
     }
   };
 } // end anonymous namespace
@@ -5027,12 +5068,15 @@ diagnoseInstanceMethodAsCurriedMemberOnType(CalleeCandidateInfo &CCI,
       }
 
       // Otherwise, complain about use of instance value on type.
-      auto diagnostic = isa<TypeExpr>(baseExpr)
-                            ? diag::instance_member_use_on_type
-                            : diag::could_not_use_instance_member_on_type;
-
-      TC.diagnose(UDE->getLoc(), diagnostic, instanceType, UDE->getName())
+      if (isa<TypeExpr>(baseExpr)) {
+        TC.diagnose(UDE->getLoc(), diag::instance_member_use_on_type,
+                    instanceType, UDE->getName())
           .highlight(baseExpr->getSourceRange());
+      } else {
+        TC.diagnose(UDE->getLoc(), diag::could_not_use_instance_member_on_type,
+                    instanceType, UDE->getName(), instanceType, false)
+          .highlight(baseExpr->getSourceRange());
+      }
       return true;
     }
   }
@@ -6170,11 +6214,15 @@ bool FailureDiagnosis::diagnoseArgumentGenericRequirements(
 
   auto result = TC.checkGenericArguments(
       dc, callExpr->getLoc(), fnExpr->getLoc(), AFD->getInterfaceType(),
-      env->getGenericSignature(), QueryTypeSubstitutionMap{substitutions},
+      env->getGenericSignature(), substitutionFn,
       LookUpConformanceInModule{dc->getParentModule()}, nullptr,
       ConformanceCheckFlags::SuppressDependencyTracking, &genericReqListener);
 
-  return result != RequirementCheckResult::Success;
+  assert(result != RequirementCheckResult::UnsatisfiedDependency);
+
+  // Note: If result is RequirementCheckResult::SubstitutionFailure, we did
+  // not emit a diagnostic, so we must return false in that case.
+  return result == RequirementCheckResult::Failure;
 }
 
 /// When initializing Unsafe[Mutable]Pointer<T> from Unsafe[Mutable]RawPointer,

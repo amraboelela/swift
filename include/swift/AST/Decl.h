@@ -367,7 +367,7 @@ class alignas(1 << DeclAlignInBits) Decl {
     unsigned BodyKind : 3;
 
     /// Number of curried parameter lists.
-    unsigned NumParameterLists : 6;
+    unsigned NumParameterLists : 5;
 
     /// Whether we are overridden later.
     unsigned Overridden : 1;
@@ -380,6 +380,9 @@ class alignas(1 << DeclAlignInBits) Decl {
 
     /// Whether NeedsNewVTableEntry is valid.
     unsigned HasComputedNeedsNewVTableEntry : 1;
+
+    /// The ResilienceExpansion to use for default arguments.
+    unsigned DefaultArgumentResilienceExpansion : 1;
   };
   enum { NumAbstractFunctionDeclBits = NumValueDeclBits + 13 };
   static_assert(NumAbstractFunctionDeclBits <= 32, "fits in an unsigned");
@@ -1957,6 +1960,23 @@ public:
   
   /// Does this binding declare something that requires storage?
   bool hasStorage() const;
+
+  /// Determines whether this binding either has an initializer expression, or is
+  /// default initialized, without performing any type checking on it.
+  ///
+  /// This is only valid to check for bindings which have storage.
+  bool isDefaultInitializable() const {
+    assert(hasStorage());
+
+    for (unsigned i = 0, e = getNumPatternEntries(); i < e; ++i)
+      if (!isDefaultInitializable(i))
+        return false;
+
+    return true;
+  }
+
+  /// Can the pattern at index i be default initialized?
+  bool isDefaultInitializable(unsigned i) const;
   
   /// When the pattern binding contains only a single variable with no
   /// destructuring, retrieve that variable.
@@ -4571,7 +4591,7 @@ public:
   /// Clone constructor, allocates a new ParamDecl identical to the first.
   /// Intentionally not defined as a typical copy constructor to avoid
   /// accidental copies.
-  ParamDecl(ParamDecl *PD);
+  ParamDecl(ParamDecl *PD, bool withTypes);
   
   /// Retrieve the argument (API) name for this function parameter.
   Identifier getArgumentName() const { return ArgumentName; }
@@ -4859,6 +4879,8 @@ protected:
     AbstractFunctionDeclBits.Throws = Throws;
     AbstractFunctionDeclBits.NeedsNewVTableEntry = false;
     AbstractFunctionDeclBits.HasComputedNeedsNewVTableEntry = false;
+    AbstractFunctionDeclBits.DefaultArgumentResilienceExpansion =
+        unsigned(ResilienceExpansion::Maximal);
 
     // Verify no bitfield truncation.
     assert(AbstractFunctionDeclBits.NumParameterLists == NumParameterLists);
@@ -5075,6 +5097,21 @@ public:
   ///
   /// Resolved during type checking
   void setIsOverridden() { AbstractFunctionDeclBits.Overridden = true; }
+
+  /// The ResilienceExpansion for default arguments.
+  ///
+  /// In Swift 4 mode, default argument expressions are serialized, and must
+  /// obey the restrictions imposed upon inlineable function bodies.
+  ResilienceExpansion getDefaultArgumentResilienceExpansion() const {
+    return ResilienceExpansion(
+        AbstractFunctionDeclBits.DefaultArgumentResilienceExpansion);
+  }
+
+  /// Set the ResilienceExpansion for default arguments.
+  void setDefaultArgumentResilienceExpansion(ResilienceExpansion expansion) {
+    AbstractFunctionDeclBits.DefaultArgumentResilienceExpansion =
+        unsigned(expansion);
+  }
 
   /// Set information about the foreign error convention used by this
   /// declaration.

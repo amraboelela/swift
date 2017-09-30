@@ -79,11 +79,11 @@ namespace {
 
 /// Metaprogramming-friendly base class.
 template <class Impl>
-class SILVerifierBase : public SILVisitor<Impl> {
+class SILVerifierBase : public SILInstructionVisitor<Impl> {
 public:
   // visitCLASS calls visitPARENT and checkCLASS.
   // checkCLASS does nothing by default.
-#define VALUE(CLASS, PARENT)                                    \
+#define INST(CLASS, PARENT)                                     \
   void visit##CLASS(CLASS *I) {                                 \
     static_cast<Impl*>(this)->visit##PARENT(I);                 \
     static_cast<Impl*>(this)->check##CLASS(I);                  \
@@ -91,10 +91,10 @@ public:
   void check##CLASS(CLASS *I) {}
 #include "swift/SIL/SILNodes.def"
 
-  void visitValueBase(ValueBase *V) {
-    static_cast<Impl*>(this)->checkValueBase(V);
+  void visitSILInstruction(SILInstruction *I) {
+    static_cast<Impl*>(this)->checkSILInstruction(I);
   }
-  void checkValueBase(ValueBase *V) {}
+  void checkSILInstruction(SILInstruction *I) {}
 };
 } // end anonymous namespace
 
@@ -471,23 +471,19 @@ public:
     // Check the SILLLocation attached to the instruction.
     checkInstructionsSILLocation(I);
 
-    checkLegalType(I->getFunction(), I, I);
-
     // Check ownership.
     SILFunction *F = I->getFunction();
     assert(F && "Expected value base with parent function");
 
-    // Check ownership.
-    checkValueBaseOwnership(I);
+    for (auto result : I->getResults()) {
+      checkLegalType(F, result, I);
+      checkValueBaseOwnership(result);
+    }
   }
 
   void checkValueBaseOwnership(ValueBase *V) {
     // If ownership is not enabled, bail.
     if (!isSILOwnershipEnabled())
-      return;
-
-    // If V does not have a value, bail.
-    if (!V->hasValue())
       return;
 
     SILFunction *F = V->getFunction();
@@ -518,32 +514,34 @@ public:
     }
 
     // Verify that all of our uses are in this function.
-    for (Operand *use : I->getUses()) {
-      auto user = use->getUser();
-      require(user, "instruction user is null?");
-      require(isa<SILInstruction>(user),
-              "instruction used by non-instruction");
-      auto userI = cast<SILInstruction>(user);
-      require(userI->getParent(),
-              "instruction used by unparented instruction");
-      if (I->isStaticInitializerInst()) {
-        require(userI->getParent() == BB,
-              "instruction used by instruction not in same static initializer");
-      } else {
-        require(userI->getFunction() == &F,
-                "instruction used by instruction in different function");
-      }
+    for (auto result : I->getResults()) {
+      for (Operand *use : result->getUses()) {
+        auto user = use->getUser();
+        require(user, "instruction user is null?");
+        require(isa<SILInstruction>(user),
+                "instruction used by non-instruction");
+        auto userI = cast<SILInstruction>(user);
+        require(userI->getParent(),
+                "instruction used by unparented instruction");
+        if (I->isStaticInitializerInst()) {
+          require(userI->getParent() == BB,
+                "instruction used by instruction not in same static initializer");
+        } else {
+          require(userI->getFunction() == &F,
+                  "instruction used by instruction in different function");
+        }
 
-      auto operands = userI->getAllOperands();
-      require(operands.begin() <= use && use <= operands.end(),
-              "use doesn't actually belong to instruction it claims to");
+        auto operands = userI->getAllOperands();
+        require(operands.begin() <= use && use <= operands.end(),
+                "use doesn't actually belong to instruction it claims to");
+      }
     }
 
     // Verify some basis structural stuff about an instruction's operands.
     for (auto &operand : I->getAllOperands()) {
       require(operand.get(), "instruction has null operand");
 
-      if (auto *valueI = dyn_cast<SILInstruction>(operand.get())) {
+      if (auto *valueI = operand.get()->getDefiningInstruction()) {
         require(valueI->getParent(),
                 "instruction uses value of unparented instruction");
         if (I->isStaticInitializerInst()) {
@@ -598,7 +596,7 @@ public:
     // Check the location kind.
     SILLocation L = I->getLoc();
     SILLocation::LocationKind LocKind = L.getKind();
-    ValueKind InstKind = I->getKind();
+    SILInstructionKind InstKind = I->getKind();
 
     // Check that there is at most one debug variable defined
     // for each argument slot. This catches SIL transformations
@@ -642,20 +640,20 @@ public:
     // Fix incoming.
     if (LocKind == SILLocation::CleanupKind ||
         LocKind == SILLocation::InlinedKind)
-      require(InstKind != ValueKind::ReturnInst ||
-              InstKind != ValueKind::AutoreleaseReturnInst,
+      require(InstKind != SILInstructionKind::ReturnInst ||
+              InstKind != SILInstructionKind::AutoreleaseReturnInst,
         "cleanup and inlined locations are not allowed on return instructions");
 #endif
 
     if (LocKind == SILLocation::ReturnKind ||
         LocKind == SILLocation::ImplicitReturnKind)
-      require(InstKind == ValueKind::BranchInst ||
-              InstKind == ValueKind::ReturnInst ||
-              InstKind == ValueKind::UnreachableInst,
+      require(InstKind == SILInstructionKind::BranchInst ||
+              InstKind == SILInstructionKind::ReturnInst ||
+              InstKind == SILInstructionKind::UnreachableInst,
         "return locations are only allowed on branch and return instructions");
 
     if (LocKind == SILLocation::ArtificialUnreachableKind)
-      require(InstKind == ValueKind::UnreachableInst,
+      require(InstKind == SILInstructionKind::UnreachableInst,
         "artificial locations are only allowed on Unreachable instructions");
   }
 
@@ -876,9 +874,9 @@ public:
         require((ValueBase *)V == AI->getFunction()->getSelfMetadataArgument(),
                 "wrong self metadata operand");
       } else {
-        require(isa<SILInstruction>(V),
+        require(isa<SingleValueInstruction>(V),
                 "opened archetype operand should refer to a SIL instruction");
-        auto Archetype = getOpenedArchetypeOf(cast<SILInstruction>(V));
+        auto Archetype = getOpenedArchetypeOf(cast<SingleValueInstruction>(V));
         require(Archetype,
                 "opened archetype operand should define an opened archetype");
         require(FoundOpenedArchetypes.count(Archetype),
@@ -1161,11 +1159,20 @@ public:
 
     // A direct reference to a non-public or shared but not fragile function
     // from a fragile function is an error.
-    if (F.isSerialized()) {
-      require((SingleFunction && RefF->isExternalDeclaration()) ||
-              RefF->hasValidLinkageForFragileRef(),
-              "function_ref inside fragile function cannot "
-              "reference a private or hidden symbol");
+    //
+    // Exception: When compiling OnoneSupport anything can reference anything,
+    // because the bodies of functions are never SIL serialized, but
+    // specializations are exposed as public symbols in the produced object
+    // files. For the same reason, KeepAsPublic functions (i.e. specializations)
+    // can refer to anything or can be referenced from any other function.
+    if (!F.getModule().isOptimizedOnoneSupportModule() &&
+        !(F.isKeepAsPublic() || RefF->isKeepAsPublic())) {
+      if (F.isSerialized()) {
+        require((SingleFunction && RefF->isExternalDeclaration()) ||
+                    RefF->hasValidLinkageForFragileRef(),
+                "function_ref inside fragile function cannot "
+                "reference a private or hidden symbol");
+      }
     }
     verifySILFunctionType(fnType);
   }
@@ -1925,7 +1932,6 @@ public:
   }
 
   void checkBindMemoryInst(BindMemoryInst *BI) {
-    require(!BI->getType(), "BI must not produce a type");
     require(BI->getBoundType(), "BI must have a bound type");
     require(BI->getBase()->getType().is<BuiltinRawPointerType>(),
             "bind_memory base be a RawPointer");
@@ -2343,34 +2349,34 @@ public:
         if (inst->isTypeDependentOperand(*use))
           continue;
         switch (inst->getKind()) {
-        case ValueKind::ApplyInst:
-        case ValueKind::TryApplyInst:
-        case ValueKind::PartialApplyInst:
+        case SILInstructionKind::ApplyInst:
+        case SILInstructionKind::TryApplyInst:
+        case SILInstructionKind::PartialApplyInst:
           if (isConsumingOrMutatingApplyUse(use))
             return true;
           else
             break;
-        case ValueKind::CopyAddrInst:
+        case SILInstructionKind::CopyAddrInst:
           if (isConsumingOrMutatingCopyAddrUse(use))
             return true;
           else
             break;
-        case ValueKind::DestroyAddrInst:
+        case SILInstructionKind::DestroyAddrInst:
           return true;
-        case ValueKind::UncheckedAddrCastInst:
+        case SILInstructionKind::UncheckedAddrCastInst:
           // Escaping use lets be conservative here.
           return true;
-        case ValueKind::CheckedCastAddrBranchInst:
+        case SILInstructionKind::CheckedCastAddrBranchInst:
           if (cast<CheckedCastAddrBranchInst>(inst)->getConsumptionKind() !=
               CastConsumptionKind::CopyOnSuccess)
             return true;
           break;
-        case ValueKind::LoadInst:
+        case SILInstructionKind::LoadInst:
           // A 'non-taking' value load is harmless.
           return cast<LoadInst>(inst)->getOwnershipQualifier() ==
                  LoadOwnershipQualifier::Take;
           break;
-        case ValueKind::DebugValueAddrInst:
+        case SILInstructionKind::DebugValueAddrInst:
           // Harmless use.
           break;
         default:
@@ -3748,8 +3754,7 @@ public:
           
         case KeyPathPatternComponent::Kind::GettableProperty:
         case KeyPathPatternComponent::Kind::SettableProperty: {
-          require(component.getComputedPropertyIndices().empty(),
-                  "subscripts not implemented");
+          bool hasIndices = !component.getComputedPropertyIndices().empty();
         
           // Getter should be <Sig...> @convention(thin) (@in Base) -> @out Result
           {
@@ -3760,14 +3765,25 @@ public:
                       SILFunctionTypeRepresentation::Thin,
                     "getter should be a thin function");
             
-              // TODO: indexes
-            require(substGetterType->getNumParameters() == 1,
+            require(substGetterType->getNumParameters() == 1 + hasIndices,
                     "getter should have one parameter");
-            auto baseParam = substGetterType->getSelfParameter();
-            require(baseParam.getConvention() == ParameterConvention::Indirect_In,
+            auto baseParam = substGetterType->getParameters()[0];
+            require(baseParam.getConvention() ==
+                      ParameterConvention::Indirect_In,
                     "getter base parameter should be @in");
             require(baseParam.getType() == loweredBaseTy.getSwiftRValueType(),
                     "getter base parameter should match base of component");
+            
+            if (hasIndices) {
+              auto indicesParam = substGetterType->getParameters()[1];
+              require(indicesParam.getConvention()
+                        == ParameterConvention::Direct_Unowned,
+                      "indices pointer should be trivial");
+              require(indicesParam.getType()->getAnyNominal()
+                        == C.getUnsafeRawPointerDecl(),
+                      "indices pointer should be an UnsafeRawPointer");
+            }
+
             require(substGetterType->getNumResults() == 1,
                     "getter should have one result");
             auto result = substGetterType->getResults()[0];
@@ -3788,22 +3804,33 @@ public:
             
             require(substSetterType->getRepresentation() ==
                       SILFunctionTypeRepresentation::Thin,
-                    "getter should be a thin function");
+                    "setter should be a thin function");
             
-            // TODO: indexes
-            require(substSetterType->getNumParameters() == 2,
+            require(substSetterType->getNumParameters() == 2 + hasIndices,
                     "setter should have two parameters");
-            auto baseParam = substSetterType->getSelfParameter();
+
+            auto newValueParam = substSetterType->getParameters()[0];
+            require(newValueParam.getConvention() ==
+                      ParameterConvention::Indirect_In,
+                    "setter value parameter should be @in");
+
+            auto baseParam = substSetterType->getParameters()[1];
             require(baseParam.getConvention() ==
                       ParameterConvention::Indirect_In
                     || baseParam.getConvention() ==
                         ParameterConvention::Indirect_Inout,
                     "setter base parameter should be @in or @inout");
-            auto newValueParam = substSetterType->getParameters()[0];
-            require(newValueParam.getConvention() ==
-                      ParameterConvention::Indirect_In,
-                    "setter value parameter should be @in");
             
+            if (hasIndices) {
+              auto indicesParam = substSetterType->getParameters()[2];
+              require(indicesParam.getConvention()
+                        == ParameterConvention::Direct_Unowned,
+                      "indices pointer should be trivial");
+              require(indicesParam.getType()->getAnyNominal()
+                        == C.getUnsafeRawPointerDecl(),
+                      "indices pointer should be an UnsafeRawPointer");
+            }
+
             require(newValueParam.getType() ==
                       loweredComponentTy.getSwiftRValueType(),
                     "setter value should match the maximal abstraction of the "
@@ -3811,6 +3838,86 @@ public:
             
             require(substSetterType->getNumResults() == 0,
                     "setter should have no results");
+          }
+          
+          for (auto &index : component.getComputedPropertyIndices()) {
+            auto opIndex = index.Operand;
+            auto contextType =
+              index.LoweredType.subst(F.getModule(), patternSubs);
+            requireSameType(contextType,
+                            KPI->getAllOperands()[opIndex].get()->getType(),
+                            "operand must match type required by pattern");
+            require(isLoweringOf(index.LoweredType, index.FormalType),
+                    "pattern index formal type doesn't match lowered type");
+          }
+          
+          if (!component.getComputedPropertyIndices().empty()) {
+            // Equals should be
+            // <Sig...> @convention(thin) (RawPointer, RawPointer) -> Bool
+            {
+              auto equals = component.getComputedPropertyIndexEquals();
+              require(equals, "key path pattern with indexes must have equals "
+                              "operator");
+              
+              auto substEqualsType = equals->getLoweredFunctionType()
+                ->substGenericArgs(F.getModule(), KPI->getSubstitutions());
+              
+              require(substEqualsType->getParameters().size() == 2,
+                      "must have two arguments");
+              for (unsigned i = 0; i < 2; ++i) {
+                auto param = substEqualsType->getParameters()[i];
+                require(param.getConvention()
+                          == ParameterConvention::Direct_Unowned,
+                        "indices pointer should be trivial");
+                require(param.getType()->getAnyNominal()
+                          == C.getUnsafeRawPointerDecl(),
+                        "indices pointer should be an UnsafeRawPointer");
+              }
+              
+              require(substEqualsType->getResults().size() == 1,
+                      "must have one result");
+              
+              require(substEqualsType->getResults()[0].getConvention()
+                        == ResultConvention::Unowned,
+                      "result should be unowned");
+              require(substEqualsType->getResults()[0].getType()->getAnyNominal()
+                        == C.getBoolDecl(),
+                      "result should be Bool");
+            }
+            {
+              // Hash should be
+              // <Sig...> @convention(thin) (RawPointer) -> Int
+              auto hash = component.getComputedPropertyIndexHash();
+              require(hash, "key path pattern with indexes must have hash "
+                            "operator");
+              
+              auto substHashType = hash->getLoweredFunctionType()
+                ->substGenericArgs(F.getModule(), KPI->getSubstitutions());
+              
+              require(substHashType->getParameters().size() == 1,
+                      "must have two arguments");
+              auto param = substHashType->getParameters()[0];
+              require(param.getConvention()
+                        == ParameterConvention::Direct_Unowned,
+                      "indices pointer should be trivial");
+              require(param.getType()->getAnyNominal()
+                        == C.getUnsafeRawPointerDecl(),
+                      "indices pointer should be an UnsafeRawPointer");
+              
+              require(substHashType->getResults().size() == 1,
+                      "must have one result");
+              
+              require(substHashType->getResults()[0].getConvention()
+                        == ResultConvention::Unowned,
+                      "result should be unowned");
+              require(substHashType->getResults()[0].getType()->getAnyNominal()
+                        == C.getIntDecl(),
+                      "result should be Int");
+            }
+          } else {
+            require(!component.getComputedPropertyIndexEquals()
+                    && !component.getComputedPropertyIndexHash(),
+                    "component without indexes must not have equals/hash");
           }
 
           break;
@@ -3971,7 +4078,7 @@ public:
   /// - flow-sensitive states must be equivalent on all paths into a block
   void verifyFlowSensitiveRules(SILFunction *F) {
     struct BBState {
-      std::vector<SILInstruction*> Stack;
+      std::vector<SingleValueInstruction*> Stack;
       std::set<BeginAccessInst*> Accesses;
     };
 
@@ -3989,7 +4096,7 @@ public:
         CurInstruction = &i;
 
         if (i.isAllocatingStack()) {
-          state.Stack.push_back(&i);
+          state.Stack.push_back(cast<SingleValueInstruction>(&i));
 
         } else if (i.isDeallocatingStack()) {
           SILValue op = i.getOperand(0);
@@ -4162,7 +4269,13 @@ public:
       require(FoundSelfInPredecessor, "Must be a successor of each predecessor.");
     }
     
-    SILVisitor::visitSILBasicBlock(BB);
+    SILInstructionVisitor::visitSILBasicBlock(BB);
+  }
+
+  void visitBasicBlockArguments(SILBasicBlock *BB) {
+    for (auto argI = BB->args_begin(), argEnd = BB->args_end(); argI != argEnd;
+         ++argI)
+      visitSILArgument(*argI);
   }
 
   void visitSILBasicBlocks(SILFunction *F) {
@@ -4393,12 +4506,14 @@ void SILGlobalVariable::verify() const {
 
   // Verify the static initializer.
   for (const SILInstruction &I : StaticInitializerBlock) {
-    assert(isValidStaticInitializerInst(&I) && "illegal static initializer");
-    if (&I == &StaticInitializerBlock.back()) {
-      assert(I.use_empty() && "Init value must not have another use");
+    assert(isValidStaticInitializerInst(&I, getModule()) &&
+           "illegal static initializer");
+    auto init = cast<SingleValueInstruction>(&I);
+    if (init == &StaticInitializerBlock.back()) {
+      assert(init->use_empty() && "Init value must not have another use");
     } else {
-      assert(!I.use_empty() && "dead instruction in static initializer");
-      assert(!isa<ObjectInst>(&I) &&
+      assert(!init->use_empty() && "dead instruction in static initializer");
+      assert(!isa<ObjectInst>(init) &&
              "object instruction is only allowed for final initial value");
     }
     assert(I.getParent() == &StaticInitializerBlock);
@@ -4414,13 +4529,20 @@ void SILModule::verify() const {
   // Uniquing set to catch symbol name collisions.
   llvm::StringSet<> symbolNames;
 
+  // When merging partial modules, we only link functions from the current
+  // module, without enabling "LinkAll" mode or running the SILLinker pass;
+  // in this case, we need to relax some of the checks.
+  bool SingleFunction = false;
+  if (getOptions().MergePartialModules)
+    SingleFunction = true;
+
   // Check all functions.
   for (const SILFunction &f : *this) {
     if (!symbolNames.insert(f.getName()).second) {
       llvm::errs() << "Symbol redefined: " << f.getName() << "!\n";
       assert(false && "triggering standard assertion failure routine");
     }
-    f.verify(/*SingleFunction=*/false);
+    f.verify(SingleFunction);
   }
 
   // Check all globals.

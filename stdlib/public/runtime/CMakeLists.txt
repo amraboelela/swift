@@ -36,6 +36,7 @@ set(swift_runtime_sources
     Array.cpp
     Casting.cpp
     CygwinPort.cpp
+    HaikuPort.cpp
     Demangle.cpp
     Enum.cpp
     ErrorObjectConstants.cpp
@@ -58,6 +59,7 @@ set(swift_runtime_sources
     ProtocolConformance.cpp
     RefCount.cpp
     RuntimeEntrySymbols.cpp
+    RuntimeInvocationsTracking.cpp
     "${SWIFT_SOURCE_DIR}/lib/Demangling/OldDemangler.cpp"
     "${SWIFT_SOURCE_DIR}/lib/Demangling/Demangler.cpp"
     "${SWIFT_SOURCE_DIR}/lib/Demangling/NodePrinter.cpp"

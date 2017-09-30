@@ -39,6 +39,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/ADT/PointerUnion.h"
@@ -428,6 +429,7 @@ namespace RuntimeConstants {
   const auto NoReturn = llvm::Attribute::NoReturn;
   const auto NoUnwind = llvm::Attribute::NoUnwind;
   const auto ZExt = llvm::Attribute::ZExt;
+  const auto FirstParamReturned = llvm::Attribute::Returned;
 } // namespace RuntimeConstants
 
 // We don't use enough attributes to justify generalizing the
@@ -435,6 +437,11 @@ namespace RuntimeConstants {
 // associated with the return type not the function type.
 static bool isReturnAttribute(llvm::Attribute::AttrKind Attr) {
   return Attr == llvm::Attribute::ZExt;
+}
+// Similar to the 'return' attribute we assume that the 'returned' attributed is
+// associated with the first function parameter.
+static bool isReturnedAttribute(llvm::Attribute::AttrKind Attr) {
+  return Attr == llvm::Attribute::Returned;
 }
 
 llvm::Constant *swift::getRuntimeFn(llvm::Module &Module,
@@ -471,15 +478,19 @@ llvm::Constant *swift::getRuntimeFn(llvm::Module &Module,
 
     llvm::AttrBuilder buildFnAttr;
     llvm::AttrBuilder buildRetAttr;
+    llvm::AttrBuilder buildFirstParamAttr;
 
     for (auto Attr : attrs) {
       if (isReturnAttribute(Attr))
         buildRetAttr.addAttribute(Attr);
+      else if (isReturnedAttribute(Attr))
+        buildFirstParamAttr.addAttribute(Attr);
       else
         buildFnAttr.addAttribute(Attr);
     }
     fn->addAttributes(llvm::AttributeList::FunctionIndex, buildFnAttr);
     fn->addAttributes(llvm::AttributeList::ReturnIndex, buildRetAttr);
+    fn->addParamAttrs(0, buildFirstParamAttr);
   }
 
   return cache;
@@ -543,10 +554,14 @@ llvm::Constant *swift::getWrapperFn(llvm::Module &Module,
 
 
     auto fnPtr = Builder.CreateLoad(globalFnPtr, "load");
+
     auto call = Builder.CreateCall(fnPtr, args);
     call->setCallingConv(cc);
     call->setTailCall(true);
-
+    for (auto Attr : attrs)
+      if (isReturnedAttribute(Attr)) {
+        call->addParamAttr(0, llvm::Attribute::Returned);
+      }
     auto VoidTy = llvm::Type::getVoidTy(Module.getContext());
     if (retTypes.size() == 1 && *retTypes.begin() == VoidTy)
       Builder.CreateRetVoid();
@@ -1110,6 +1125,16 @@ bool IRGenModule::finalize() {
 /// IRGenModule.
 void IRGenModule::emitLazyPrivateDefinitions() {
   emitLazyObjCProtocolDefinitions();
+}
+
+llvm::MDNode *IRGenModule::createProfileWeights(uint64_t TrueCount,
+                                                uint64_t FalseCount) const {
+  uint64_t MaxWeight = std::max(TrueCount, FalseCount);
+  uint64_t Scale = (MaxWeight > UINT32_MAX) ? UINT32_MAX : 1;
+  uint32_t ScaledTrueCount = (TrueCount / Scale) + 1;
+  uint32_t ScaledFalseCount = (FalseCount / Scale) + 1;
+  llvm::MDBuilder MDHelper(getLLVMContext());
+  return MDHelper.createBranchWeights(ScaledTrueCount, ScaledFalseCount);
 }
 
 void IRGenModule::unimplemented(SourceLoc loc, StringRef message) {

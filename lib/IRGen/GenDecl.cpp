@@ -130,7 +130,8 @@ public:
     class_replaceMethod = IGM.getClassReplaceMethodFn();
     class_addProtocol = IGM.getClassAddProtocolFn();
 
-    CanType origTy = ext->getDeclaredTypeOfContext()->getCanonicalType();
+    CanType origTy = ext->getAsNominalTypeOrNominalTypeExtensionContext()
+        ->getDeclaredType()->getCanonicalType();
     classMetadata =
       tryEmitConstantHeapMetadataRef(IGM, origTy, /*allowUninit*/ true);
     assert(classMetadata &&
@@ -1096,12 +1097,8 @@ void IRGenModule::emitTypeVerifier() {
     Builder.CreateCall(VerifierFunction, {});
   }
 
-  IRGenFunction VerifierIGF(*this, VerifierFunction);
-  if (DebugInfo)
-    DebugInfo->emitArtificialFunction(VerifierIGF, VerifierFunction);
-
-  emitTypeLayoutVerifier(VerifierIGF, TypesToVerify);
-  VerifierIGF.Builder.CreateRetVoid();
+  IRGenTypeVerifierFunction VerifierIGF(*this, VerifierFunction);
+  VerifierIGF.emit(TypesToVerify);
 }
 
 /// Get SIL-linkage for something that's not required to be visible
@@ -1418,7 +1415,8 @@ getIRLinkage(const UniversalLinkageInfo &info, SILLinkage linkage,
 
   case SILLinkage::Shared:
   case SILLinkage::SharedExternal:
-    return RESULT(LinkOnceODR, Hidden, Default);
+    return isDefinition ? RESULT(LinkOnceODR, Hidden, Default)
+                        : RESULT(External, Hidden, Default);
 
   case SILLinkage::Hidden:
     return RESULT(External, Hidden, Default);
@@ -2564,8 +2562,9 @@ IRGenModule::getAddrOfGenericTypeMetadataAccessFunction(
                                            NominalTypeDecl *nominal,
                                            ArrayRef<llvm::Type *> genericArgs,
                                            ForDefinition_t forDefinition) {
-  assert(!genericArgs.empty());
   assert(nominal->isGenericContext());
+  assert(!genericArgs.empty() ||
+         nominal->getGenericSignature()->areAllParamsConcrete());
   IRGen.addLazyTypeMetadata(nominal);
 
   auto type = nominal->getDeclaredType()->getCanonicalType();

@@ -20,15 +20,35 @@ from swift_build_support.swift_build_support import workspace
 from swift_build_support.swift_build_support.targets import \
     StdlibDeploymentTarget
 
+from . import defaults
+
 
 __all__ = [
-    'apply_default_arguments',
     'create_argument_parser',
 ]
 
 
-def apply_default_arguments(args):
-    """Preprocess argument namespace to apply default behaviors."""
+class _ApplyDefaultsArgumentParser(argparse.ArgumentParser):
+    """Wrapper class around the default ArgumentParser that allows for
+    post-processing the parsed argument namespace to apply default argument
+    transformations.
+    """
+
+    def __init__(self, apply_defaults=None, *args, **kwargs):
+        self._apply_defaults = apply_defaults
+        super(_ApplyDefaultsArgumentParser, self).__init__(*args, **kwargs)
+
+    def parse_known_args(self, args=None, namespace=None):
+        args, argv = super(_ApplyDefaultsArgumentParser, self)\
+            .parse_known_args(args, namespace)
+
+        self._apply_defaults(args)
+        return args, argv
+
+
+def _apply_default_arguments(args):
+    """Preprocess argument namespace to apply default behaviors.
+    """
 
     # Build cmark if any cmark-related options were specified.
     if (args.cmark_build_variant is not None):
@@ -108,11 +128,6 @@ def apply_default_arguments(args):
         raise ValueError("error: --watchos-all is unavailable in open-source "
                          "Swift.\nUse --watchos to skip watchOS device tests.")
 
-    ninja_required = (
-        args.cmake_generator == 'Ninja' or args.build_foundation)
-    if ninja_required:
-        args.build_ninja = ninja_required
-
     # SwiftPM and XCTest have a dependency on Foundation.
     # On OS X, Foundation is built automatically using xcodebuild.
     # On Linux, we must ensure that it is built manually.
@@ -129,15 +144,16 @@ def apply_default_arguments(args):
 
     # Propagate global --skip-build
     if args.skip_build:
-        args.skip_build_linux = True
-        args.skip_build_freebsd = True
-        args.skip_build_cygwin = True
-        args.skip_build_osx = True
-        args.skip_build_ios = True
-        args.skip_build_tvos = True
-        args.skip_build_watchos = True
-        args.skip_build_android = True
-        args.skip_build_benchmarks = True
+        args.build_linux = False
+        args.build_freebsd = False
+        args.build_cygwin = False
+        args.build_osx = False
+        args.build_ios = False
+        args.build_tvos = False
+        args.build_watchos = False
+        args.build_android = False
+        args.build_benchmarks = False
+        args.build_external_benchmarks = False
         args.build_lldb = False
         args.build_llbuild = False
         args.build_swiftpm = False
@@ -150,20 +166,20 @@ def apply_default_arguments(args):
 
     # --skip-{ios,tvos,watchos} or --skip-build-{ios,tvos,watchos} are
     # merely shorthands for --skip-build-{**os}-{device,simulator}
-    if not args.ios or args.skip_build_ios:
-        args.skip_build_ios_device = True
-        args.skip_build_ios_simulator = True
+    if not args.ios or not args.build_ios:
+        args.build_ios_device = False
+        args.build_ios_simulator = False
 
-    if not args.tvos or args.skip_build_tvos:
-        args.skip_build_tvos_device = True
-        args.skip_build_tvos_simulator = True
+    if not args.tvos or not args.build_tvos:
+        args.build_tvos_device = False
+        args.build_tvos_simulator = False
 
-    if not args.watchos or args.skip_build_watchos:
-        args.skip_build_watchos_device = True
-        args.skip_build_watchos_simulator = True
+    if not args.watchos or not args.build_watchos:
+        args.build_watchos_device = False
+        args.build_watchos_simulator = False
 
-    if not args.android or args.skip_build_android:
-        args.skip_build_android = True
+    if not args.android or not args.build_android:
+        args.build_android = False
 
     # --validation-test implies --test.
     if args.validation_test:
@@ -177,55 +193,65 @@ def apply_default_arguments(args):
     if args.test_optimize_for_size:
         args.test = True
 
+    # --test-paths implies --test and/or --validation-test
+    # depending on what directories/files have been specified.
+    if args.test_paths:
+        for path in args.test_paths:
+            if path.startswith('test'):
+                args.test = True
+            elif path.startswith('validation-test'):
+                args.test = True
+                args.validation_test = True
+
     # If none of tests specified skip swift stdlib test on all platforms
     if not args.test and not args.validation_test and not args.long_test:
-        args.skip_test_linux = True
-        args.skip_test_freebsd = True
-        args.skip_test_cygwin = True
-        args.skip_test_osx = True
-        args.skip_test_ios = True
-        args.skip_test_tvos = True
-        args.skip_test_watchos = True
+        args.test_linux = False
+        args.test_freebsd = False
+        args.test_cygwin = False
+        args.test_osx = False
+        args.test_ios = False
+        args.test_tvos = False
+        args.test_watchos = False
 
     # --skip-test-ios is merely a shorthand for host and simulator tests.
-    if args.skip_test_ios:
-        args.skip_test_ios_host = True
-        args.skip_test_ios_simulator = True
+    if not args.test_ios:
+        args.test_ios_host = False
+        args.test_ios_simulator = False
     # --skip-test-tvos is merely a shorthand for host and simulator tests.
-    if args.skip_test_tvos:
-        args.skip_test_tvos_host = True
-        args.skip_test_tvos_simulator = True
+    if not args.test_tvos:
+        args.test_tvos_host = False
+        args.test_tvos_simulator = False
     # --skip-test-watchos is merely a shorthand for host and simulator
     # --tests.
-    if args.skip_test_watchos:
-        args.skip_test_watchos_host = True
-        args.skip_test_watchos_simulator = True
+    if not args.test_watchos:
+        args.test_watchos_host = False
+        args.test_watchos_simulator = False
 
     # --skip-build-{ios,tvos,watchos}-{device,simulator} implies
     # --skip-test-{ios,tvos,watchos}-{host,simulator}
-    if args.skip_build_ios_device:
-        args.skip_test_ios_host = True
-    if args.skip_build_ios_simulator:
-        args.skip_test_ios_simulator = True
+    if not args.build_ios_device:
+        args.test_ios_host = False
+    if not args.build_ios_simulator:
+        args.test_ios_simulator = False
 
-    if args.skip_build_tvos_device:
-        args.skip_test_tvos_host = True
-    if args.skip_build_tvos_simulator:
-        args.skip_test_tvos_simulator = True
+    if not args.build_tvos_device:
+        args.test_tvos_host = False
+    if not args.build_tvos_simulator:
+        args.test_tvos_simulator = False
 
-    if args.skip_build_watchos_device:
-        args.skip_test_watchos_host = True
-    if args.skip_build_watchos_simulator:
-        args.skip_test_watchos_simulator = True
+    if not args.build_watchos_device:
+        args.test_watchos_host = False
+    if not args.build_watchos_simulator:
+        args.test_watchos_simulator = False
 
-    if args.skip_build_android:
-        args.skip_test_android_host = True
+    if not args.build_android:
+        args.test_android_host = False
 
     if not args.host_test:
-        args.skip_test_ios_host = True
-        args.skip_test_tvos_host = True
-        args.skip_test_watchos_host = True
-        args.skip_test_android_host = True
+        args.test_ios_host = False
+        args.test_tvos_host = False
+        args.test_watchos_host = False
+        args.test_android_host = False
 
     if args.build_subdir is None:
         args.build_subdir = \
@@ -244,11 +270,14 @@ def apply_default_arguments(args):
                     if StdlibDeploymentTarget.Android.contains(tgt)]
     if not args.android and len(android_tgts) > 0:
         args.android = True
-        args.skip_build_android = True
+        args.build_android = False
 
 
 def create_argument_parser():
-    parser = argparse.ArgumentParser(
+    """Return a configured argument parser."""
+
+    parser = _ApplyDefaultsArgumentParser(
+        apply_defaults=_apply_default_arguments,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         usage=USAGE,
         description=DESCRIPTION,
@@ -312,22 +341,22 @@ def create_argument_parser():
     projects_group.add_argument(
         "--xctest",
         help="build xctest",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         dest="build_xctest")
     projects_group.add_argument(
         "--foundation",
         help="build foundation",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         dest="build_foundation")
     projects_group.add_argument(
         "--libdispatch",
         help="build libdispatch",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         dest="build_libdispatch")
     projects_group.add_argument(
         "--libicu",
         help="build libicu",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         dest="build_libicu")
     projects_group.add_argument(
         "--playgroundlogger",
@@ -342,7 +371,7 @@ def create_argument_parser():
     projects_group.add_argument(
         "--build-ninja",
         help="build the Ninja tool",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
 
     extra_actions_group = parser.add_argument_group(
         title="Extra actions to perform before or in addition to building")
@@ -353,7 +382,7 @@ def create_argument_parser():
     extra_actions_group.add_argument(
         "--export-compile-commands",
         help="generate compilation databases in addition to building",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     extra_actions_group.add_argument(
         "--symbols-package",
         metavar="PATH",
@@ -542,7 +571,7 @@ def create_argument_parser():
     run_tests_group.add_argument(
         "--test",
         help="test Swift after building",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_tests_group.add_argument(
         "-T",
         help="run the validation test suite (implies --test)",
@@ -552,7 +581,13 @@ def create_argument_parser():
     run_tests_group.add_argument(
         "--validation-test",
         help="run the validation test suite (implies --test)",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
+    run_tests_group.add_argument(
+        "--test-paths",
+        help="run tests located in specific directories and/or files \
+        (implies --test and/or --validation-test)",
+        action=arguments.action.concat, type=arguments.type.shell_split,
+        default=[])
     run_tests_group.add_argument(
         "-o",
         help="run the test suite in optimized mode too (implies --test)",
@@ -562,7 +597,7 @@ def create_argument_parser():
     run_tests_group.add_argument(
         "--test-optimized",
         help="run the test suite in optimized mode too (implies --test)",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_tests_group.add_argument(
         "-s",
         help="run the test suite in optimize for size mode too \
@@ -574,15 +609,15 @@ def create_argument_parser():
         "--test-optimize-for-size",
         help="run the test suite in optimize for size mode too \
         (implies --test)",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_tests_group.add_argument(
         "--long-test",
         help="run the long test suite",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_tests_group.add_argument(
         "--host-test",
         help="run executable tests on host devices (such as iOS or tvOS)",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_tests_group.add_argument(
         "-B", "--benchmark",
         help="run the Swift Benchmark Suite after building",
@@ -598,180 +633,215 @@ iterations with -O",
         iterations with -Onone", metavar='N', type=int, default=3)
     run_tests_group.add_argument(
         "--skip-test-osx",
-        help="skip testing Swift stdlibs for Mac OS X",
-        action=arguments.action.optional_bool)
+        dest='test_osx',
+        action=arguments.action.disable,
+        help="skip testing Swift stdlibs for Mac OS X")
     run_tests_group.add_argument(
         "--skip-test-linux",
-        help="skip testing Swift stdlibs for Linux",
-        action=arguments.action.optional_bool)
+        dest='test_linux',
+        action=arguments.action.disable,
+        help="skip testing Swift stdlibs for Linux")
     run_tests_group.add_argument(
         "--skip-test-freebsd",
-        help="skip testing Swift stdlibs for FreeBSD",
-        action=arguments.action.optional_bool)
+        dest='test_freebsd',
+        action=arguments.action.disable,
+        help="skip testing Swift stdlibs for FreeBSD")
     run_tests_group.add_argument(
         "--skip-test-cygwin",
-        help="skip testing Swift stdlibs for Cygwin",
-        action=arguments.action.optional_bool)
+        dest='test_cygwin',
+        action=arguments.action.disable,
+        help="skip testing Swift stdlibs for Cygwin")
     parser.add_argument(
         "--build-runtime-with-host-compiler",
         help="Use the host compiler, not the self-built one to compile the "
              "Swift runtime",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
 
     run_build_group = parser.add_argument_group(
         title="Run build")
     run_build_group.add_argument(
         "--build-swift-dynamic-stdlib",
         help="build dynamic variants of the Swift standard library",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         default=True)
     run_build_group.add_argument(
         "--build-swift-static-stdlib",
         help="build static variants of the Swift standard library",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_build_group.add_argument(
         "--build-swift-dynamic-sdk-overlay",
         help="build dynamic variants of the Swift SDK overlay",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         default=True)
     run_build_group.add_argument(
         "--build-swift-static-sdk-overlay",
         help="build static variants of the Swift SDK overlay",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_build_group.add_argument(
         "--build-swift-stdlib-unittest-extra",
         help="Build optional StdlibUnittest components",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     run_build_group.add_argument(
         "-S", "--skip-build",
         help="generate build directory only without building",
         action="store_true")
     run_build_group.add_argument(
         "--skip-build-linux",
-        help="skip building Swift stdlibs for Linux",
-        action=arguments.action.optional_bool)
+        dest='build_linux',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for Linux")
     run_build_group.add_argument(
         "--skip-build-freebsd",
-        help="skip building Swift stdlibs for FreeBSD",
-        action=arguments.action.optional_bool)
+        dest='build_freebsd',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for FreeBSD")
     run_build_group.add_argument(
         "--skip-build-cygwin",
-        help="skip building Swift stdlibs for Cygwin",
-        action=arguments.action.optional_bool)
+        dest='build_cygwin',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for Cygwin")
     run_build_group.add_argument(
         "--skip-build-osx",
-        help="skip building Swift stdlibs for MacOSX",
-        action=arguments.action.optional_bool)
+        dest='build_osx',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for MacOSX")
 
     run_build_group.add_argument(
         "--skip-build-ios",
-        help="skip building Swift stdlibs for iOS",
-        action=arguments.action.optional_bool)
+        dest='build_ios',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for iOS")
     run_build_group.add_argument(
         "--skip-build-ios-device",
+        dest='build_ios_device',
+        action=arguments.action.disable,
         help="skip building Swift stdlibs for iOS devices "
-             "(i.e. build simulators only)",
-        action=arguments.action.optional_bool)
+             "(i.e. build simulators only)")
     run_build_group.add_argument(
         "--skip-build-ios-simulator",
+        dest='build_ios_simulator',
+        action=arguments.action.disable,
         help="skip building Swift stdlibs for iOS simulator "
-             "(i.e. build devices only)",
-        action=arguments.action.optional_bool)
+             "(i.e. build devices only)")
 
     run_build_group.add_argument(
         "--skip-build-tvos",
-        help="skip building Swift stdlibs for tvOS",
-        action=arguments.action.optional_bool)
+        dest='build_tvos',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for tvOS")
     run_build_group.add_argument(
         "--skip-build-tvos-device",
+        dest='build_tvos_device',
+        action=arguments.action.disable,
         help="skip building Swift stdlibs for tvOS devices "
-             "(i.e. build simulators only)",
-        action=arguments.action.optional_bool)
+             "(i.e. build simulators only)")
     run_build_group.add_argument(
         "--skip-build-tvos-simulator",
+        dest='build_tvos_simulator',
+        action=arguments.action.disable,
         help="skip building Swift stdlibs for tvOS simulator "
-             "(i.e. build devices only)",
-        action=arguments.action.optional_bool)
+             "(i.e. build devices only)")
 
     run_build_group.add_argument(
         "--skip-build-watchos",
-        help="skip building Swift stdlibs for watchOS",
-        action=arguments.action.optional_bool)
+        dest='build_watchos',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for watchOS")
     run_build_group.add_argument(
         "--skip-build-watchos-device",
+        dest='build_watchos_device',
+        action=arguments.action.disable,
         help="skip building Swift stdlibs for watchOS devices "
-             "(i.e. build simulators only)",
-        action=arguments.action.optional_bool)
+             "(i.e. build simulators only)")
     run_build_group.add_argument(
         "--skip-build-watchos-simulator",
+        dest='build_watchos_simulator',
+        action=arguments.action.disable,
         help="skip building Swift stdlibs for watchOS simulator "
-             "(i.e. build devices only)",
-        action=arguments.action.optional_bool)
+             "(i.e. build devices only)")
 
     run_build_group.add_argument(
         "--skip-build-android",
-        help="skip building Swift stdlibs for Android",
-        action=arguments.action.optional_bool)
+        dest='build_android',
+        action=arguments.action.disable,
+        help="skip building Swift stdlibs for Android")
 
     run_build_group.add_argument(
         "--skip-build-benchmarks",
-        help="skip building Swift Benchmark Suite",
-        action=arguments.action.optional_bool)
+        dest='build_benchmarks',
+        action=arguments.action.disable,
+        help="skip building Swift Benchmark Suite")
+
+    run_build_group.add_argument(
+        "--build-external-benchmarks",
+        dest='build_external_benchmarks',
+        action=arguments.action.enable,
+        help="skip building Swift Benchmark Suite")
 
     skip_test_group = parser.add_argument_group(
         title="Skip testing specified targets")
     skip_test_group.add_argument(
         "--skip-test-ios",
+        dest='test_ios',
+        action=arguments.action.disable,
         help="skip testing all iOS targets. Equivalent to specifying both "
-             "--skip-test-ios-simulator and --skip-test-ios-host",
-        action=arguments.action.optional_bool)
+             "--skip-test-ios-simulator and --skip-test-ios-host")
     skip_test_group.add_argument(
         "--skip-test-ios-simulator",
-        help="skip testing iOS simulator targets",
-        action=arguments.action.optional_bool)
+        dest='test_ios_simulator',
+        action=arguments.action.disable,
+        help="skip testing iOS simulator targets")
     skip_test_group.add_argument(
         "--skip-test-ios-32bit-simulator",
-        help="skip testing iOS 32 bit simulator targets",
-        action=arguments.action.optional_bool,
-        default=False)
+        dest='test_ios_32bit_simulator',
+        action=arguments.action.disable,
+        help="skip testing iOS 32 bit simulator targets")
     skip_test_group.add_argument(
         "--skip-test-ios-host",
+        dest='test_ios_host',
+        action=arguments.action.disable,
         help="skip testing iOS device targets on the host machine (the phone "
-             "itself)",
-        action=arguments.action.optional_bool)
+             "itself)")
     skip_test_group.add_argument(
         "--skip-test-tvos",
+        dest='test_tvos',
+        action=arguments.action.disable,
         help="skip testing all tvOS targets. Equivalent to specifying both "
-             "--skip-test-tvos-simulator and --skip-test-tvos-host",
-        action=arguments.action.optional_bool)
+             "--skip-test-tvos-simulator and --skip-test-tvos-host")
     skip_test_group.add_argument(
         "--skip-test-tvos-simulator",
-        help="skip testing tvOS simulator targets",
-        action=arguments.action.optional_bool)
+        dest='test_tvos_simulator',
+        action=arguments.action.disable,
+        help="skip testing tvOS simulator targets")
     skip_test_group.add_argument(
         "--skip-test-tvos-host",
+        dest='test_tvos_host',
+        action=arguments.action.disable,
         help="skip testing tvOS device targets on the host machine (the TV "
-             "itself)",
-        action=arguments.action.optional_bool)
+             "itself)")
     skip_test_group.add_argument(
         "--skip-test-watchos",
+        dest='test_watchos',
+        action=arguments.action.disable,
         help="skip testing all tvOS targets. Equivalent to specifying both "
-             "--skip-test-watchos-simulator and --skip-test-watchos-host",
-        action=arguments.action.optional_bool)
+             "--skip-test-watchos-simulator and --skip-test-watchos-host")
     skip_test_group.add_argument(
         "--skip-test-watchos-simulator",
-        help="skip testing watchOS simulator targets",
-        action=arguments.action.optional_bool)
+        dest='test_watchos_simulator',
+        action=arguments.action.disable,
+        help="skip testing watchOS simulator targets")
     skip_test_group.add_argument(
         "--skip-test-watchos-host",
+        dest='test_watchos_host',
+        action=arguments.action.disable,
         help="skip testing watchOS device targets on the host machine (the "
-             "watch itself)",
-        action=arguments.action.optional_bool)
+             "watch itself)")
     skip_test_group.add_argument(
         "--skip-test-android-host",
+        dest='test_android_host',
+        action=arguments.action.disable,
         help="skip testing Android device targets on the host machine (the "
-             "phone itself)",
-        action=arguments.action.optional_bool)
+             "phone itself)")
 
     parser.add_argument(
         "-i", "--ios",
@@ -793,11 +863,11 @@ iterations with -O",
         "--tvos",
         help="also build for tvOS, but disallow tests that require a tvos "
              "device",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     parser.add_argument(
         "--tvos-all",
         help="also build for tvOS, and allow all tvOS tests",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         dest="tvos_all")
     parser.add_argument(
         "--skip-tvos",
@@ -809,11 +879,11 @@ iterations with -O",
         "--watchos",
         help="also build for watchOS, but disallow tests that require an "
              "watchOS device",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     parser.add_argument(
         "--watchos-all",
         help="also build for Apple watchOS, and allow all Apple watchOS tests",
-        action=arguments.action.optional_bool,
+        action=arguments.action.enable,
         dest="watchos_all")
     parser.add_argument(
         "--skip-watchos",
@@ -824,14 +894,15 @@ iterations with -O",
     parser.add_argument(
         "--android",
         help="also build for Android",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
 
     parser.add_argument(
         "--swift-analyze-code-coverage",
         help="enable code coverage analysis in Swift (false, not-merged, "
              "merged).",
         choices=["false", "not-merged", "merged"],
-        default="false",  # so CMake can see the inert mode as a false value
+        # so CMake can see the inert mode as a false value
+        default=defaults.SWIFT_ANALYZE_CODE_COVERAGE,
         dest="swift_analyze_code_coverage")
 
     parser.add_argument(
@@ -860,7 +931,7 @@ iterations with -O",
     parser.add_argument(
         "--darwin-xcrun-toolchain",
         help="the name of the toolchain to use on Darwin",
-        default="default")
+        default=defaults.DARWIN_XCRUN_TOOLCHAIN)
     parser.add_argument(
         "--cmake",
         help="the path to a CMake executable that will be used to build "
@@ -870,7 +941,7 @@ iterations with -O",
     parser.add_argument(
         "--show-sdks",
         help="print installed Xcode and SDK versions",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
 
     parser.add_argument(
         "--extra-swift-args",
@@ -956,31 +1027,31 @@ iterations with -O",
     parser.add_argument(
         "--distcc",
         help="use distcc in pump mode",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     parser.add_argument(
         "--enable-asan",
         help="enable Address Sanitizer",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     parser.add_argument(
         "--enable-ubsan",
         help="enable Undefined Behavior Sanitizer",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     parser.add_argument(
         "--enable-tsan",
         help="enable Thread Sanitizer for swift tools",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
     parser.add_argument(
         "--enable-tsan-runtime",
         help="enable Thread Sanitizer on the swift runtime")
     parser.add_argument(
         "--enable-lsan",
         help="enable Leak Sanitizer for swift tools",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
 
     parser.add_argument(
         "--compiler-vendor",
         choices=["none", "apple"],
-        default="none",
+        default=defaults.COMPILER_VENDOR,
         help="Compiler vendor name")
     parser.add_argument(
         "--clang-compiler-version",
@@ -991,7 +1062,7 @@ iterations with -O",
         "--clang-user-visible-version",
         help="User-visible version of the embedded Clang and LLVM compilers",
         type=arguments.type.clang_compiler_version,
-        default="5.0.0",
+        default=defaults.CLANG_USER_VISIBLE_VERSION,
         metavar="MAJOR.MINOR.PATCH")
     parser.add_argument(
         "--swift-compiler-version",
@@ -1002,29 +1073,29 @@ iterations with -O",
         "--swift-user-visible-version",
         help="User-visible version of the embedded Swift compiler",
         type=arguments.type.swift_compiler_version,
-        default="4.1",
+        default=defaults.SWIFT_USER_VISIBLE_VERSION,
         metavar="MAJOR.MINOR")
 
     parser.add_argument(
         "--darwin-deployment-version-osx",
         help="minimum deployment target version for OS X",
         metavar="MAJOR.MINOR",
-        default="10.9")
+        default=defaults.DARWIN_DEPLOYMENT_VERSION_OSX)
     parser.add_argument(
         "--darwin-deployment-version-ios",
         help="minimum deployment target version for iOS",
         metavar="MAJOR.MINOR",
-        default="7.0")
+        default=defaults.DARWIN_DEPLOYMENT_VERSION_IOS)
     parser.add_argument(
         "--darwin-deployment-version-tvos",
         help="minimum deployment target version for tvOS",
         metavar="MAJOR.MINOR",
-        default="9.0")
+        default=defaults.DARWIN_DEPLOYMENT_VERSION_TVOS)
     parser.add_argument(
         "--darwin-deployment-version-watchos",
         help="minimum deployment target version for watchOS",
         metavar="MAJOR.MINOR",
-        default="2.0")
+        default=defaults.DARWIN_DEPLOYMENT_VERSION_WATCHOS)
 
     parser.add_argument(
         "--extra-cmake-options",
@@ -1046,7 +1117,7 @@ iterations with -O",
     parser.add_argument(
         "--verbose-build",
         help="print the commands executed during the build",
-        action=arguments.action.optional_bool)
+        action=arguments.action.enable)
 
     parser.add_argument(
         "--lto",
@@ -1112,6 +1183,8 @@ iterations with -O",
 
     return parser
 
+
+# ----------------------------------------------------------------------------
 
 USAGE = """
   %(prog)s [-h | --help] [OPTION ...]

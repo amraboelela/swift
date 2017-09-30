@@ -147,14 +147,6 @@ static Type computeExtensionType(const ExtensionDecl *ED, DeclTypeKind kind) {
   llvm_unreachable("Unhandled DeclTypeKind in switch.");
 }
 
-Type DeclContext::getDeclaredTypeOfContext() const {
-  if (auto *ED = dyn_cast<ExtensionDecl>(this))
-    return computeExtensionType(ED, DeclTypeKind::DeclaredType);
-  if (auto *NTD = dyn_cast<NominalTypeDecl>(this))
-    return NTD->getDeclaredType();
-  return Type();
-}
-
 Type DeclContext::getDeclaredTypeInContext() const {
   if (auto *ED = dyn_cast<ExtensionDecl>(this))
     return computeExtensionType(ED, DeclTypeKind::DeclaredTypeInContext);
@@ -519,8 +511,10 @@ ResilienceExpansion DeclContext::getResilienceExpansion() const {
   for (const auto *dc = this; dc->isLocalContext(); dc = dc->getParent()) {
     // Default argument initializer contexts have their resilience expansion
     // set when they're type checked.
-    if (auto *DAI = dyn_cast<DefaultArgumentInitializer>(dc))
-      return DAI->getResilienceExpansion();
+    if (isa<DefaultArgumentInitializer>(dc)) {
+      return cast<AbstractFunctionDecl>(dc->getParent())
+          ->getDefaultArgumentResilienceExpansion();
+    }
 
     if (auto *AFD = dyn_cast<AbstractFunctionDecl>(dc)) {
       // If the function is a nested function, we will serialize its body if
@@ -948,9 +942,9 @@ void IterableDeclContext::setMemberLoader(LazyMemberLoader *loader,
   ++NumLazyIterableDeclContexts;
   ++NumUnloadedLazyIterableDeclContexts;
   // FIXME: (transitional) increment the redundant "always-on" counter.
-  if (ctx.Stats) {
-    ++ctx.Stats->getFrontendCounters().NumLazyIterableDeclContexts;
-    ++ctx.Stats->getFrontendCounters().NumUnloadedLazyIterableDeclContexts;
+  if (auto s = ctx.Stats) {
+    ++s->getFrontendCounters().NumLazyIterableDeclContexts;
+    ++s->getFrontendCounters().NumUnloadedLazyIterableDeclContexts;
   }
 }
 
@@ -980,8 +974,8 @@ void IterableDeclContext::loadAllMembers() const {
 
   --NumUnloadedLazyIterableDeclContexts;
   // FIXME: (transitional) decrement the redundant "always-on" counter.
-  if (ctx.Stats)
-    ctx.Stats->getFrontendCounters().NumUnloadedLazyIterableDeclContexts--;
+  if (auto s = ctx.Stats)
+    s->getFrontendCounters().NumUnloadedLazyIterableDeclContexts--;
 }
 
 bool IterableDeclContext::classof(const Decl *D) {

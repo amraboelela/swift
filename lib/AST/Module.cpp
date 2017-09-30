@@ -283,10 +283,10 @@ void SourceLookupCache::lookupClassMembers(AccessPathTy accessPath,
         continue;
 
       for (ValueDecl *vd : member.second) {
-        Type ty = vd->getDeclContext()->getDeclaredTypeOfContext();
-        if (auto nominal = ty->getAnyNominal())
-          if (nominal->getName() == accessPath.front().first)
-            consumer.foundDecl(vd, DeclVisibilityKind::DynamicLookup);
+        auto *nominal = vd->getDeclContext()
+           ->getAsNominalTypeOrNominalTypeExtensionContext();
+        if (nominal && nominal->getName() == accessPath.front().first)
+          consumer.foundDecl(vd, DeclVisibilityKind::DynamicLookup);
       }
     }
     return;
@@ -318,10 +318,10 @@ void SourceLookupCache::lookupClassMember(AccessPathTy accessPath,
   
   if (!accessPath.empty()) {
     for (ValueDecl *vd : iter->second) {
-      Type ty = vd->getDeclContext()->getDeclaredTypeOfContext();
-      if (auto nominal = ty->getAnyNominal())
-        if (nominal->getName() == accessPath.front().first)
-          results.push_back(vd);
+      auto *nominal = vd->getDeclContext()
+         ->getAsNominalTypeOrNominalTypeExtensionContext();
+      if (nominal && nominal->getName() == accessPath.front().first)
+        results.push_back(vd);
     }
     return;
   }
@@ -663,13 +663,11 @@ ModuleDecl::lookupConformance(Type type, ProtocolDecl *protocol) {
   if (auto inherited = dyn_cast<InheritedProtocolConformance>(conformance)) {
     // Dig out the conforming nominal type.
     auto rootConformance = inherited->getRootNormalConformance();
-    auto conformingNominal
+    auto conformingClass
       = rootConformance->getType()->getClassOrBoundGenericClass();
 
     // Map up to our superclass's type.
-    Type superclassTy = type->getSuperclass();
-    while (superclassTy->getAnyNominal() != conformingNominal)
-      superclassTy = superclassTy->getSuperclass();
+    auto superclassTy = type->getSuperclassForDecl(conformingClass);
 
     // Compute the conformance for the inherited type.
     auto inheritedConformance = lookupConformance(superclassTy, protocol);
@@ -1214,7 +1212,7 @@ bool ModuleDecl::walk(ASTWalker &Walker) {
   return false;
 }
 
-const clang::Module *ModuleDecl::findUnderlyingClangModule() {
+const clang::Module *ModuleDecl::findUnderlyingClangModule() const {
   for (auto *FU : getFiles()) {
     if (auto *Mod = FU->getUnderlyingClangModule())
       return Mod;
@@ -1291,15 +1289,17 @@ SourceFile::getCachedVisibleDecls() const {
   return getCache().AllVisibleValues;
 }
 
-static void performAutoImport(SourceFile &SF,
-                              SourceFile::ImplicitModuleImportKind modImpKind) {
+static void performAutoImport(
+    SourceFile &SF,
+    SourceFile::ImplicitModuleImportKind implicitModuleImportKind) {
   if (SF.Kind == SourceFileKind::SIL)
-    assert(modImpKind == SourceFile::ImplicitModuleImportKind::None);
+    assert(implicitModuleImportKind ==
+           SourceFile::ImplicitModuleImportKind::None);
 
   ASTContext &Ctx = SF.getASTContext();
   ModuleDecl *M = nullptr;
 
-  switch (modImpKind) {
+  switch (implicitModuleImportKind) {
   case SourceFile::ImplicitModuleImportKind::None:
     return;
   case SourceFile::ImplicitModuleImportKind::Builtin:

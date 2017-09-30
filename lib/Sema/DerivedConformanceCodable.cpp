@@ -244,26 +244,19 @@ validateCodingKeysEnum(TypeChecker &tc, EnumDecl *codingKeysDecl,
   if (!properties.empty() &&
       proto->isSpecificProtocol(KnownProtocolKind::Decodable)) {
     for (auto it = properties.begin(); it != properties.end(); ++it) {
+      // If the var is default initializable, then it need not have an explicit
+      // initial value.
       auto *varDecl = it->second;
-
-      // Optional vars (not lets!) have an implicit default value of nil.
-      if (!varDecl->isLet()) {
-        if (!varDecl->hasType())
-          tc.validateDecl(varDecl);
-
-        if (varDecl->hasType()) {
-          auto varTypeDecl = varDecl->getType()->getAnyNominal();
-          if (varTypeDecl == tc.Context.getOptionalDecl() ||
-              varTypeDecl == tc.Context.getImplicitlyUnwrappedOptionalDecl())
-            continue;
-        }
+      if (auto pbd = varDecl->getParentPatternBinding()) {
+        if (pbd->isDefaultInitializable())
+          continue;
       }
 
-      if (varDecl->getParentInitializer() != nullptr) {
-        // Var has a default value.
+      if (varDecl->getParentInitializer())
         continue;
-      }
 
+      // The var was not default initializable, and did not have an explicit
+      // initial value.
       propertiesAreValid = false;
       tc.diagnose(it->second->getLoc(), diag::codable_non_decoded_property_here,
                   proto->getDeclaredType(), it->first);
@@ -802,8 +795,7 @@ static FuncDecl *deriveEncodable_encode(TypeChecker &tc, Decl *parentDecl,
   }
 
   encodeDecl->setInterfaceType(interfaceType);
-  encodeDecl->setAccess(std::max(target->getFormalAccess(),
-                                 AccessLevel::Internal));
+  encodeDecl->setAccess(target->getFormalAccess());
 
   // If the type was not imported, the derived conformance is either from the
   // type itself or an extension, in which case we will emit the declaration
@@ -1149,8 +1141,7 @@ static ValueDecl *deriveDecodable_init(TypeChecker &tc, Decl *parentDecl,
 
   initDecl->setInterfaceType(interfaceType);
   initDecl->setInitializerInterfaceType(initializerType);
-  initDecl->setAccess(std::max(target->getFormalAccess(),
-                               AccessLevel::Internal));
+  initDecl->setAccess(target->getFormalAccess());
 
   // If the type was not imported, the derived conformance is either from the
   // type itself or an extension, in which case we will emit the declaration

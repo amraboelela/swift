@@ -66,7 +66,11 @@ else()
 endif()
 
 option(SWIFT_BUILD_PERF_TESTSUITE
-    "Create targets for swift performance benchmarks."
+    "Create in-tree targets for building swift performance benchmarks."
+    FALSE)
+
+option(SWIFT_BUILD_EXTERNAL_PERF_TESTSUITE
+    "Create out-of-tree targets for building swift performance benchmarks."
     FALSE)
 
 option(SWIFT_INCLUDE_TESTS "Create targets for building/running tests." TRUE)
@@ -170,10 +174,10 @@ set(SWIFT_ANDROID_DEPLOY_DEVICE_PATH "" CACHE STRING
   "Path on an Android device where build products will be pushed. These are used when running the test suite against the device")
 
 #
-# User-configurable ICU specific options for Android, FreeBSD, Linux.
+# User-configurable ICU specific options for Android, FreeBSD, Linux and Haiku.
 #
 
-foreach(sdk ANDROID;FREEBSD;LINUX;WINDOWS)
+foreach(sdk ANDROID;FREEBSD;LINUX;WINDOWS;HAIKU)
   set(SWIFT_${sdk}_ICU_UC "" CACHE STRING
       "Path to a directory containing the icuuc library for ${sdk}")
   set(SWIFT_${sdk}_ICU_UC_INCLUDE "" CACHE STRING
@@ -536,6 +540,8 @@ else()
     set(SWIFT_HOST_VARIANT_SDK_default "CYGWIN")
   elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
     set(SWIFT_HOST_VARIANT_SDK_default "WINDOWS")
+  elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Haiku")
+    set(SWIFT_HOST_VARIANT_SDK_default "HAIKU")
   elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
     set(SWIFT_HOST_VARIANT_SDK_default "OSX")
   else()
@@ -677,6 +683,16 @@ elseif("${SWIFT_HOST_VARIANT_SDK}" STREQUAL "WINDOWS")
   set(SWIFT_PRIMARY_VARIANT_SDK_default  "${SWIFT_HOST_VARIANT_SDK}")
   set(SWIFT_PRIMARY_VARIANT_ARCH_default "${SWIFT_HOST_VARIANT_ARCH}")
 
+elseif("${SWIFT_HOST_VARIANT_SDK}" STREQUAL "HAIKU")
+
+  set(CMAKE_EXECUTABLE_FORMAT "ELF")
+  set(SWIFT_HOST_VARIANT "haiku" CACHE STRING
+      "Deployment OS for Swift host tools (the compiler) [haiku].")
+
+  configure_sdk_unix(HAIKU "Haiku" "haiku" "haiku" "x86_64" "x86_64-unknown-haiku" "/")
+  set(SWIFT_PRIMARY_VARIANT_SDK_default  "${SWIFT_HOST_VARIANT_SDK}")
+  set(SWIFT_PRIMARY_VARIANT_ARCH_default "x86_64")
+
 elseif("${SWIFT_HOST_VARIANT_SDK}" MATCHES "(OSX|IOS*|TVOS*|WATCHOS*)")
 
   set(SWIFT_HOST_VARIANT "macosx" CACHE STRING
@@ -751,7 +767,17 @@ endif()
 # Should we cross-compile the standard library for Windows?
 is_sdk_requested(WINDOWS swift_build_windows)
 if(swift_build_windows AND NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
-  configure_sdk_windows(WINDOWS "Windows" "msvc" i686)
+  if("${SWIFT_HOST_VARIANT_ARCH}" STREQUAL "aarch64")
+    configure_sdk_windows(WINDOWS "Windows" "msvc" aarch64)
+  elseif("${SWIFT_HOST_VARIANT_ARCH}" STREQUAL "armv7")
+    configure_sdk_windows(WINDOWS "Windows" "msvc" armv7)
+  elseif("${SWIFT_HOST_VARIANT_ARCH}" STREQUAL "i686")
+    configure_sdk_windows(WINDOWS "Windows" "msvc" i686)
+  elseif("${SWIFT_HOST_VARIANT_ARCH}" STREQUAL "x86_64")
+    configure_sdk_windows(WINDOWS "Windows" "msvc" x86_64)
+  else()
+    message(FATAL_ERROR "unable to calculate triple for Windows host on ${SWIFT_HOST_VARIANT_ARCH}")
+  endif()
 endif()
 
 if("${SWIFT_SDKS}" STREQUAL "")
@@ -847,22 +873,54 @@ if(NOT DEFINED SWIFT_API_NOTES_INPUTS)
 endif()
 
 # Add all of the subdirectories, where we actually do work.
+
+###############
+# PLEASE READ #
+###############
+#
+# We have to include stdlib/ before tools/.
+# Do not move add_subdirectory(stdlib) after add_subdirectory(tools)!                                             
+#
+# We must include stdlib/ before tools/ because stdlib/CMakeLists.txt
+# declares the swift-stdlib-* set of targets. These targets will then
+# implicitly depend on any targets declared with IS_STDLIB or
+# TARGET_LIBRARY.
+#
+# One such library that declares IS_STDLIB is SwiftSyntax, living in
+# tools/SwiftSyntax. If we include stdlib/ after tools/,
+# the swift-stdlib-* set of targets will not have been generated yet,
+# causing the implicit dependency for SwiftSyntax to silently not be
+# created. This then will cause SwiftSyntax to fail to build.
+#
+# https://bugs.swift.org/browse/SR-5975
+add_subdirectory(stdlib)
+
 if(SWIFT_INCLUDE_TOOLS)
   add_subdirectory(include)
   add_subdirectory(lib)
+  
+  # Always include this after including stdlib/!
+  # Refer to the large comment above the add_subdirectory(stdlib) call.
+  # https://bugs.swift.org/browse/SR-5975
   add_subdirectory(tools)
 endif()
 
 add_subdirectory(utils)
-add_subdirectory(stdlib)
 
 if(SWIFT_BUILD_DYNAMIC_STDLIB AND SWIFT_INCLUDE_TESTS)
   add_subdirectory(tools/swift-reflection-test)
 endif()
 
-if(SWIFT_BUILD_PERF_TESTSUITE AND "${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
-  add_subdirectory(benchmark)
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
+  if(SWIFT_BUILD_PERF_TESTSUITE)
+    add_subdirectory(benchmark)
+  endif()
+  if(SWIFT_BUILD_EXTERNAL_PERF_TESTSUITE)
+    include(SwiftExternalBenchmarkBuild)
+    add_external_benchmark_suite()
+  endif()
 endif()
+
 if(SWIFT_INCLUDE_TESTS)
   add_subdirectory(test)
   add_subdirectory(unittests)

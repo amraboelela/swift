@@ -221,8 +221,7 @@ swift::swift_allocateGenericValueMetadata(GenericMetadata *pattern,
     pattern->AddressPoint;
   auto patternMetadata = reinterpret_cast<const ValueMetadata*>(patternBytes);
   metadata->Description = patternMetadata->Description.get();
-  metadata->Parent = patternMetadata->Parent;
-  
+
   return metadata;
 }
 
@@ -1194,7 +1193,7 @@ namespace {
     uint32_t Flags;
     uint32_t InstanceStart;
     uint32_t InstanceSize;
-#ifdef __LP64__
+#if __POINTER_WIDTH__ == 64
     uint32_t Reserved;
 #endif
     const uint8_t *IvarLayout;
@@ -1328,13 +1327,6 @@ static ClassMetadata *_swift_initializeSuperclass(ClassMetadata *theClass,
   while (ancestor && ancestor->isTypeMetadata()) {
     auto &description = ancestor->getDescription();
     auto &genericParams = description->GenericParams;
-
-    // Copy the parent type.
-    if (genericParams.Flags.hasParent()) {
-      memcpy(classWords + genericParams.Offset - 1,
-             superWords + genericParams.Offset - 1,
-             sizeof(uintptr_t));
-    }
 
     // Copy the generic requirements.
     if (genericParams.hasGenericRequirements()) {

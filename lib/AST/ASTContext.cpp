@@ -16,14 +16,13 @@
 
 #include "swift/AST/ASTContext.h"
 #include "ForeignRepresentationInfo.h"
-#include "swift/Strings.h"
-#include "swift/AST/ExistentialLayout.h"
-#include "swift/AST/GenericSignatureBuilder.h"
 #include "swift/AST/ConcreteDeclRef.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsSema.h"
+#include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/ForeignErrorConvention.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/GenericSignatureBuilder.h"
 #include "swift/AST/KnownProtocols.h"
 #include "swift/AST/LazyResolver.h"
 #include "swift/AST/ModuleLoader.h"
@@ -35,13 +34,16 @@
 #include "swift/AST/TypeCheckerDebugConsumer.h"
 #include "swift/Basic/Compiler.h"
 #include "swift/Basic/SourceManager.h"
+#include "swift/Basic/Statistic.h"
 #include "swift/Basic/StringExtras.h"
 #include "swift/Parse/Lexer.h" // bad dependency
+#include "swift/Strings.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Allocator.h"
@@ -50,6 +52,12 @@
 #include <memory>
 
 using namespace swift;
+
+#define DEBUG_TYPE "ASTContext"
+STATISTIC(NumRegisteredGenericSignatureBuilders,
+          "# of generic signature builders successfully registered");
+STATISTIC(NumRegisteredGenericSignatureBuildersAlready,
+          "# of generic signature builders already registered");
 
 /// Define this to 1 to enable expensive assertions of the
 /// GenericSignatureBuilder.
@@ -128,6 +136,12 @@ struct ASTContext::Implementation {
   /** The declaration of Swift.NAME. */ \
   DECL_CLASS *NAME##Decl = nullptr;
 #include "swift/AST/KnownStdlibTypes.def"
+
+  /// The declaration of '+' function for two RangeReplaceableCollection.
+  FuncDecl *PlusFunctionOnRangeReplaceableCollection = nullptr;
+
+  /// The declaration of '+' function for two String.
+  FuncDecl *PlusFunctionOnString = nullptr;
 
   /// The declaration of Swift.Optional<T>.Some.
   EnumElementDecl *OptionalSomeDecl = nullptr;
@@ -543,6 +557,60 @@ static NominalTypeDecl *findStdlibType(const ASTContext &ctx, StringRef name,
     }
   }
   return nullptr;
+}
+
+FuncDecl *ASTContext::getPlusFunctionOnRangeReplaceableCollection() const {
+  if (Impl.PlusFunctionOnRangeReplaceableCollection) {
+    return Impl.PlusFunctionOnRangeReplaceableCollection;
+  }
+  // Find all of the declarations with this name in the Swift module.
+  SmallVector<ValueDecl *, 1> Results;
+  lookupInSwiftModule("+", Results);
+  for (auto Result : Results) {
+    if (auto *FD = dyn_cast<FuncDecl>(Result)) {
+      if (!FD->getOperatorDecl())
+        continue;
+      for (auto Req: FD->getGenericRequirements()) {
+        if (Req.getKind() == RequirementKind::Conformance &&
+              Req.getSecondType()->getNominalOrBoundGenericNominal() ==
+            getRangeReplaceableCollectionDecl()) {
+          Impl.PlusFunctionOnRangeReplaceableCollection = FD;
+        }
+      }
+    }
+  }
+  return Impl.PlusFunctionOnRangeReplaceableCollection;
+}
+
+FuncDecl *ASTContext::getPlusFunctionOnString() const {
+  if (Impl.PlusFunctionOnString) {
+    return Impl.PlusFunctionOnString;
+  }
+  // Find all of the declarations with this name in the Swift module.
+  SmallVector<ValueDecl *, 1> Results;
+  lookupInSwiftModule("+", Results);
+  for (auto Result : Results) {
+    if (auto *FD = dyn_cast<FuncDecl>(Result)) {
+      if (!FD->getOperatorDecl())
+        continue;
+      auto ResultType = FD->getResultInterfaceType();
+      if (ResultType->getNominalOrBoundGenericNominal() != getStringDecl())
+        continue;
+      auto ParamLists = FD->getParameterLists();
+      if (ParamLists.size() != 2 || ParamLists[1]->size() != 2)
+        continue;
+      auto CheckIfStringParam = [this](ParamDecl* Param) {
+        auto Type = Param->getInterfaceType()->getNominalOrBoundGenericNominal();
+        return Type == getStringDecl();
+      };
+      if (CheckIfStringParam(ParamLists[1]->get(0)) &&
+          CheckIfStringParam(ParamLists[1]->get(1))) {
+        Impl.PlusFunctionOnString = FD;
+        break;
+      }
+    }
+  }
+  return Impl.PlusFunctionOnString;
 }
 
 #define KNOWN_STDLIB_TYPE_DECL(NAME, DECL_CLASS, NUM_GENERIC_PARAMS) \
@@ -1310,6 +1378,7 @@ void ASTContext::loadObjCMethods(
 
 void ASTContext::verifyAllLoadedModules() const {
 #ifndef NDEBUG
+  SharedTimer("verifyAllLoadedModules");
   for (auto &loader : Impl.ModuleLoaders)
     loader->verifyAllModules();
 
@@ -1359,6 +1428,22 @@ void ASTContext::getVisibleTopLevelClangModules(
     SmallVectorImpl<clang::Module*> &Modules) const {
   getClangModuleLoader()->getClangPreprocessor().getHeaderSearchInfo().
     collectAllModules(Modules);
+}
+
+void ASTContext::registerGenericSignatureBuilder(
+                                       GenericSignature *sig,
+                                       ModuleDecl &module,
+                                       GenericSignatureBuilder &&builder) {
+  auto canSig = sig->getCanonicalSignature();
+  auto known = Impl.GenericSignatureBuilders.find({canSig, &module});
+  if (known != Impl.GenericSignatureBuilders.end()) {
+    ++NumRegisteredGenericSignatureBuildersAlready;
+    return;
+  }
+
+  ++NumRegisteredGenericSignatureBuilders;
+  Impl.GenericSignatureBuilders[{canSig, &module}] =
+    llvm::make_unique<GenericSignatureBuilder>(std::move(builder));
 }
 
 GenericSignatureBuilder *ASTContext::getOrCreateGenericSignatureBuilder(
@@ -4529,7 +4614,7 @@ CanGenericSignature ASTContext::getExistentialSignature(CanType existential,
     GenericSignatureBuilder::FloatingRequirementSource::forAbstract();
   builder.addRequirement(requirement, source, nullptr);
 
-  CanGenericSignature genericSig(builder.computeGenericSignature(SourceLoc()));
+  CanGenericSignature genericSig(std::move(builder).computeGenericSignature(*mod, SourceLoc()));
 
   auto result = Impl.ExistentialSignatures.insert(
     std::make_pair(existential, genericSig));

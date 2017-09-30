@@ -41,8 +41,7 @@ void ConstantTracker::trackInst(SILInstruction *inst) {
 SILValue ConstantTracker::scanProjections(SILValue addr,
                                           SmallVectorImpl<Projection> *Result) {
   for (;;) {
-    if (Projection::isAddressProjection(addr)) {
-      SILInstruction *I = cast<SILInstruction>(addr);
+    if (auto *I = Projection::isAddressProjection(addr)) {
       if (Result) {
         Result->push_back(Projection(I));
       }
@@ -110,11 +109,11 @@ SILInstruction *ConstantTracker::getDef(SILValue val,
 
   // Track the value up the dominator tree.
   for (;;) {
-    if (auto *inst = dyn_cast<SILInstruction>(val)) {
-      if (Projection::isObjectProjection(inst)) {
+    if (auto *inst = dyn_cast<SingleValueInstruction>(val)) {
+      if (auto pi = Projection::isObjectProjection(val)) {
         // Extract a member from a struct/tuple/enum.
-        projStack.push_back(Projection(inst));
-        val = inst->getOperand(0);
+        projStack.push_back(Projection(pi));
+        val = pi->getOperand(0);
         continue;
       } else if (SILValue member = getMember(inst, projStack)) {
         // The opposite of a projection instruction: composing a struct/tuple.
@@ -125,8 +124,8 @@ SILInstruction *ConstantTracker::getDef(SILValue val,
         // A value loaded from memory.
         val = loadedVal;
         continue;
-      } else if (isa<ThinToThickFunctionInst>(inst)) {
-        val = inst->getOperand(0);
+      } else if (auto ti = dyn_cast<ThinToThickFunctionInst>(inst)) {
+        val = ti->getOperand();
         continue;
       }
       return inst;
@@ -621,6 +620,37 @@ static bool shouldSkipApplyDuringEarlyInlining(FullApplySite AI) {
   return false;
 }
 
+/// Checks if a generic callee and caller have compatible layout constraints.
+static bool isCallerAndCalleeLayoutConstraintsCompatible(FullApplySite AI) {
+  SILFunction *Callee = AI.getReferencedFunction();
+  auto CalleeSig = Callee->getLoweredFunctionType()->getGenericSignature();
+  auto SubstParams = CalleeSig->getSubstitutableParams();
+  auto AISubs = AI.getSubstitutions();
+  for (auto idx : indices(SubstParams)) {
+    auto Param = SubstParams[idx];
+    // Map the parameter into context
+    auto ContextTy = Callee->mapTypeIntoContext(Param->getCanonicalType());
+    auto Archetype = ContextTy->getAs<ArchetypeType>();
+    if (!Archetype)
+      continue;
+    auto Layout = Archetype->getLayoutConstraint();
+    if (!Layout)
+      continue;
+    // The generic parameter has a layout constraint.
+    // Check that the substitution has the same constraint.
+    auto AIReplacement = AISubs[idx].getReplacement();
+    auto AIArchetype = AIReplacement->getAs<ArchetypeType>();
+    if (!AIArchetype)
+      return false;
+    auto AILayout = AIArchetype->getLayoutConstraint();
+    if (!AILayout)
+      return false;
+    if (AILayout != Layout)
+      return false;
+  }
+  return true;
+}
+
 // Returns the callee of an apply_inst if it is basically inlineable.
 SILFunction *swift::getEligibleFunction(FullApplySite AI,
                                         InlineSelection WhatToInline) {
@@ -722,6 +752,16 @@ SILFunction *swift::getEligibleFunction(FullApplySite AI,
     // Inlining of generics is not allowed unless it is an @inline(__always)
     // or transparent function.
     if (Callee->getInlineStrategy() != AlwaysInline && !Callee->isTransparent())
+      return nullptr;
+  }
+
+  // We cannot inline function with layout constraints on its generic types
+  // if the corresponding substitution type does not have the same constraints.
+  // The reason for this restriction is that we'd need to be able to express
+  // in SIL something like casting a value of generic type T into a value of
+  // generic type T: _LayoutConstraint, which is impossible currently.
+  if (EnableSILInliningOfGenerics && AI.hasSubstitutions()) {
+    if (!isCallerAndCalleeLayoutConstraintsCompatible(AI))
       return nullptr;
   }
 

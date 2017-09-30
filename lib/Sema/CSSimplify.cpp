@@ -1091,14 +1091,19 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
                                      ConstraintLocatorBuilder locator) {
   // An @autoclosure function type can be a subtype of a
   // non-@autoclosure function type.
-  if (func1->isAutoClosure() != func2->isAutoClosure() &&
-      kind < ConstraintKind::Subtype)
-    return SolutionKind::Error;
+  if (func1->isAutoClosure() != func2->isAutoClosure()) {
+    // If the 2nd type is an autoclosure, then the first type needs wrapping in a
+    // closure despite already being a function type.
+    if (func2->isAutoClosure())
+      return SolutionKind::Error;
+    if (kind < ConstraintKind::Subtype)
+      return SolutionKind::Error;
+  }
   
   // A non-throwing function can be a subtype of a throwing function.
   if (func1->throws() != func2->throws()) {
     // Cannot drop 'throws'.
-    if (func1->throws() || (func2->throws() && kind < ConstraintKind::Subtype))
+    if (func1->throws() || kind < ConstraintKind::Subtype)
       return SolutionKind::Error;
   }
 
@@ -1676,11 +1681,27 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
         if (!isBindable(typeVar1, type2))
           return formUnsolvedResult();
 
+        // If the right-hand side of the BindParam constraint
+        // is `lvalue` type, we'll have to make sure that
+        // left-hand side is bound to type variable which
+        // is wrapped in `inout` type to preserve inout/lvalue pairing.
         if (auto *lvt = type2->getAs<LValueType>()) {
-          assignFixedType(typeVar1, InOutType::get(lvt->getObjectType()));
-        } else {
-          assignFixedType(typeVar1, type2);
+          auto *tv = createTypeVariable(typeVar1->getImpl().getLocator(),
+                                        /*options=*/0);
+          assignFixedType(typeVar1, InOutType::get(tv));
+
+          typeVar1 = tv;
+          type2 = lvt->getObjectType();
         }
+
+        // If we have a binding for the right-hand side
+        // (argument type) don't try to bind it to the left-hand
+        // side (parameter type) directly, because their
+        // relationship is contravariant and the actual
+        // binding can only come from the left-hand side.
+        addUnsolvedConstraint(
+            Constraint::create(*this, ConstraintKind::ArgumentConversion, type2,
+                               typeVar1, getConstraintLocator(locator)));
         return SolutionKind::Solved;
       }
 

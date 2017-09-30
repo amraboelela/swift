@@ -955,6 +955,8 @@ public:
   ForeignFunctionInfo getForeignFunctionInfo(CanSILFunctionType type);
 
   llvm::Constant *getSize(Size size);
+  llvm::Constant *getAlignment(Alignment align);
+  llvm::Constant *getBool(bool condition);
 
   Address getAddrOfFieldOffset(VarDecl *D, bool isIndirect,
                                ForDefinition_t forDefinition);
@@ -1087,6 +1089,12 @@ public:
   void emitRuntimeRegistration();
   void emitVTableStubs();
   void emitTypeVerifier();
+
+  /// Create llvm metadata which encodes the branch weights given by
+  /// \p TrueCount and \p FalseCount.
+  llvm::MDNode *createProfileWeights(uint64_t TrueCount,
+                                     uint64_t FalseCount) const;
+
 private:
   void emitGlobalDecl(Decl *D);
 };

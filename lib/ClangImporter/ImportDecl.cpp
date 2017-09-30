@@ -349,11 +349,17 @@ static bool isNSDictionaryMethod(const clang::ObjCMethodDecl *MD,
 
 void ClangImporter::Implementation::forEachDistinctName(
     const clang::NamedDecl *decl,
-    llvm::function_ref<void(ImportedName, ImportNameVersion)> action) {
+    llvm::function_ref<bool(ImportedName, ImportNameVersion)> action) {
   using ImportNameKey = std::pair<DeclName, EffectiveClangContext>;
   SmallVector<ImportNameKey, 8> seenNames;
-  forEachImportNameVersionFromCurrent(CurrentVersion,
-                                      [&](ImportNameVersion nameVersion) {
+
+  ImportedName newName = importFullName(decl, CurrentVersion);
+  ImportNameKey key(newName, newName.getEffectiveContext());
+  if (action(newName, CurrentVersion))
+    seenNames.push_back(key);
+
+  CurrentVersion.forEachOtherImportNameVersion(
+      [&](ImportNameVersion nameVersion) {
     // Check to see if the name is different.
     ImportedName newName = importFullName(decl, nameVersion);
     ImportNameKey key(newName, newName.getEffectiveContext());
@@ -365,8 +371,8 @@ void ClangImporter::Implementation::forEachDistinctName(
     });
     if (seen)
       return;
-    seenNames.push_back(key);
-    action(newName, nameVersion);
+    if (action(newName, nameVersion))
+      seenNames.push_back(key);
   });
 }
 
@@ -1212,27 +1218,10 @@ createValueConstructor(ClangImporter::Implementation &Impl,
   return constructor;
 }
 
-/// Add protocol conformances and synthesized protocol attributes
-static void
-populateInheritedTypes(ClangImporter::Implementation &Impl,
-                       NominalTypeDecl *nominal,
-                       ArrayRef<KnownProtocolKind> synthesizedProtocolAttrs,
-                       Type superclass = Type()) {
-  SmallVector<TypeLoc, 4> inheritedTypes;
-  if (superclass)
-    inheritedTypes.push_back(TypeLoc::withoutLoc(superclass));
-
-  for (auto protoKind : synthesizedProtocolAttrs) {
-    if (auto *protoDecl = Impl.SwiftContext.getProtocol(protoKind)) {
-      auto protoType = protoDecl->getDeclaredType();
-      inheritedTypes.push_back(TypeLoc::withoutLoc(protoType));
-    }
-  }
-
-  nominal->setInherited(nominal->getASTContext().AllocateCopy(inheritedTypes));
-  nominal->setCheckedInheritanceClause();
-
-  // Note synthesized protocols
+static void addSynthesizedProtocolAttrs(
+    ClangImporter::Implementation &Impl,
+    NominalTypeDecl *nominal,
+    ArrayRef<KnownProtocolKind> synthesizedProtocolAttrs) {
   for (auto kind : synthesizedProtocolAttrs) {
     nominal->getAttrs().add(new (Impl.SwiftContext)
                                  SynthesizedProtocolAttr(kind, &Impl));
@@ -1275,7 +1264,7 @@ static void makeStructRawValued(
     AccessLevel setterAccess = AccessLevel::Private) {
   auto &ctx = Impl.SwiftContext;
 
-  populateInheritedTypes(Impl, structDecl, synthesizedProtocolAttrs);
+  addSynthesizedProtocolAttrs(Impl, structDecl, synthesizedProtocolAttrs);
 
   // Create a variable to store the underlying value.
   VarDecl *var;
@@ -1366,7 +1355,7 @@ static void makeStructRawValuedWithBridge(
     bool makeUnlabeledValueInit = false) {
   auto &ctx = Impl.SwiftContext;
 
-  populateInheritedTypes(Impl, structDecl, synthesizedProtocolAttrs);
+  addSynthesizedProtocolAttrs(Impl, structDecl, synthesizedProtocolAttrs);
 
   auto storedVarName = ctx.getIdentifier("_rawValue");
   auto computedVarName = ctx.Id_rawValue;
@@ -1944,7 +1933,7 @@ namespace {
                                 Optional<ImportedName> &correctSwiftName) {
       ImportNameVersion canonicalVersion = getActiveSwiftVersion();
       if (isa<clang::TypeDecl>(D) || isa<clang::ObjCContainerDecl>(D)) {
-        canonicalVersion = ImportNameVersion::ForTypes;
+        canonicalVersion = ImportNameVersion::forTypes();
       }
       correctSwiftName = None;
 
@@ -2130,36 +2119,38 @@ namespace {
         // If we're importing a global as a member, we need to provide the
         // effective context.
         Impl.printSwiftName(
-            correctSwiftName,
+            correctSwiftName, getActiveSwiftVersion(),
             /*fullyQualified=*/correctSwiftName.importAsMember(), os);
       }
 
-      unsigned majorVersion = majorVersionNumberForNameVersion(getVersion());
       DeclAttribute *attr;
-      if (isActiveSwiftVersion() || getVersion() == ImportNameVersion::Raw) {
+      if (isActiveSwiftVersion() || getVersion() == ImportNameVersion::raw()) {
         // "Raw" is the Objective-C name, which was never available in Swift.
         // Variants within the active version are usually declarations that
         // have been superseded, like the accessors of a property.
         attr = AvailableAttr::createPlatformAgnostic(
             ctx, /*Message*/StringRef(), ctx.AllocateCopy(renamed.str()),
             PlatformAgnosticAvailabilityKind::UnavailableInSwift);
-      } else if (getVersion() < getActiveSwiftVersion()) {
-        // A Swift 2 name, for example, was obsoleted in Swift 3.
-        attr = AvailableAttr::createPlatformAgnostic(
-            ctx, /*Message*/StringRef(), ctx.AllocateCopy(renamed.str()),
-            PlatformAgnosticAvailabilityKind::SwiftVersionSpecific,
-            clang::VersionTuple(majorVersion + 1));
       } else {
-        // Future names are introduced in their future version.
-        assert(getVersion() > getActiveSwiftVersion());
-        attr = new (ctx) AvailableAttr(
-            SourceLoc(), SourceRange(), PlatformKind::none,
-            /*Message*/StringRef(), ctx.AllocateCopy(renamed.str()),
-            /*Introduced*/clang::VersionTuple(majorVersion), SourceRange(),
-            /*Deprecated*/clang::VersionTuple(), SourceRange(),
-            /*Obsoleted*/clang::VersionTuple(), SourceRange(),
-            PlatformAgnosticAvailabilityKind::SwiftVersionSpecific,
-            /*Implicit*/false);
+        unsigned majorVersion = getVersion().majorVersionNumber();
+        if (getVersion() < getActiveSwiftVersion()) {
+          // A Swift 2 name, for example, was obsoleted in Swift 3.
+          attr = AvailableAttr::createPlatformAgnostic(
+              ctx, /*Message*/StringRef(), ctx.AllocateCopy(renamed.str()),
+              PlatformAgnosticAvailabilityKind::SwiftVersionSpecific,
+              clang::VersionTuple(majorVersion + 1));
+        } else {
+          // Future names are introduced in their future version.
+          assert(getVersion() > getActiveSwiftVersion());
+          attr = new (ctx) AvailableAttr(
+              SourceLoc(), SourceRange(), PlatformKind::none,
+              /*Message*/StringRef(), ctx.AllocateCopy(renamed.str()),
+              /*Introduced*/clang::VersionTuple(majorVersion), SourceRange(),
+              /*Deprecated*/clang::VersionTuple(), SourceRange(),
+              /*Obsoleted*/clang::VersionTuple(), SourceRange(),
+              PlatformAgnosticAvailabilityKind::SwiftVersionSpecific,
+              /*Implicit*/false);
+        }
       }
 
       decl->getAttrs().add(attr);
@@ -2434,6 +2425,7 @@ namespace {
         auto structDecl = Impl.createDeclWithClangNode<StructDecl>(decl,
           AccessLevel::Public, Loc, name, Loc, None, nullptr, dc);
         structDecl->computeType();
+        structDecl->setCheckedInheritanceClause();
 
         auto options = getDefaultMakeStructRawValuedOptions();
         options |= MakeStructRawValuedFlags::MakeUnlabeledValueInit;
@@ -2485,8 +2477,8 @@ namespace {
           errorWrapper->setAccess(AccessLevel::Public);
 
           // Add inheritance clause.
-          populateInheritedTypes(Impl, errorWrapper,
-                                 {KnownProtocolKind::BridgedStoredNSError});
+          addSynthesizedProtocolAttrs(Impl, errorWrapper,
+                                      {KnownProtocolKind::BridgedStoredNSError});
 
           // Create the _nsError member.
           //   public let _nsError: NSError
@@ -2545,16 +2537,17 @@ namespace {
         // Add protocol declarations to the enum declaration.
         SmallVector<TypeLoc, 2> inheritedTypes;
         inheritedTypes.push_back(TypeLoc::withoutLoc(underlyingType));
-        if (errorWrapper) {
-          inheritedTypes.push_back(
-            TypeLoc::withoutLoc(errorCodeProto->getDeclaredType()));
-
-          enumDecl->getAttrs().add(new (Impl.SwiftContext)
-                  SynthesizedProtocolAttr(KnownProtocolKind::ErrorCodeProtocol,
-                                          &Impl));
-        }
         enumDecl->setInherited(C.AllocateCopy(inheritedTypes));
         enumDecl->setCheckedInheritanceClause();
+
+        if (errorWrapper) {
+          addSynthesizedProtocolAttrs(Impl, enumDecl,
+                                      {KnownProtocolKind::ErrorCodeProtocol,
+                                       KnownProtocolKind::RawRepresentable});
+        } else {
+          addSynthesizedProtocolAttrs(Impl, enumDecl,
+                                      {KnownProtocolKind::RawRepresentable});
+        }
 
         // Provide custom implementations of the init(rawValue:) and rawValue
         // conversions that just do a bitcast. We can't reliably filter a
@@ -2678,31 +2671,33 @@ namespace {
         case EnumKind::Unknown:
           Impl.forEachDistinctName(constant,
                                    [&](ImportedName newName,
-                                       ImportNameVersion nameVersion) {
+                                       ImportNameVersion nameVersion) -> bool {
             Decl *imported = Impl.importDecl(constant, nameVersion);
             if (!imported)
-              return;
+              return false;
             if (nameVersion == getActiveSwiftVersion())
               enumeratorDecl = imported;
             else
               variantDecls.push_back(imported);
+            return true;
           });
           break;
         case EnumKind::Options:
           Impl.forEachDistinctName(constant,
                                    [&](ImportedName newName,
-                                       ImportNameVersion nameVersion) {
+                                       ImportNameVersion nameVersion) -> bool {
             if (!contextIsEnum(newName))
-              return;
+              return true;
             SwiftDeclConverter converter(Impl, nameVersion);
             Decl *imported =
                 converter.importOptionConstant(constant, decl, result);
             if (!imported)
-              return;
+              return false;
             if (nameVersion == getActiveSwiftVersion())
               enumeratorDecl = imported;
             else
               variantDecls.push_back(imported);
+            return true;
           });
           break;
         case EnumKind::Enum: {
@@ -2750,18 +2745,19 @@ namespace {
 
           Impl.forEachDistinctName(constant,
                                    [&](ImportedName newName,
-                                       ImportNameVersion nameVersion) {
+                                       ImportNameVersion nameVersion) -> bool {
             if (nameVersion == getActiveSwiftVersion())
-              return;
+              return true;
             if (!contextIsEnum(newName))
-              return;
+              return true;
             SwiftDeclConverter converter(Impl, nameVersion);
             Decl *imported =
                 converter.importEnumCase(constant, decl, cast<EnumDecl>(result),
                                          enumeratorDecl);
             if (!imported)
-              return;
+              return false;
             variantDecls.push_back(imported);
+            return true;
           });
           break;
         }
@@ -3682,7 +3678,7 @@ namespace {
                                       ImportedName importedName,
                                       ObjCSelector selector,
                                       bool forceClassMethod) {
-      assert(dc->getDeclaredTypeOfContext() && "Method in non-type context?");
+      assert(dc->isTypeContext() && "Method in non-type context?");
       assert(isa<ClangModuleUnit>(dc->getModuleScopeContext()) &&
              "Clang method in Swift context?");
 
@@ -4345,9 +4341,10 @@ namespace {
       SmallVector<TypeLoc, 4> inheritedTypes;
       Type superclassType;
       if (decl->getSuperClass()) {
-        auto clangSuperclassType =
-          Impl.getClangASTContext().getObjCObjectPointerType(
-              clang::QualType(decl->getSuperClassType(), 0));
+        clang::QualType clangSuperclassType =
+          decl->getSuperClassType()->stripObjCKindOfTypeAndQuals(clangCtx);
+        clangSuperclassType =
+          clangCtx.getObjCObjectPointerType(clangSuperclassType);
         superclassType = Impl.importType(clangSuperclassType,
                                          ImportTypeKind::Abstract,
                                          isInSystemModule(dc),
@@ -4787,14 +4784,19 @@ SwiftDeclConverter::importCFClassType(const clang::TypedefNameDecl *decl,
   theClass->computeType();
   theClass->setCircularityCheck(CircularityCheck::Checked);
   theClass->setSuperclass(superclass);
-  theClass->setCheckedInheritanceClause();
   theClass->setAddedImplicitInitializers(); // suppress all initializers
   theClass->setForeignClassKind(ClassDecl::ForeignKind::CFType);
   addObjCAttribute(theClass, None);
   Impl.registerExternalDecl(theClass);
 
-  populateInheritedTypes(Impl, theClass, {KnownProtocolKind::CFObject},
-                         superclass);
+  if (superclass) {
+    SmallVector<TypeLoc, 4> inheritedTypes;
+    inheritedTypes.push_back(TypeLoc::withoutLoc(superclass));
+    theClass->setInherited(Impl.SwiftContext.AllocateCopy(inheritedTypes));
+    theClass->setCheckedInheritanceClause();
+  }
+
+  addSynthesizedProtocolAttrs(Impl, theClass, {KnownProtocolKind::CFObject});
 
   // Look for bridging attributes on the clang record.  We can
   // just check the most recent redeclaration, which will inherit
@@ -4833,7 +4835,7 @@ Decl *SwiftDeclConverter::importCompatibilityTypeAlias(
   // we don't care.
   Decl *importedDecl = nullptr;
   if (getVersion() >= getActiveSwiftVersion())
-    importedDecl = Impl.importDecl(decl, ImportNameVersion::ForTypes);
+    importedDecl = Impl.importDecl(decl, ImportNameVersion::forTypes());
   if (!importedDecl && getVersion() != getActiveSwiftVersion())
     importedDecl = Impl.importDecl(decl, getActiveSwiftVersion());
   auto typeDecl = dyn_cast_or_null<TypeDecl>(importedDecl);
@@ -4891,10 +4893,17 @@ static bool conformsToProtocolInOriginalModule(NominalTypeDecl *nominal,
                                                const ProtocolDecl *proto,
                                                ModuleDecl *foundationModule,
                                                LazyResolver *resolver) {
+  auto &ctx = nominal->getASTContext();
+
   if (resolver)
     resolver->resolveInheritanceClause(nominal);
   if (inheritanceListContainsProtocol(nominal->getInherited(), proto))
     return true;
+
+  for (auto attr : nominal->getAttrs().getAttributes<SynthesizedProtocolAttr>())
+    if (auto *otherProto = ctx.getProtocol(attr->getProtocolKind()))
+      if (otherProto == proto)
+        return true;
 
   // Only consider extensions from the original module...or from an overlay
   // or the Swift half of a mixed-source framework.
@@ -4948,6 +4957,7 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
   auto structDecl = Impl.createDeclWithClangNode<StructDecl>(
       decl, AccessLevel::Public, Loc, name, Loc, None, nullptr, dc);
   structDecl->computeType();
+  structDecl->setCheckedInheritanceClause();
 
   // Import the type of the underlying storage
   auto storedUnderlyingType = Impl.importType(
@@ -5195,6 +5205,7 @@ SwiftDeclConverter::importAsOptionSetType(DeclContext *dc, Identifier name,
   auto structDecl = Impl.createDeclWithClangNode<StructDecl>(
       decl, AccessLevel::Public, Loc, name, Loc, None, nullptr, dc);
   structDecl->computeType();
+  structDecl->setCheckedInheritanceClause();
 
   makeStructRawValued(Impl, structDecl, underlyingType,
                       {KnownProtocolKind::OptionSet});
@@ -5314,7 +5325,7 @@ Decl *SwiftDeclConverter::importGlobalAsMethod(
   // instance of the type we're importing onto. Importing this as a method means
   // that the method should be treated as mutating in this situation.
   bool selfIsInOut = false;
-  if (selfIdx && !dc->getDeclaredTypeOfContext()->hasReferenceSemantics()) {
+  if (selfIdx && !dc->getDeclaredInterfaceType()->hasReferenceSemantics()) {
     auto selfParam = decl->getParamDecl(*selfIdx);
     auto selfParamTy = selfParam->getType();
     if ((selfParamTy->isPointerType() || selfParamTy->isReferenceType()) &&
@@ -6705,7 +6716,7 @@ void SwiftDeclConverter::importInheritedConstructors(
 
   auto curObjCClass = cast<clang::ObjCInterfaceDecl>(classDecl->getClangDecl());
 
-  auto inheritConstructors = [&](DeclRange members,
+  auto inheritConstructors = [&](ArrayRef<ValueDecl *> members,
                                  Optional<CtorInitializerKind> kind) {
     const auto &languageVersion =
         Impl.SwiftContext.LangOpts.EffectiveLanguageVersion;
@@ -6805,10 +6816,8 @@ void SwiftDeclConverter::importInheritedConstructors(
   // If we have a superclass, import from it.
   if (auto superclassClangDecl = superclass->getClangDecl()) {
     if (isa<clang::ObjCInterfaceDecl>(superclassClangDecl)) {
-      inheritConstructors(superclass->getMembers(), kind);
-
-      for (auto ext : superclass->getExtensions())
-        inheritConstructors(ext->getMembers(), kind);
+      inheritConstructors(superclass->lookupDirect(Impl.SwiftContext.Id_init),
+                          kind);
     }
   }
 }
@@ -6895,9 +6904,7 @@ getSwiftNameFromClangName(StringRef replacement) {
   {
     // Render a swift_name string.
     llvm::raw_svector_ostream os(renamed);
-    printSwiftName(importedName,
-                   /*fullyQualified=*/true,
-                   os);
+    printSwiftName(importedName, CurrentVersion, /*fullyQualified=*/true, os);
   }
 
   return SwiftContext.AllocateCopy(StringRef(renamed));
@@ -7337,8 +7344,12 @@ void ClangImporter::Implementation::finishPendingActions() {
 /// Look up associated type requirements in the conforming type.
 static void finishTypeWitnesses(
     NormalProtocolConformance *conformance) {
+  auto *dc = conformance->getDeclContext();
+  auto *module = dc->getParentModule();
+  auto &ctx = module->getASTContext();
+
   auto *proto = conformance->getProtocol();
-  auto *nominal = conformance->getType()->getAnyNominal();
+  auto selfType = conformance->getType();
 
   for (auto *req : proto->getMembers()) {
     if (auto *assocType = dyn_cast<AssociatedTypeDecl>(req)) {
@@ -7347,14 +7358,22 @@ static void finishTypeWitnesses(
 
       bool satisfied = false;
 
-      for (auto member : nominal->lookupDirect(assocType->getFullName())) {
-        auto memberType = dyn_cast<TypeDecl>(member);
-        if (!memberType) continue;
+      SmallVector<ValueDecl *, 4> lookupResults;
+      NLOptions options = (NL_QualifiedDefault |
+                           NL_OnlyTypes |
+                           NL_ProtocolMembers);
 
-        conformance->setTypeWitness(assocType,
-                                    nominal->mapTypeIntoContext(
-                                      memberType->getDeclaredInterfaceType()),
-                                    memberType);
+      dc->lookupQualified(selfType, assocType->getFullName(), options,
+                          ctx.getLazyResolver(), lookupResults);
+      for (auto member : lookupResults) {
+        auto typeDecl = cast<TypeDecl>(member);
+        if (isa<AssociatedTypeDecl>(typeDecl)) continue;
+
+        auto memberType = typeDecl->getDeclaredInterfaceType();
+        auto subMap = selfType->getContextSubstitutionMap(
+            module, typeDecl->getDeclContext());
+        memberType = memberType.subst(subMap);
+        conformance->setTypeWitness(assocType, memberType, typeDecl);
         satisfied = true;
         break;
       }
@@ -7402,12 +7421,20 @@ static void finishSignatureConformances(
     if (req.getKind() != RequirementKind::Conformance)
       continue;
 
-    assert(req.getFirstType()->isEqual(proto->getSelfInterfaceType()));
+    Type substTy;
+    auto origTy = req.getFirstType();
+    if (origTy->isEqual(proto->getSelfInterfaceType())) {
+      substTy = conformance->getType();
+    } else {
+      auto *depMemTy = origTy->castTo<DependentMemberType>();
+      assert(depMemTy->getBase()->isEqual(proto->getSelfInterfaceType()));
+      substTy = conformance->getTypeWitness(depMemTy->getAssocType(),
+                                            /*resolver=*/nullptr);
+    }
     auto reqProto = req.getSecondType()->castTo<ProtocolType>()->getDecl();
 
     ModuleDecl *M = conformance->getDeclContext()->getParentModule();
-    auto reqConformance = M->lookupConformance(conformance->getType(),
-                                               reqProto);
+    auto reqConformance = M->lookupConformance(substTy, reqProto);
     assert(reqConformance && reqConformance->isConcrete() &&
            "required conformance not found");
     reqConformances.push_back(*reqConformance);
@@ -7459,6 +7486,9 @@ void ClangImporter::Implementation::finishNormalConformance(
   PrettyStackTraceType trace(SwiftContext, "completing conformance for",
                              conformance->getType());
   PrettyStackTraceDecl traceTo("... to", proto);
+
+  if (!proto->isRequirementSignatureComputed())
+    proto->computeRequirementSignature();
 
   finishTypeWitnesses(conformance);
   finishInheritedConformances(conformance);
@@ -7622,7 +7652,8 @@ GenericSignature *ClangImporter::Implementation::buildGenericSignature(
     (void) result;
   }
 
-  return builder.computeGenericSignature(SourceLoc());
+  return std::move(builder).computeGenericSignature(*dc->getParentModule(),
+                                                    SourceLoc());
 }
 
 // Calculate the generic environment from an imported generic param list.
@@ -7946,6 +7977,12 @@ createUnavailableDecl(Identifier name, DeclContext *dc, Type type,
 
 void
 ClangImporter::Implementation::loadAllMembers(Decl *D, uint64_t extra) {
+  RecursiveSharedTimer::Guard guard;
+  if (auto s = D->getASTContext().Stats) {
+    guard = s->getFrontendRecursiveSharedTimers()
+                .ClangImporter__Implementation__loadAllMembers.getGuard();
+  }
+
   assert(D);
 
   // Check whether we're importing an Objective-C container of some sort.
@@ -8001,9 +8038,9 @@ void ClangImporter::Implementation::loadAllMembersIntoExtension(
       continue;
 
     forEachDistinctName(
-        decl, [&](ImportedName newName, ImportNameVersion nameVersion) {
-          addMemberAndAlternatesToExtension(decl, newName, nameVersion, ext);
-        });
+        decl, [&](ImportedName newName, ImportNameVersion nameVersion) -> bool {
+      return addMemberAndAlternatesToExtension(decl, newName, nameVersion, ext);
+    });
   }
 }
 
@@ -8021,29 +8058,30 @@ static Decl *findMemberThatWillLandInAnExtensionContext(Decl *member) {
   return result;
 }
 
-void ClangImporter::Implementation::addMemberAndAlternatesToExtension(
+bool ClangImporter::Implementation::addMemberAndAlternatesToExtension(
     clang::NamedDecl *decl, ImportedName newName, ImportNameVersion nameVersion,
     ExtensionDecl *ext) {
   // Quickly check the context and bail out if it obviously doesn't
   // belong here.
   if (auto *importDC = newName.getEffectiveContext().getAsDeclContext())
     if (importDC->isTranslationUnit())
-      return;
+      return true;
 
   // Then try to import the decl under the specified name.
   auto *member = importDecl(decl, nameVersion);
   if (!member)
-    return;
+    return false;
 
   member = findMemberThatWillLandInAnExtensionContext(member);
   if (!member || member->getDeclContext() != ext)
-    return;
+    return true;
   ext->addMember(member);
 
   for (auto alternate : getAlternateDecls(member)) {
     if (alternate->getDeclContext() == ext)
       ext->addMember(alternate);
   }
+  return true;
 }
 
 static ExtensionDecl *
@@ -8105,26 +8143,27 @@ void ClangImporter::Implementation::insertMembersAndAlternates(
     const clang::NamedDecl *nd, SmallVectorImpl<Decl *> &members) {
   llvm::SmallPtrSet<Decl *, 4> knownAlternateMembers;
   forEachDistinctName(
-      nd, [&](ImportedName name, ImportNameVersion nameVersion) {
-        auto member = importDecl(nd, nameVersion);
-        if (!member)
-          return;
+      nd, [&](ImportedName name, ImportNameVersion nameVersion) -> bool {
+    auto member = importDecl(nd, nameVersion);
+    if (!member)
+      return false;
 
-        // If there are alternate declarations for this member, add them.
-        for (auto alternate : getAlternateDecls(member)) {
-          if (alternate->getDeclContext() == member->getDeclContext() &&
-              knownAlternateMembers.insert(alternate).second) {
-            members.push_back(alternate);
-          }
-        }
+    // If there are alternate declarations for this member, add them.
+    for (auto alternate : getAlternateDecls(member)) {
+      if (alternate->getDeclContext() == member->getDeclContext() &&
+          knownAlternateMembers.insert(alternate).second) {
+        members.push_back(alternate);
+      }
+    }
 
-        // If this declaration shouldn't be visible, don't add it to
-        // the list.
-        if (shouldSuppressDeclImport(nd))
-          return;
+    // If this declaration shouldn't be visible, don't add it to
+    // the list.
+    if (shouldSuppressDeclImport(nd))
+      return true;
 
-        members.push_back(member);
-      });
+    members.push_back(member);
+    return true;
+  });
 }
 
 void ClangImporter::Implementation::collectMembersToAdd(

@@ -1156,7 +1156,10 @@ RequirementEnvironment::RequirementEnvironment(
   // Produce the generic signature and environment.
   // FIXME: Pass in a source location for the conformance, perhaps? It seems
   // like this could fail.
-  syntheticSignature = builder.computeGenericSignature(SourceLoc());
+  syntheticSignature =
+    std::move(builder).computeGenericSignature(
+                                           *conformanceDC->getParentModule(),
+                                           SourceLoc());
   syntheticEnvironment = syntheticSignature->createGenericEnvironment(
                                              *conformanceDC->getParentModule());
 }
@@ -3383,6 +3386,15 @@ static CheckTypeWitnessResult checkTypeWitness(TypeChecker &tc, DeclContext *dc,
 /// Attempt to resolve a type witness via member name lookup.
 ResolveWitnessResult ConformanceChecker::resolveTypeWitnessViaLookup(
                        AssociatedTypeDecl *assocType) {
+  // Conformances constructed by the ClangImporter should have explicit type
+  // witnesses already.
+  if (isa<ClangModuleUnit>(Conformance->getDeclContext()->getModuleScopeContext())) {
+    llvm::errs() << "Cannot look up associated type for imported conformance:\n";
+    Conformance->getType().dump(llvm::errs());
+    assocType->dump(llvm::errs());
+    abort();
+  }
+
   if (!Proto->isRequirementSignatureComputed()) {
     Conformance->setInvalid();
     return ResolveWitnessResult::Missing;
@@ -3807,6 +3819,27 @@ static Type getWitnessTypeForMatching(TypeChecker &tc,
                              genericFn->getResult(),
                              genericFn->getExtInfo());
   }
+
+  // Remap associated types that reference other protocols into this
+  // protocol.
+  auto proto = conformance->getProtocol();
+  type = type.transformRec([proto](TypeBase *type) -> Optional<Type> {
+    if (auto depMemTy = dyn_cast<DependentMemberType>(type)) {
+      if (depMemTy->getAssocType() &&
+          depMemTy->getAssocType()->getProtocol() != proto) {
+        for (auto member : proto->lookupDirect(depMemTy->getName())) {
+          if (auto assocType = dyn_cast<AssociatedTypeDecl>(member)) {
+            auto origProto = depMemTy->getAssocType()->getProtocol();
+            if (proto->inheritsFrom(origProto))
+              return Type(DependentMemberType::get(depMemTy->getBase(),
+                                                   assocType));
+          }
+        }
+      }
+    }
+
+    return None;
+  });
 
   ModuleDecl *module = conformance->getDeclContext()->getParentModule();
   auto resultType = type.subst(QueryTypeSubstitutionMap{substitutions},
@@ -5149,21 +5182,31 @@ void ConformanceChecker::ensureRequirementsAreSatisfied() {
 
   CheckedRequirementSignature = true;
 
+  if (!Conformance->getSignatureConformances().empty())
+    return;
+
   auto reqSig = GenericSignature::get({proto->getProtocolSelfType()},
                                       proto->getRequirementSignature());
 
   auto substitutions = SubstitutionMap::getProtocolSubstitutions(
       proto, Conformance->getType(), ProtocolConformanceRef(Conformance));
 
+  // Create a writer to populate the signature conformances.
+  std::function<void(ProtocolConformanceRef)> writer
+    = Conformance->populateSignatureConformances();
+
   class GatherConformancesListener : public GenericRequirementsCheckListener {
+    std::function<void(ProtocolConformanceRef)> &writer;
   public:
-    SmallVector<ProtocolConformanceRef, 4> conformances;
+    GatherConformancesListener(
+                         std::function<void(ProtocolConformanceRef)> &writer)
+      : writer(writer) { }
 
     void satisfiedConformance(Type depTy, Type replacementTy,
                               ProtocolConformanceRef conformance) override {
-      conformances.push_back(conformance);
+      writer(conformance);
     }
-  } listener;
+  } listener(writer);
 
   auto result = TC.checkGenericArguments(
       Conformance->getDeclContext(), Loc, Loc,
@@ -5174,10 +5217,8 @@ void ConformanceChecker::ensureRequirementsAreSatisfied() {
       nullptr,
       ConformanceCheckFlags::Used, &listener);
 
-  // If there were no errors, record the conformances.
-  if (result == RequirementCheckResult::Success) {
-    Conformance->setSignatureConformances(listener.conformances);
-  } else {
+  // If there were errors, mark the conformance as invalid.
+  if (result != RequirementCheckResult::Success) {
     Conformance->setInvalid();
   }
 }
@@ -5412,9 +5453,9 @@ void ConformanceChecker::checkConformance(MissingWitnessDiagnosisKind Kind) {
   if (Proto->isSpecificProtocol(KnownProtocolKind::ObjectiveCBridgeable)) {
     if (auto nominal = Adoptee->getAnyNominal()) {
       if (!TC.Context.isTypeBridgedInExternalModule(nominal)) {
-        auto nominalModule = nominal->getParentModule();
-        auto conformanceModule = DC->getParentModule();
-        if (nominalModule->getName() != conformanceModule->getName()) {
+        if (nominal->getParentModule() != DC->getParentModule() &&
+            !isInOverlayModuleForImportedModule(DC, nominal)) {
+          auto nominalModule = nominal->getParentModule();
           TC.diagnose(Loc, diag::nonlocal_bridged_to_objc, nominal->getName(),
                       Proto->getName(), nominalModule->getName());
         }
