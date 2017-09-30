@@ -31,7 +31,7 @@ ${SWIFT_PATH}/swift/utils/build-script \
     -R \
     --android \
     --android-ndk ${ANDROID_NDK_PATH} \
-    --android-api-level 21 \
+    --android-api-level 22 \
     --android-icu-uc "${ANDROID_ICU_PATH}/armeabi-v7a" \
     --android-icu-uc-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/common" \
     --android-icu-i18n "${ANDROID_ICU_PATH}/armeabi-v7a" \
@@ -42,12 +42,12 @@ ${SWIFT_PATH}/swift/utils/build-script \
     --install-swift \
     --swiftpm --install-swiftpm \
     --xctest --install-xctest \
-    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
+    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit 1
 
     #'--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
 
-test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit
-test -e ${SWIFT_ANDROID_BUILD_PATH} || exit
+test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit 1
+test -e ${SWIFT_ANDROID_BUILD_PATH} || exit 1
 cp -r ${SWIFT_ANDROID_BUILD_PATH}/swift-linux-x86_64/{bin,lib,include} ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
 cp -r ${SWIFT_ANDROID_BUILD_PATH}/swiftpm-linux-x86_64/.bootstrap/lib ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
 
