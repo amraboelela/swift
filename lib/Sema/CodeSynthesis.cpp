@@ -104,7 +104,8 @@ buildIndexForwardingParamList(AbstractStorageDecl *storage,
 
   // Clone the parameter list over for a new decl, so we get new ParamDecls.
   auto indices = subscript->getIndices()->clone(context,
-                                                ParameterList::Implicit);
+                                                ParameterList::Implicit|
+                                                ParameterList::WithoutTypes);
   if (prefix.empty())
     return indices;
   
@@ -1699,7 +1700,7 @@ void swift::maybeAddAccessorsToVariable(VarDecl *var, TypeChecker &TC) {
         getter->setAccess(var->getFormalAccess());
 
         // Make a setter if the behavior property has one.
-        if (auto valueSetter = valueProp->getSetter()) {
+        if (valueProp->getSetter()) {
           ParamDecl *newValueParam = nullptr;
           setter = createSetterPrototype(var, newValueParam, TC);
           if (mightBeMutating && valueProp->isSetterMutating())
@@ -2040,11 +2041,13 @@ swift::createDesignatedInitOverride(TypeChecker &tc,
   //
   // FIXME: Remove this when lookup of initializers becomes restricted to our
   // immediate superclass.
-  Type superclassTyInCtor = superclassCtor->getDeclContext()->getDeclaredTypeOfContext();
+  auto *superclassCtorDecl =
+      superclassCtor->getDeclContext()
+          ->getAsNominalTypeOrNominalTypeExtensionContext();
   Type superclassTy = classDecl->getSuperclass();
   Type superclassTyInContext = classDecl->mapTypeIntoContext(superclassTy);
   NominalTypeDecl *superclassDecl = superclassTy->getAnyNominal();
-  if (superclassTyInCtor->getAnyNominal() != superclassDecl) {
+  if (superclassCtorDecl != superclassDecl) {
     return nullptr;
   }
 
@@ -2109,6 +2112,18 @@ swift::createDesignatedInitOverride(TypeChecker &tc,
   access = std::min(access, superclassCtor->getFormalAccess());
   ctor->setAccess(access);
 
+  // Inherit the @_versioned attribute.
+  if (superclassCtor->getAttrs().hasAttribute<VersionedAttr>()) {
+    auto *clonedAttr = new (ctx) VersionedAttr(/*implicit=*/true);
+    ctor->getAttrs().add(clonedAttr);
+  }
+
+  // Inherit the @_inlineable attribute.
+  if (superclassCtor->getAttrs().hasAttribute<InlineableAttr>()) {
+    auto *clonedAttr = new (ctx) InlineableAttr(/*implicit=*/true);
+    ctor->getAttrs().add(clonedAttr);
+  }
+
   // Make sure the constructor is only as available as its superclass's
   // constructor.
   AvailabilityInference::applyInferredAvailableAttrs(ctor, superclassCtor, ctx);
@@ -2123,7 +2138,6 @@ swift::createDesignatedInitOverride(TypeChecker &tc,
     if (auto objcAttr = superclassCtor->getAttrs().getAttribute<ObjCAttr>()) {
       if (objcAttr->hasName()) {
         auto *clonedAttr = objcAttr->clone(ctx);
-        // Set it to implicit to disable printing it for SIL.
         clonedAttr->setImplicit(true);
         ctor->getAttrs().add(clonedAttr);
       }

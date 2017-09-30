@@ -12,6 +12,7 @@
 
 #include "swift/IDE/Refactoring.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/ASTPrinter.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsRefactoring.h"
 #include "swift/AST/Expr.h"
@@ -618,21 +619,17 @@ RefactoringAction(ModuleDecl *MD, RefactoringOptions &Opts,
 class TokenBasedRefactoringAction : public RefactoringAction {
 protected:
   ResolvedCursorInfo CursorInfo;
-  bool CanProceed;
 public:
   TokenBasedRefactoringAction(ModuleDecl *MD, RefactoringOptions &Opts,
                               SourceEditConsumer &EditConsumer,
                               DiagnosticConsumer &DiagConsumer) :
   RefactoringAction(MD, Opts, EditConsumer, DiagConsumer) {
     // We can only proceed with valid location and source file.
-    CanProceed = StartLoc.isValid() && TheFile;
-    if (!CanProceed)
-      return;
-
-    // Resolve the sema token and save it for later use.
-    CursorInfoResolver Resolver(*TheFile);
-    CursorInfo = Resolver.resolve(StartLoc);
-    CanProceed = CursorInfo.isValid();
+    if (StartLoc.isValid() && TheFile) {
+      // Resolve the sema token and save it for later use.
+      CursorInfoResolver Resolver(*TheFile);
+      CursorInfo = Resolver.resolve(StartLoc);
+    }
   }
 };
 
@@ -643,8 +640,11 @@ class RefactoringAction##KIND: public TokenBasedRefactoringAction {           \
                           SourceEditConsumer &EditConsumer,                   \
                           DiagnosticConsumer &DiagConsumer) :                 \
     TokenBasedRefactoringAction(MD, Opts, EditConsumer, DiagConsumer) {}      \
-  static bool isApplicable(ResolvedCursorInfo Tok);                           \
   bool performChange() override;                                              \
+  static bool isApplicable(ResolvedCursorInfo Tok, DiagnosticEngine &Diag);   \
+  bool isApplicable() {                                                       \
+    return RefactoringAction##KIND::isApplicable(CursorInfo, DiagEngine) ;    \
+  }                                                                           \
 };
 #include "swift/IDE/RefactoringKinds.def"
 
@@ -670,10 +670,14 @@ class RefactoringAction##KIND: public RangeBasedRefactoringAction {           \
     RangeBasedRefactoringAction(MD, Opts, EditConsumer, DiagConsumer) {}      \
   bool performChange() override;                                              \
   static bool isApplicable(ResolvedRangeInfo Info, DiagnosticEngine &Diag);   \
+  bool isApplicable() {                                                       \
+    return RefactoringAction##KIND::isApplicable(RangeInfo, DiagEngine) ;     \
+  }                                                                           \
 };
 #include "swift/IDE/RefactoringKinds.def"
 
-bool RefactoringActionLocalRename::isApplicable(ResolvedCursorInfo CursorInfo) {
+bool RefactoringActionLocalRename::
+isApplicable(ResolvedCursorInfo CursorInfo, DiagnosticEngine &Diag) {
   if (CursorInfo.Kind != CursorInfoKind::ValueRef)
     return false;
   auto RenameOp = getAvailableRenameForDecl(CursorInfo.ValueD);
@@ -1035,8 +1039,6 @@ getNotableRegions(StringRef SourceText, unsigned NameOffset, StringRef Name,
 }
 
 bool RefactoringActionExtractFunction::performChange() {
-  if (!isApplicable(RangeInfo, DiagEngine))
-    return true;
   // Check if the new name is ok.
   if (!Lexer::isIdentifier(PreferredName)) {
     DiagEngine.diagnose(SourceLoc(), diag::invalid_name, PreferredName);
@@ -1419,8 +1421,6 @@ isApplicable(ResolvedRangeInfo Info, DiagnosticEngine &Diag) {
 }
 
 bool RefactoringActionExtractExpr::performChange() {
-  if (!isApplicable(RangeInfo, DiagEngine))
-    return true;
   return RefactoringActionExtractExprBase(TheFile, RangeInfo,
                                           DiagEngine, false, PreferredName,
                                           EditConsumer).performChange();
@@ -1441,11 +1441,223 @@ isApplicable(ResolvedRangeInfo Info, DiagnosticEngine &Diag) {
   }
 }
 bool RefactoringActionExtractRepeatedExpr::performChange() {
-  if (!isApplicable(RangeInfo, DiagEngine))
-    return true;
   return RefactoringActionExtractExprBase(TheFile, RangeInfo,
                                           DiagEngine, true, PreferredName,
                                           EditConsumer).performChange();
+}
+
+struct CollapsibleNestedIfInfo {
+  IfStmt *OuterIf;
+  IfStmt *InnerIf;
+  bool FinishedOuterIf;
+  bool FoundNonCollapsibleItem;
+  CollapsibleNestedIfInfo():
+    OuterIf(nullptr), InnerIf(nullptr),
+    FinishedOuterIf(false), FoundNonCollapsibleItem(false) {}
+  bool isValid() {
+    return OuterIf && InnerIf && FinishedOuterIf && !FoundNonCollapsibleItem;
+  }
+};
+
+static CollapsibleNestedIfInfo findCollapseNestedIfTarget(ResolvedCursorInfo CursorInfo) {
+  if (CursorInfo.Kind != CursorInfoKind::StmtStart)
+    return CollapsibleNestedIfInfo();
+  struct IfStmtFinder: public SourceEntityWalker {
+    SourceLoc StartLoc;
+    CollapsibleNestedIfInfo IfInfo;
+    IfStmtFinder(SourceLoc StartLoc): StartLoc(StartLoc), IfInfo() {}
+    bool finishedInnerIfButNotFinishedOuterIf() {
+      return IfInfo.InnerIf && !IfInfo.FinishedOuterIf;
+    }
+    bool walkToStmtPre(Stmt *S) {
+      if (finishedInnerIfButNotFinishedOuterIf()) {
+        IfInfo.FoundNonCollapsibleItem = true;
+        return false;
+      }
+
+      bool StmtIsOuterIfBrace =
+        IfInfo.OuterIf && !IfInfo.InnerIf && S->getKind() == StmtKind::Brace;
+      if (StmtIsOuterIfBrace) {
+        return true;
+      }
+
+      auto *IFS = dyn_cast<IfStmt>(S);
+      if (!IFS) {
+        return false;
+      }
+      if (!IfInfo.OuterIf) {
+        IfInfo.OuterIf = IFS;
+        return true;
+      } else {
+        IfInfo.InnerIf = IFS;
+        return false;
+      }
+    }
+    bool walkToStmtPost(Stmt *S) {
+      assert(S != IfInfo.InnerIf && "Should not traverse inner if statement");
+      if (S == IfInfo.OuterIf) {
+        IfInfo.FinishedOuterIf = true;
+      }
+      return true;
+    }
+    bool walkToDeclPre(Decl *D, CharSourceRange Range) {
+      if (finishedInnerIfButNotFinishedOuterIf()) {
+        IfInfo.FoundNonCollapsibleItem = true;
+        return false;
+      }
+      return true;
+    }
+    bool walkToExprPre(Expr *E) {
+      if (finishedInnerIfButNotFinishedOuterIf()) {
+        IfInfo.FoundNonCollapsibleItem = true;
+        return false;
+      }
+      return true;
+    }
+
+  } Walker(CursorInfo.TrailingStmt->getStartLoc());
+  Walker.walk(CursorInfo.TrailingStmt);
+  return Walker.IfInfo;
+}
+
+bool RefactoringActionCollapseNestedIfExpr::
+isApplicable(ResolvedCursorInfo Tok, DiagnosticEngine &Diag) {
+  return findCollapseNestedIfTarget(Tok).isValid();
+}
+
+bool RefactoringActionCollapseNestedIfExpr::performChange() {
+  auto Target = findCollapseNestedIfTarget(CursorInfo);
+  if (!Target.isValid())
+    return true;
+  auto OuterIfConds = Target.OuterIf->getCond().vec();
+  auto InnerIfConds = Target.InnerIf->getCond().vec();
+
+  EditorConsumerInsertStream OS(EditConsumer, SM,
+    Lexer::getCharSourceRangeFromSourceRange(
+    SM, Target.OuterIf->getSourceRange()));
+
+  OS << tok::kw_if << " ";
+  for (auto CI = OuterIfConds.begin(); CI != OuterIfConds.end(); ++CI) {
+    OS << (CI != OuterIfConds.begin() ? ", " : "");
+    OS << Lexer::getCharSourceRangeFromSourceRange(
+      SM, CI->getSourceRange()).str();
+  }
+  for (auto CI = InnerIfConds.begin(); CI != InnerIfConds.end(); ++CI) {
+    OS << ", " << Lexer::getCharSourceRangeFromSourceRange(
+      SM, CI->getSourceRange()).str();
+  }
+  auto ThenStatementText = Lexer::getCharSourceRangeFromSourceRange(
+    SM, Target.InnerIf->getThenStmt()->getSourceRange()).str();
+  OS << " " << ThenStatementText;
+  return false;
+}
+
+static std::unique_ptr<llvm::SetVector<Expr*>>
+  findConcatenatedExpressions(ResolvedRangeInfo Info, ASTContext &Ctx) {
+  if (Info.Kind != RangeKind::SingleExpression
+      && Info.Kind != RangeKind::PartOfExpression)
+    return nullptr;
+  Expr *E = Info.ContainedNodes[0].get<Expr*>();
+
+  struct StringInterpolationExprFinder: public SourceEntityWalker {
+    std::unique_ptr<llvm::SetVector<Expr*>> Bucket = llvm::
+    make_unique<llvm::SetVector<Expr*>>();
+    ASTContext &Ctx;
+
+    bool IsValidInterpolation = true;
+    StringInterpolationExprFinder(ASTContext &Ctx): Ctx(Ctx) {}
+
+    bool isConcatenationExpr(DeclRefExpr* Expr) {
+      if (!Expr)
+        return false;
+      auto *FD = dyn_cast<FuncDecl>(Expr->getDecl());
+      if (FD == nullptr || (FD != Ctx.getPlusFunctionOnString() &&
+          FD != Ctx.getPlusFunctionOnRangeReplaceableCollection())) {
+        return false;
+      }
+      return true;
+    }
+
+    bool walkToExprPre(Expr *E) {
+      if (E->isImplicit())
+        return true;
+      auto ExprType = E->getType()->getNominalOrBoundGenericNominal();
+      //Only binary concatenation operators should exist in expression
+      if (E->getKind() == ExprKind::Binary) {
+        auto *BE = dyn_cast<BinaryExpr>(E);
+        auto *OperatorDeclRef = BE->getSemanticFn()->getMemberOperatorRef();
+        if (!(isConcatenationExpr(OperatorDeclRef)
+            && ExprType == Ctx.getStringDecl())) {
+          IsValidInterpolation = false;
+          return false;
+        }
+        return true;
+      }
+      // Everything that evaluates to string should be gathered.
+      if (ExprType == Ctx.getStringDecl()) {
+        Bucket->insert(E);
+        return false;
+      }
+      if (auto *DR = dyn_cast<DeclRefExpr>(E)) {
+        // Checks whether all function references in expression are concatenations.
+        auto *FD = dyn_cast<FuncDecl>(DR->getDecl());
+        auto IsConcatenation = isConcatenationExpr(DR);
+        if (FD && IsConcatenation) {
+          return false;
+        }
+      }
+      // There was non-expected expression, it's not valid interpolation then.
+      IsValidInterpolation = false;
+      return false;
+    }
+  } Walker(Ctx);
+  Walker.walk(E);
+
+  // There should be two or more expressions to convert.
+  if (!Walker.IsValidInterpolation || Walker.Bucket->size() < 2)
+    return nullptr;
+
+  return std::move(Walker.Bucket);
+}
+
+static void interpolatedExpressionForm(Expr *E, SourceManager &SM,
+                                              llvm::raw_ostream &OS) {
+  if (auto *Literal = dyn_cast<StringLiteralExpr>(E)) {
+    OS << Literal->getValue();
+    return;
+  }
+  auto ExpStr = Lexer::getCharSourceRangeFromSourceRange(SM,
+    E->getSourceRange()).str().str();
+  if (isa<InterpolatedStringLiteralExpr>(E)) {
+    ExpStr.erase(0, 1);
+    ExpStr.pop_back();
+    OS << ExpStr;
+    return;
+  }
+  OS << "\\(" << ExpStr << ")";
+}
+
+bool RefactoringActionConvertStringsConcatenationToInterpolation::
+isApplicable(ResolvedRangeInfo Info, DiagnosticEngine &Diag) {
+  auto RangeContext = Info.RangeContext;
+  if (RangeContext) {
+    auto &Ctx = Info.RangeContext->getASTContext();
+    return findConcatenatedExpressions(Info, Ctx) != nullptr;
+  }
+  return false;
+}
+
+bool RefactoringActionConvertStringsConcatenationToInterpolation::performChange() {
+  auto Expressions = findConcatenatedExpressions(RangeInfo, Ctx);
+  if (!Expressions)
+    return true;
+  EditorConsumerInsertStream OS(EditConsumer, SM, RangeInfo.ContentRange);
+  OS << "\"";
+  for (auto It = Expressions->begin(); It != Expressions->end(); It++) {
+    interpolatedExpressionForm(*It, SM, OS);
+  }
+  OS << "\"";
+  return false;
 }
 
 /// The helper class analyzes a given nominal decl or an extension decl to
@@ -1538,22 +1750,17 @@ getUnsatisfiedRequirements(const DeclContext *DC) {
   return NonWitnessedReqs;
 }
 
-bool RefactoringActionFillProtocolStub::isApplicable(ResolvedCursorInfo Tok) {
+bool RefactoringActionFillProtocolStub::
+isApplicable(ResolvedCursorInfo Tok, DiagnosticEngine &Diag) {
   return FillProtocolStubContext::getContextFromCursorInfo(Tok).canProceed();
 };
 
 bool RefactoringActionFillProtocolStub::performChange() {
-  // If the base class says no proceeding, respect it.
-  if (!CanProceed)
-    return true;
-
   // Get the filling protocol context from the input token.
   FillProtocolStubContext Context = FillProtocolStubContext::
-  getContextFromCursorInfo(CursorInfo);
+    getContextFromCursorInfo(CursorInfo);
 
-  // If the filling context disallows continue, abort.
-  if (!Context.canProceed())
-    return true;
+  assert(Context.canProceed());
   assert(!Context.getFillingContents().empty());
   assert(Context.getFillingContext());
   llvm::SmallString<128> Text;
@@ -1593,21 +1800,22 @@ collectAvailableRefactoringsAtCursor(SourceFile *SF, unsigned Line,
   return collectAvailableRefactorings(SF, Tok, Scratch, /*Exclude rename*/false);
 }
 
-bool RefactoringActionExpandDefault::isApplicable(ResolvedCursorInfo CursorInfo) {
+bool RefactoringActionExpandDefault::
+isApplicable(ResolvedCursorInfo CursorInfo, DiagnosticEngine &Diag) {
+  auto Exit = [&](bool Applicable) {
+    if (!Applicable)
+      Diag.diagnose(SourceLoc(), diag::invalid_default_location);
+    return Applicable;
+  };
   if (CursorInfo.Kind != CursorInfoKind::StmtStart)
-    return false;
+    return Exit(false);
   if (auto *CS = dyn_cast<CaseStmt>(CursorInfo.TrailingStmt)) {
-    return CS->isDefault();
+    return Exit(CS->isDefault());
   }
-  return false;
+  return Exit(false);
 }
 
 bool RefactoringActionExpandDefault::performChange() {
-  if (!isApplicable(CursorInfo)) {
-    DiagEngine.diagnose(SourceLoc(), diag::invalid_default_location);
-    return true;
-  }
-
   // Try to find the switch statement enclosing the default statement.
   auto *CS = static_cast<CaseStmt*>(CursorInfo.TrailingStmt);
   auto IsSwitch = [](ASTNode Node) {
@@ -1667,11 +1875,10 @@ bool RefactoringActionExpandDefault::performChange() {
   }
 
   // Good to go, change the code!
-  SmallString<64> Buffer;
-  llvm::raw_svector_ostream OS(Buffer);
+  EditorConsumerInsertStream OS(EditConsumer, SM,
+                                Lexer::getCharSourceRangeFromSourceRange(SM,
+                                  CS->getLabelItemsRange()));
   printEnumElementsAsCases(UnhandledElements, OS);
-  EditConsumer.accept(SM, Lexer::getCharSourceRangeFromSourceRange(SM,
-    CS->getLabelItemsRange()), Buffer.str());
   return false;
 }
 
@@ -1698,7 +1905,8 @@ static Expr *findLocalizeTarget(ResolvedCursorInfo CursorInfo) {
   return Walker.Target;
 }
 
-bool RefactoringActionLocalizeString::isApplicable(ResolvedCursorInfo Tok) {
+bool RefactoringActionLocalizeString::
+isApplicable(ResolvedCursorInfo Tok, DiagnosticEngine &Diag) {
   return findLocalizeTarget(Tok);
 }
 
@@ -1708,6 +1916,61 @@ bool RefactoringActionLocalizeString::performChange() {
     return true;
   EditConsumer.accept(SM, Target->getStartLoc(), "NSLocalizedString(");
   EditConsumer.insertAfter(SM, Target->getEndLoc(), ", comment: \"\")");
+  return false;
+}
+
+static CharSourceRange
+  findSourceRangeToWrapInCatch(ResolvedCursorInfo CursorInfo,
+                               SourceFile *TheFile,
+                               SourceManager &SM) {
+  Expr *E = CursorInfo.TrailingExpr;
+  if (!E)
+    return CharSourceRange();
+  auto Node = ASTNode(E);
+  auto NodeChecker = [](ASTNode N) { return N.isStmt(StmtKind::Brace); };
+  ContextFinder Finder(*TheFile, Node, NodeChecker);
+  Finder.resolve();
+  auto Contexts = Finder.getContexts();
+  if (Contexts.size() == 0)
+    return CharSourceRange();
+  auto TargetNode = Contexts.back();
+  BraceStmt *BStmt = dyn_cast<BraceStmt>(TargetNode.dyn_cast<Stmt*>());
+  auto ConvertToCharRange = [&SM](SourceRange SR) {
+    return Lexer::getCharSourceRangeFromSourceRange(SM, SR);
+  };
+  assert(BStmt);
+  auto ExprRange = ConvertToCharRange(E->getSourceRange());
+  // Check elements of the deepest BraceStmt, pick one that covers expression.
+  for (auto Elem: BStmt->getElements()) {
+    auto ElemRange = ConvertToCharRange(Elem.getSourceRange());
+    if (ElemRange.contains(ExprRange))
+      TargetNode = Elem;
+  }
+  return ConvertToCharRange(TargetNode.getSourceRange());
+}
+
+bool RefactoringActionConvertToDoCatch::
+isApplicable(ResolvedCursorInfo Tok, DiagnosticEngine &Diag) {
+  if (!Tok.TrailingExpr)
+    return false;
+  return isa<ForceTryExpr>(Tok.TrailingExpr);
+}
+
+bool RefactoringActionConvertToDoCatch::performChange() {
+  auto *TryExpr = dyn_cast<ForceTryExpr>(CursorInfo.TrailingExpr);
+  assert(TryExpr);
+  auto Range = findSourceRangeToWrapInCatch(CursorInfo, TheFile, SM);
+  if (!Range.isValid())
+    return true;
+  // Wrap given range in do catch block.
+  EditConsumer.accept(SM, Range.getStart(), "do {\n");
+  EditorConsumerInsertStream OS(EditConsumer, SM, Range.getEnd());
+  OS << "\n} catch {\n" << getCodePlaceholder() << "\n}";
+
+  // Delete ! from try! expression
+  auto ExclaimLen = getKeywordLen(tok::exclaim_postfix);
+  auto ExclaimRange = CharSourceRange(TryExpr->getExclaimLoc(), ExclaimLen);
+  EditConsumer.remove(SM, ExclaimRange);
   return false;
 }
 
@@ -1775,7 +2038,7 @@ static void insertUnderscoreInDigits(StringRef Digits,
 }
 
 bool RefactoringActionSimplifyNumberLiteral::
-isApplicable(ResolvedCursorInfo Tok) {
+isApplicable(ResolvedCursorInfo Tok, DiagnosticEngine &Diag) {
   if (auto *Literal = getTrailingNumberLiteral(Tok)) {
     llvm::SmallString<64> Buffer;
     llvm::raw_svector_ostream OS(Buffer);
@@ -1791,13 +2054,13 @@ isApplicable(ResolvedCursorInfo Tok) {
 
 bool RefactoringActionSimplifyNumberLiteral::performChange() {
   if (auto *Literal = getTrailingNumberLiteral(CursorInfo)) {
-    llvm::SmallString<64> Buffer;
-    llvm::raw_svector_ostream OS(Buffer);
+
+    EditorConsumerInsertStream OS(EditConsumer, SM,
+                                  CharSourceRange(SM, Literal->getDigitsLoc(),
+                                  Lexer::getLocForEndOfToken(SM,
+                                    Literal->getEndLoc())));
     StringRef Digits = Literal->getDigitsText();
     insertUnderscoreInDigits(Digits, OS);
-    EditConsumer.accept(SM, CharSourceRange(SM, Literal->getDigitsLoc(),
-                          Lexer::getLocForEndOfToken(SM, Literal->getEndLoc())),
-                        OS.str());
     return false;
   }
   return true;
@@ -1990,8 +2253,9 @@ collectAvailableRefactorings(SourceFile *SF,
       AllKinds.push_back(RenameOp.getValue());
     }
   }
+  DiagnosticEngine DiagEngine(SF->getASTContext().SourceMgr);
 #define CURSOR_REFACTORING(KIND, NAME, ID)                                     \
-  if (RefactoringAction##KIND::isApplicable(CursorInfo))                       \
+  if (RefactoringAction##KIND::isApplicable(CursorInfo, DiagEngine))           \
     AllKinds.push_back(RefactoringKind::KIND);
 #include "swift/IDE/RefactoringKinds.def"
 
@@ -2056,8 +2320,13 @@ refactorSwiftModule(ModuleDecl *M, RefactoringOptions Opts,
 
   switch (Opts.Kind) {
 #define SEMANTIC_REFACTORING(KIND, NAME, ID)                                   \
-    case RefactoringKind::KIND: return RefactoringAction##KIND(M, Opts,        \
-      EditConsumer, DiagConsumer).performChange();
+case RefactoringKind::KIND: {                                                  \
+      RefactoringAction##KIND Action(M, Opts, EditConsumer, DiagConsumer);     \
+      if (RefactoringKind::KIND == RefactoringKind::LocalRename ||             \
+          Action.isApplicable())                                               \
+        return Action.performChange();                                         \
+      return true;                                                             \
+  }
 #include "swift/IDE/RefactoringKinds.def"
     case RefactoringKind::GlobalRename:
     case RefactoringKind::FindGlobalRenameRanges:

@@ -76,12 +76,13 @@ SILInstruction *SILGlobalVariable::getStaticInitializerValue() {
   return &StaticInitializerBlock.back();
 }
 
-bool SILGlobalVariable::isValidStaticInitializerInst(const SILInstruction *I) {
+bool SILGlobalVariable::isValidStaticInitializerInst(const SILInstruction *I,
+                                                     SILModule &M) {
   switch (I->getKind()) {
-    case ValueKind::BuiltinInst: {
+    case SILInstructionKind::BuiltinInst: {
       auto *bi = cast<BuiltinInst>(I);
-      switch (bi->getBuiltinInfo().ID) {
-        case BuiltinValueKind::FPTrunc:
+      switch (M.getBuiltinInfo(bi->getName()).ID) {
+        case BuiltinValueKind::PtrToInt:
           if (isa<LiteralInst>(bi->getArguments()[0]))
             return true;
           break;
@@ -90,7 +91,7 @@ bool SILGlobalVariable::isValidStaticInitializerInst(const SILInstruction *I) {
       }
       return false;
     }
-    case ValueKind::StringLiteralInst:
+    case SILInstructionKind::StringLiteralInst:
       switch (cast<StringLiteralInst>(I)->getEncoding()) {
         case StringLiteralInst::Encoding::UTF8:
         case StringLiteralInst::Encoding::UTF16:
@@ -101,11 +102,11 @@ bool SILGlobalVariable::isValidStaticInitializerInst(const SILInstruction *I) {
           return false;
       }
       return false;
-    case ValueKind::StructInst:
-    case ValueKind::TupleInst:
-    case ValueKind::IntegerLiteralInst:
-    case ValueKind::FloatLiteralInst:
-    case ValueKind::ObjectInst:
+    case SILInstructionKind::StructInst:
+    case SILInstructionKind::TupleInst:
+    case SILInstructionKind::IntegerLiteralInst:
+    case SILInstructionKind::FloatLiteralInst:
+    case SILInstructionKind::ObjectInst:
       return true;
     default:
       return false;

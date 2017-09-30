@@ -800,7 +800,8 @@ getGenericEnvironmentAndSignatureWithRequirements(
   }
 
   auto NewGenSig =
-    Builder.computeGenericSignature(SourceLoc(),
+    std::move(Builder).computeGenericSignature(*M.getSwiftModule(),
+                                   SourceLoc(),
                                    /*allowConcreteGenericParams=*/true);
   auto NewGenEnv = NewGenSig->createGenericEnvironment(*M.getSwiftModule());
   return { NewGenEnv, NewGenSig };
@@ -1490,7 +1491,8 @@ FunctionSignaturePartialSpecializer::
 
   // Finalize the archetype builder.
   auto GenSig =
-      Builder.computeGenericSignature(SourceLoc(),
+      std::move(Builder).computeGenericSignature(*M.getSwiftModule(),
+                                      SourceLoc(),
                                       /*allowConcreteGenericParams=*/true);
   auto GenEnv = GenSig->createGenericEnvironment(*M.getSwiftModule());
   return { GenEnv, GenSig };
@@ -2078,9 +2080,9 @@ protected:
 } // anonymous namespace
 
 SILFunction *ReabstractionThunkGenerator::createThunk() {
-  SILFunction *Thunk =
-      M.getOrCreateSharedFunction(Loc, ThunkName, ReInfo.getSubstitutedType(),
-                                  IsBare, IsTransparent, Serialized, IsThunk);
+  SILFunction *Thunk = M.getOrCreateSharedFunction(
+      Loc, ThunkName, ReInfo.getSubstitutedType(), IsBare, IsTransparent,
+      Serialized, ProfileCounter(), IsThunk);
   // Re-use an existing thunk.
   if (!Thunk->empty())
     return Thunk;
@@ -2272,6 +2274,12 @@ void swift::trySpecializeApplyOfGeneric(
   if (F->isSerialized() && RefF->isSerialized())
     Serialized = IsSerializable;
 
+  // If it is OnoneSupport consider all specializations as serialized.
+  // It is important to set this flag here, because it affects the
+  // mangling of the specialization's name.
+  if (Apply.getModule().isOptimizedOnoneSupportModule())
+    Serialized = IsSerialized;
+
   ReabstractionInfo ReInfo(Apply, RefF, Apply.getSubstitutions());
   if (!ReInfo.canBeSpecialized())
     return;
@@ -2300,7 +2308,7 @@ void swift::trySpecializeApplyOfGeneric(
         continue;
 
       auto FAS = FullApplySite::isa(User);
-      if (FAS && FAS.getCallee() == Apply.getInstruction())
+      if (FAS && FAS.getCallee() == PAI)
         continue;
 
       auto *PAIUser = dyn_cast<PartialApplyInst>(User);
@@ -2438,8 +2446,7 @@ static bool linkSpecialization(SILModule &M, SILFunction *F) {
   // Do not remove functions that are known prespecializations.
   // Keep them around. Change their linkage to public, so that other
   // applications can refer to them.
-  if (M.getOptions().Optimization >= SILOptions::SILOptMode::Optimize &&
-      F->getModule().getSwiftModule()->getName().str() == SWIFT_ONONE_SUPPORT) {
+  if (M.isOptimizedOnoneSupportModule()) {
     if (isKnownPrespecialization(F->getName())) {
       keepSpecializationAsPublic(F);
       return true;

@@ -236,9 +236,6 @@ namespace swift {
     /// Diagnose uses of NSCoding with classes that have unstable mangled names.
     bool EnableNSKeyedArchiverDiagnostics = true;
     
-    /// Enable keypath components that aren't fully implemented.
-    bool EnableExperimentalKeyPathComponents = false;
-
     /// When a conversion from String to Substring fails, emit a fix-it to append
     /// the void subscript '[]'.
     /// FIXME: Remove this flag when void subscripts are implemented.
@@ -271,7 +268,8 @@ namespace swift {
         Target.getOSVersion(major, minor, revision);
       } else if (Target.isOSLinux() || Target.isOSFreeBSD() ||
                  Target.isAndroid() || Target.isOSWindows() ||
-                 Target.isPS4() || Target.getTriple().empty()) {
+                 Target.isPS4() || Target.isOSHaiku() ||
+                 Target.getTriple().empty()) {
         major = minor = revision = 0;
       } else {
         llvm_unreachable("Unsupported target OS");

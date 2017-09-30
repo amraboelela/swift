@@ -1449,7 +1449,7 @@ void PrintAST::printAccessors(AbstractStorageDecl *ASD) {
     bool settable = ASD->isSettable(nullptr);
     bool nonmutatingSetter = false;
     if (settable && !ASD->isSetterMutating() && ASD->isInstanceMember() &&
-        !ASD->getDeclContext()->getDeclaredTypeInContext()
+        !ASD->getDeclContext()->getDeclaredInterfaceType()
             ->hasReferenceSemantics())
       nonmutatingSetter = true;
 
@@ -2146,10 +2146,10 @@ void PrintAST::visitProtocolDecl(ProtocolDecl *decl) {
 }
 
 static bool isStructOrClassContext(DeclContext *dc) {
-  if (auto ctx = dc->getDeclaredTypeInContext())
-    return ctx->getClassOrBoundGenericClass() ||
-           ctx->getStructOrBoundGenericStruct();
-  return false;
+  auto *nominal = dc->getAsNominalTypeOrNominalTypeExtensionContext();
+  if (nominal == nullptr)
+    return false;
+  return isa<ClassDecl>(nominal) || isa<StructDecl>(nominal);
 }
 
 static void printParameterFlags(ASTPrinter &printer, PrintOptions options,
@@ -2503,10 +2503,13 @@ void PrintAST::visitFuncDecl(FuncDecl *decl) {
       printContextIfNeeded(decl);
       recordDeclLoc(decl,
         [&]{ // Name
-          if (!decl->hasName())
+          if (!decl->hasName()) {
             Printer << "<anonymous>";
-          else
+          } else {
             Printer.printName(decl->getName());
+            if (decl->isOperator())
+              Printer << " ";
+          }
         }, [&] { // Parameters
           if (decl->isGeneric())
             if (auto *genericSig = decl->getGenericSignature())
@@ -2627,7 +2630,10 @@ void PrintAST::visitSubscriptDecl(SubscriptDecl *decl) {
   recordDeclLoc(decl, [&]{
     Printer << "subscript";
   }, [&] { // Parameters
-    printParameterList(decl->getIndices(), decl->getIndicesInterfaceType(),
+    printParameterList(decl->getIndices(),
+                       decl->hasInterfaceType()
+                         ? decl->getIndicesInterfaceType()
+                         : nullptr,
                        /*isCurried=*/false,
                        /*isAPINameByDefault*/[]()->bool{return false;});
   });
@@ -3915,7 +3921,7 @@ void LayoutConstraintInfo::print(ASTPrinter &Printer,
     Printer << "(";
     Printer << SizeInBits;
     if (Alignment)
-      Printer << ", " << Alignment <<")";
+      Printer << ", " << Alignment;
     Printer << ")";
     break;
   }

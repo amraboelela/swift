@@ -75,6 +75,17 @@ Optional<Type> ConstraintSystem::checkTypeOfBinding(TypeVariableType *typeVar,
   if (count(referencedTypeVars, typeVar))
     return None;
 
+  // If type variable is not allowed to bind to `lvalue`,
+  // let's check if type of potential binding has any
+  // type variables, which are allowed to bind to `lvalue`,
+  // and postpone such type from consideration.
+  if (!typeVar->getImpl().canBindToLValue()) {
+    for (auto *typeVar : referencedTypeVars) {
+      if (typeVar->getImpl().canBindToLValue())
+        return None;
+    }
+  }
+
   // If the type is a type variable itself, don't permit the binding.
   if (auto bindingTypeVar = type->getRValueType()->getAs<TypeVariableType>()) {
     if (isNilLiteral) {
@@ -1783,21 +1794,15 @@ bool ConstraintSystem::solveSimplified(
     Constraint *disjunction, SmallVectorImpl<Solution> &solutions,
     FreeTypeVariableBinding allowFreeTypeVariables) {
 
-  TypeVariableType *bestTypeVar = nullptr;
-  PotentialBindings bestBindings;
-  std::tie(bestBindings, bestTypeVar) = determineBestBindings();
+  auto bestBindings = determineBestBindings();
 
   // If we have a binding that does not involve type variables, and is
-  // not fully bound, and is either not a literal or is a collection
-  // literal, or we have no disjunction to attempt instead, go ahead
-  // and try the bindings for this type variable.
-  if (bestBindings &&
-      (!disjunction ||
-       (!bestBindings.InvolvesTypeVariables && !bestBindings.FullyBound &&
-        (bestBindings.LiteralBinding == LiteralBindingKind::None ||
-         bestBindings.LiteralBinding == LiteralBindingKind::Collection)))) {
-    return tryTypeVariableBindings(solverState->depth, bestTypeVar,
-                                   bestBindings.Bindings, solutions,
+  // not fully bound, or we have no disjunction to attempt instead,
+  // go ahead and try the bindings for this type variable.
+  if (bestBindings && (!disjunction || (!bestBindings->InvolvesTypeVariables &&
+                                        !bestBindings->FullyBound))) {
+    return tryTypeVariableBindings(solverState->depth, bestBindings->TypeVar,
+                                   bestBindings->Bindings, solutions,
                                    allowFreeTypeVariables);
   }
 

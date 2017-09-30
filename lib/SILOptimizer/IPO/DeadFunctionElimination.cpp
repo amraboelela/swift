@@ -113,6 +113,7 @@ protected:
     // a pipeline, as it may break some optimizations.
     if (F->isKeepAsPublic()) {
       F->setLinkage(SILLinkage::Public);
+      F->setSerialized(IsSerialized);
       DEBUG(llvm::dbgs() << "DFE: Preserve the specialization "
                          << F->getName() << '\n');
       return true;
@@ -223,6 +224,12 @@ protected:
         case KeyPathPatternComponent::ComputedPropertyId::Property:
           break;
         }
+        
+        if (auto equals = component.getComputedPropertyIndexEquals())
+          ensureAlive(equals);
+        if (auto hash = component.getComputedPropertyIndexHash())
+          ensureAlive(hash);
+
         continue;
       }
       case KeyPathPatternComponent::Kind::StoredProperty:

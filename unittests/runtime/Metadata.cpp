@@ -165,13 +165,14 @@ uint32_t Global2 = 0;
 uint32_t Global3 = 0;
 
 /// The general structure of a generic metadata.
-template <typename Instance>
+template <typename Instance, unsigned NumArguments>
 struct GenericMetadataTest {
   GenericMetadata Header;
   Instance Template;
+  void *Storage[NumArguments];
 };
 
-GenericMetadataTest<StructMetadata> MetadataTest1 = {
+GenericMetadataTest<StructMetadata, 1> MetadataTest1 = {
   // Header
   {
     // allocation function
@@ -191,9 +192,11 @@ GenericMetadataTest<StructMetadata> MetadataTest1 = {
   // Fields
   {
     MetadataKind::Struct,
-    reinterpret_cast<const NominalTypeDescriptor*>(&Global1),
-    nullptr
-  }
+    reinterpret_cast<const NominalTypeDescriptor*>(&Global1)
+  },
+
+  // Arguments
+  {nullptr}
 };
 
 struct TestObjContainer {

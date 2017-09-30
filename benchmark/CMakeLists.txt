@@ -11,6 +11,11 @@ cmake_minimum_required(VERSION 2.8.12)
 list(APPEND CMAKE_MODULE_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 
+set(SWIFT_BENCHMARK_BUILT_STANDALONE FALSE)
+if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
+  set(SWIFT_BENCHMARK_BUILT_STANDALONE TRUE)
+endif()
+
 include(AddSwiftBenchmarkSuite)
 
 set(SWIFT_BENCH_MODULES
@@ -25,6 +30,7 @@ set(SWIFT_BENCH_MODULES
     single-source/ArrayOfGenericRef
     single-source/ArrayOfPOD
     single-source/ArrayOfRef
+    single-source/ArraySetElement
     single-source/ArraySubscript
     single-source/BitCount
     single-source/ByteSwap
@@ -104,6 +110,7 @@ set(SWIFT_BENCH_MODULES
     single-source/StrToInt
     single-source/StringBuilder
     single-source/StringEdits
+    single-source/StringEnum
     single-source/StringInterpolation
     single-source/StringMatch
     single-source/StringTests
@@ -118,13 +125,15 @@ set(SWIFT_BENCH_MODULES
     single-source/XorLoop
 )
 
-set(SWIFT_MULTISOURCE_BENCHES
+set(SWIFT_MULTISOURCE_SWIFT3_BENCHES
+  multi-source/PrimsSplit
 )
 
+set(PrimsSplit_sources
+    multi-source/PrimsSplit/Prims.swift
+    multi-source/PrimsSplit/main.swift)
 
-set(BENCH_DRIVER_LIBRARY_MODULES
-    utils/DriverUtils
-    utils/TestsUtils
+set(SWIFT_MULTISOURCE_SWIFT4_BENCHES
 )
 
 set(BENCH_DRIVER_LIBRARY_FLAGS)
@@ -133,6 +142,11 @@ if (SWIFT_RUNTIME_ENABLE_LEAK_CHECKER)
 endif()
 
 set(BENCH_LIBRARY_MODULES
+    utils/TestsUtils
+)
+
+set(BENCH_DRIVER_LIBRARY_MODULES
+    utils/DriverUtils
 )
 
 add_definitions(-DSWIFT_EXEC -DSWIFT_LIBRARY_PATH -DONLY_PLATFORMS
@@ -224,6 +238,7 @@ endforeach()
 
 message("--")
 message("-- Swift Benchmark Suite:")
+message("--   SWIFT_BENCHMARK_BUILT_STANDALONE = ${SWIFT_BENCHMARK_BUILT_STANDALONE}")
 message("--   SWIFT_EXEC = ${SWIFT_EXEC}")
 message("--   SWIFT_LIBRARY_PATH = ${SWIFT_LIBRARY_PATH}")
 message("--   CLANG_EXEC = ${CLANG_EXEC}")
@@ -238,16 +253,12 @@ endforeach()
 
 set(executable_targets)
 
-if(SWIFT_SDKS)
-  set(IS_SWIFT_BUILD true)
-endif()
-
 set(srcdir "${CMAKE_CURRENT_SOURCE_DIR}")
 
-if(IS_SWIFT_BUILD)
-  get_filename_component(swift-bin-dir "${SWIFT_EXEC}" DIRECTORY)
-else()
+if(SWIFT_BENCHMARK_BUILT_STANDALONE)
   set(swift-bin-dir "${CMAKE_BINARY_DIR}/bin")
+else()
+  get_filename_component(swift-bin-dir "${SWIFT_EXEC}" DIRECTORY)
 endif()
 
 set(benchmark-bin-dir "${CMAKE_CURRENT_BINARY_DIR}/bin")

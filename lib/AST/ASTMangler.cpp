@@ -276,27 +276,67 @@ std::string ASTMangler::mangleGlobalVariableFull(const VarDecl *decl) {
   return finalize();
 }
 
-std::string ASTMangler::mangleKeyPathGetterThunkHelper(const VarDecl *property,
-                                                   GenericSignature *signature,
-                                                   CanType baseType) {
+std::string ASTMangler::mangleKeyPathGetterThunkHelper(
+                                            const AbstractStorageDecl *property,
+                                            GenericSignature *signature,
+                                            CanType baseType,
+                                            ArrayRef<CanType> subs) {
   beginMangling();
   appendEntity(property);
   if (signature)
     appendGenericSignature(signature);
   appendType(baseType);
+  if (isa<SubscriptDecl>(property)) {
+    // Subscripts can be generic, and different key paths could capture the same
+    // subscript at different generic arguments.
+    for (auto &sub : subs) {
+      appendType(sub);
+    }
+  }
   appendOperator("TK");
   return finalize();
 }
 
-std::string ASTMangler::mangleKeyPathSetterThunkHelper(const VarDecl *property,
-                                                   GenericSignature *signature,
-                                                   CanType baseType) {
+std::string ASTMangler::mangleKeyPathSetterThunkHelper(
+                                          const AbstractStorageDecl *property,
+                                          GenericSignature *signature,
+                                          CanType baseType,
+                                          ArrayRef<CanType> subs) {
   beginMangling();
   appendEntity(property);
   if (signature)
     appendGenericSignature(signature);
   appendType(baseType);
+  if (isa<SubscriptDecl>(property)) {
+    // Subscripts can be generic, and different key paths could capture the same
+    // subscript at different generic arguments.
+    for (auto &sub : subs) {
+      appendType(sub);
+    }
+  }
   appendOperator("Tk");
+  return finalize();
+}
+
+std::string ASTMangler::mangleKeyPathEqualsHelper(ArrayRef<CanType> indices,
+                                                  GenericSignature *signature) {
+  beginMangling();
+  for (auto &index : indices)
+    appendType(index);
+  if (signature)
+    appendGenericSignature(signature);
+  appendOperator("TH");
+  return finalize();
+}
+
+std::string ASTMangler::mangleKeyPathHashHelper(ArrayRef<CanType> indices,
+                                                GenericSignature *signature) {
+  beginMangling();
+  for (auto &index : indices)
+    appendType(index);
+  if (signature)
+    appendGenericSignature(signature);
+  appendOperator("Th");
   return finalize();
 }
 
@@ -503,11 +543,10 @@ static bool isInPrivateOrLocalContext(const ValueDecl *D) {
     return DC->isLocalContext();
   }
 
-  auto declaredType = DC->getDeclaredTypeOfContext();
-  if (!declaredType || declaredType->hasError())
+  auto *nominal = DC->getAsNominalTypeOrNominalTypeExtensionContext();
+  if (nominal == nullptr)
     return false;
 
-  auto *nominal = declaredType->getAnyNominal();
   if (nominal->getFormalAccess() <= AccessLevel::FilePrivate)
     return true;
   return isInPrivateOrLocalContext(nominal);
@@ -2003,18 +2042,18 @@ void ASTMangler::appendOpParamForLayoutConstraint(LayoutConstraint layout) {
     appendOperatorParam("T");
     break;
   case LayoutConstraintKind::TrivialOfExactSize:
-    if (!layout->getAlignment())
+    if (!layout->getAlignmentInBits())
       appendOperatorParam("e", Index(layout->getTrivialSizeInBits()));
     else
       appendOperatorParam("E", Index(layout->getTrivialSizeInBits()),
-                     Index(layout->getAlignment()));
+                          Index(layout->getAlignmentInBits()));
     break;
   case LayoutConstraintKind::TrivialOfAtMostSize:
-    if (!layout->getAlignment())
+    if (!layout->getAlignmentInBits())
       appendOperatorParam("m", Index(layout->getTrivialSizeInBits()));
     else
       appendOperatorParam("M", Index(layout->getTrivialSizeInBits()),
-                     Index(layout->getAlignment()));
+                          Index(layout->getAlignmentInBits()));
     break;
   }
 }
