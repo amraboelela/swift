@@ -27,6 +27,6 @@ echo ========== Running script ==========
 echo ========== Finishing ==========
 cd $SWIFT_PATH
 test -e swift/swift-nightly-install || exit 
-cp -r swift/swift-nightly-install swift-toolchain
 rm -rf ~/backup/swift-toolchain-$(date "+%u")
 cp swift-toolchain ~/backup/swift-toolchain-$(date "+%u")
+cp -r swift/swift-nightly-install swift-toolchain

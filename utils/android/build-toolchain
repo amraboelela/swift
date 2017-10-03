@@ -40,7 +40,8 @@ ${SWIFT_PATH}/swift/utils/build-script \
     --lldb --install-lldb \
     --install-swift \
     --libdispatch --install-libdispatch \
-    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit 1
+    --swiftpm --install-swiftpm \
+    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} 
 
 #    --foundation --install-foundation \
 #    --llbuild --install-llbuild \
