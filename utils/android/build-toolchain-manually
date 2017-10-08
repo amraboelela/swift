@@ -6,9 +6,8 @@ PARAM=x$1
 PARAM2=x$2
 cd $SWIFT_PATH
 
-if [ ${PARAM} = "x-c" ] ; then
+if [ ${PARAM} = "x-c" ] || [ ${PARAM2} = "x-c" ] ; then
 echo ========== Cleaning ===========
-rm -rf build/linux
 rm -rf build/android
 fi
 
