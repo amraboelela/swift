@@ -21,23 +21,11 @@ ANDROID_ICU_PATH=${SWIFT_PATH}/libiconv-libicu-android
 [ -e ${ANDROID_ICU_PATH} ] || exit 1
 
 SWIFT_ANDROID_TOOLCHAIN_PATH="${SWIFT_PATH}/swift-android-toolchain"
-SWIFT_LINUX_BUILD_PATH="${SWIFT_PATH}/build/linux"
+SWIFT_LINUX_BUILD_PATH="${SWIFT_PATH}/build/android"
 
 rm -rf ${SWIFT_ANDROID_TOOLCHAIN_PATH}
 
 #cp $ANDROID_NDK_PATH/sysroot/usr/include/{ftw,langinfo,netdb,search,syslog,tar,nl_types}.h $ANDROID_NDK_PATH/platforms/android-21/arch-arm/usr/include
-
-${SWIFT_PATH}/swift/utils/build-script \
-    -R \
-    --llbuild --install-llbuild \
-    --install-swift \
-    --lldb --install-lldb \
-    --libdispatch --install-libdispatch \
-    --foundation --install-foundation \
-    --xctest --install-xctest \
-    --swiftpm --install-swiftpm \
-    --build-subdir=linux \
-    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} 
 
 ${SWIFT_PATH}/swift/utils/build-script \
     -R \
@@ -48,8 +36,16 @@ ${SWIFT_PATH}/swift/utils/build-script \
     --android-icu-uc-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/common" \
     --android-icu-i18n "${ANDROID_ICU_PATH}/armeabi-v7a" \
     --android-icu-i18n-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/i18n" \
+    --libdispatch --install-libdispatch \
+    --foundation --install-foundation \
+    --llbuild --install-llbuild \
+    --lldb --install-lldb \
+    --swiftpm --install-swiftpm \
+    --xctest --install-xctest \
     --install-swift \
     --build-subdir=android \
+    '--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
+    --install-prefix=/usr \
     --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} 
 
 #    --lldb --install-lldb \
