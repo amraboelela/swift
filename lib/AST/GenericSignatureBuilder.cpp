@@ -2187,26 +2187,15 @@ static void maybeAddSameTypeRequirementForNestedType(
     superConformance->getTypeWitness(assocType, builder.getLazyResolver());
   if (!concreteType) return;
 
+  // We should only have interface types here.
+  assert(!superConformance->getType()->hasArchetype());
+  assert(!concreteType->hasArchetype());
+
   // Add the same-type constraint.
   auto nestedSource = superSource->viaParent(builder, assocType);
-  concreteType = superConformance->getDeclContext()
-      ->mapTypeOutOfContext(concreteType);
 
   builder.addSameTypeRequirement(nestedPA, concreteType, nestedSource,
         GenericSignatureBuilder::UnresolvedHandlingKind::GenerateConstraints);
-}
-
-/// Walk the members of a protocol.
-///
-/// This is essentially just a call to \c proto->getMembers(), except that
-/// for Objective-C-imported protocols we can simply return an empty declaration
-/// range because the generic signature builder only cares about nested types (which
-/// Objective-C protocols don't have).
-static DeclRange getProtocolMembers(ProtocolDecl *proto) {
-  if (proto->hasClangNode())
-    return DeclRange(DeclIterator(), DeclIterator());
-
-  return proto->getMembers();
 }
 
 bool PotentialArchetype::addConformance(ProtocolDecl *proto,
@@ -3149,7 +3138,7 @@ ConstraintResult GenericSignatureBuilder::expandConformanceRequirement(
         [&](ProtocolDecl *inheritedProto) -> TypeWalker::Action {
       if (inheritedProto == proto) return TypeWalker::Action::Continue;
 
-      for (auto req : getProtocolMembers(inheritedProto)) {
+      for (auto req : inheritedProto->getMembers()) {
         if (auto typeReq = dyn_cast<TypeDecl>(req))
           inheritedTypeDecls[typeReq->getFullName()].push_back(typeReq);
       }
@@ -3248,7 +3237,7 @@ ConstraintResult GenericSignatureBuilder::expandConformanceRequirement(
   };
 
   // Add requirements for each of the associated types.
-  for (auto Member : getProtocolMembers(proto)) {
+  for (auto Member : proto->getMembers()) {
     if (auto assocTypeDecl = dyn_cast<AssociatedTypeDecl>(Member)) {
       // Add requirements placed directly on this associated type.
       Type assocType = DependentMemberType::get(concreteSelf, assocTypeDecl);
@@ -3477,9 +3466,7 @@ void GenericSignatureBuilder::updateSuperclass(
   auto updateSuperclassConformances = [&] {
     for (auto proto : T->getConformsTo()) {
       if (auto superSource = resolveSuperConformance(T, proto)) {
-        for (auto req : getProtocolMembers(proto)) {
-          auto assocType = dyn_cast<AssociatedTypeDecl>(req);
-          if (!assocType) continue;
+        for (auto assocType : proto->getAssociatedTypeMembers()) {
 
           const auto &nestedTypes = T->getNestedTypes();
           auto nested = nestedTypes.find(assocType->getName());

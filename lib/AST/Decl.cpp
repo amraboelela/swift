@@ -1459,7 +1459,6 @@ bool AbstractStorageDecl::hasFixedLayout() const {
   switch (getDeclContext()->getParentModule()->getResilienceStrategy()) {
   case ResilienceStrategy::Resilient:
     return false;
-  case ResilienceStrategy::Fragile:
   case ResilienceStrategy::Default:
     return true;
   }
@@ -2217,7 +2216,6 @@ bool NominalTypeDecl::hasFixedLayout() const {
   switch (getParentModule()->getResilienceStrategy()) {
   case ResilienceStrategy::Resilient:
     return false;
-  case ResilienceStrategy::Fragile:
   case ResilienceStrategy::Default:
     return true;
   }
@@ -3016,6 +3014,19 @@ ProtocolDecl::getInheritedProtocols() const {
     if (req.getKind() == RequirementKind::Conformance &&
         req.getFirstType()->isEqual(selfType))
       result.push_back(req.getSecondType()->castTo<ProtocolType>()->getDecl());
+  }
+  return result;
+}
+
+llvm::TinyPtrVector<AssociatedTypeDecl *>
+ProtocolDecl::getAssociatedTypeMembers() const {
+  llvm::TinyPtrVector<AssociatedTypeDecl *> result;
+  if (!isObjC()) {
+    for (auto member : getMembers()) {
+      if (auto ATD = dyn_cast<AssociatedTypeDecl>(member)) {
+        result.push_back(ATD);
+      }
+    }
   }
   return result;
 }
