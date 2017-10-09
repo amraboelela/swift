@@ -20,7 +20,7 @@ fi
 
 if [ -e $SWIFT_PATH/swift-android-toolchain ] ; then
 rm -rf ~/backup/swift-android-toolchain-$(date "+%u")
-cp swift-android-toolchain ~/backup/swift-android-toolchain-$(date "+%u")
+cp -r swift-android-toolchain ~/backup/swift-android-toolchain-$(date "+%u")
 fi
 
 echo ========== Running script ==========

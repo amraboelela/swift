@@ -73,11 +73,11 @@ ${SWIFT_PATH}/swift/utils/build-script \
 
     #'--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
 
-test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit 1
-test -e ${SWIFT_ANDROID_BUILD_PATH} || exit 1
-cp -r ${SWIFT_LINUX_BUILD_PATH}/swift-linux-x86_64/{bin,lib,include} ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
-cp -r ${SWIFT_LINUX_BUILD_PATH}/swiftpm-linux-x86_64/.bootstrap/lib ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
+#test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit 1
+#test -e ${SWIFT_ANDROID_BUILD_PATH} || exit 1
+#cp -r ${SWIFT_LINUX_BUILD_PATH}/swift-linux-x86_64/{bin,lib,include} ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
+#cp -r ${SWIFT_LINUX_BUILD_PATH}/swiftpm-linux-x86_64/.bootstrap/lib ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
 
-${SWIFT_PATH}/swift-corelibs-libdispatch/build-android 
-${SWIFT_PATH}/swift-corelibs-foundation/build-android
+#${SWIFT_PATH}/swift-corelibs-libdispatch/build-android 
+#${SWIFT_PATH}/swift-corelibs-foundation/build-android
 
