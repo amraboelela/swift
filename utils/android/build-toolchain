@@ -21,7 +21,7 @@ ANDROID_ICU_PATH=${SWIFT_PATH}/libiconv-libicu-android
 [ -e ${ANDROID_ICU_PATH} ] || exit 1
 
 SWIFT_ANDROID_TOOLCHAIN_PATH="${SWIFT_PATH}/swift-android-toolchain"
-SWIFT_LINUX_BUILD_PATH="${SWIFT_PATH}/build/android"
+SWIFT_LINUX_BUILD_PATH="${SWIFT_PATH}/build/Ninja-ReleaseAssert"
 
 rm -rf ${SWIFT_ANDROID_TOOLCHAIN_PATH}
 
@@ -43,7 +43,6 @@ ${SWIFT_PATH}/swift/utils/build-script \
     --swiftpm --install-swiftpm \
     --xctest --install-xctest \
     --install-swift \
-    --build-subdir=android \
     '--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
     --install-prefix=/usr \
     --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} 
