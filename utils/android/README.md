@@ -10,5 +10,5 @@ android$ ./build-toolchain
 It will be built on:
 
 ```
-path/to/swift/source/swift-android-toolchain
+path/to/swift-source/swift-android-toolchain
 ```
