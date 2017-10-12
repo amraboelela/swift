@@ -25,8 +25,6 @@ SWIFT_LINUX_BUILD_PATH="${SWIFT_PATH}/build/Ninja-ReleaseAssert"
 
 rm -rf ${SWIFT_ANDROID_TOOLCHAIN_PATH}
 
-#cp $ANDROID_NDK_PATH/sysroot/usr/include/{ftw,langinfo,netdb,search,syslog,tar,nl_types}.h $ANDROID_NDK_PATH/platforms/android-21/arch-arm/usr/include
-
 ${SWIFT_PATH}/swift/utils/build-script \
     -R \
     --android \
@@ -47,36 +45,6 @@ ${SWIFT_PATH}/swift/utils/build-script \
     --install-prefix=/usr \
     --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} 
 
-#    --lldb --install-lldb \
-#    --libdispatch --install-libdispatch \
-#    --foundation --install-foundation \
-#    --xctest --install-xctest \
-#    --swiftpm --install-swiftpm \
-
-#    --android \
-#    --android-ndk ${ANDROID_NDK_PATH} \
-#    --android-api-level 21 \
-#    --android-icu-uc "${ANDROID_ICU_PATH}/armeabi-v7a" \
-#    --android-icu-uc-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/common" \
-#    --android-icu-i18n "${ANDROID_ICU_PATH}/armeabi-v7a" \
-#    --android-icu-i18n-include "${ANDROID_ICU_PATH}/armeabi-v7a/icu/source/i18n" \
-#    --llbuild --install-llbuild \
-#    --lldb --install-lldb \
-#    --install-swift \
-#    --libdispatch --install-libdispatch \
-#    --swiftpm --install-swiftpm \
-#    --install-destdir=${SWIFT_ANDROID_TOOLCHAIN_PATH} 
-
-#    --foundation --install-foundation \
-#    --xctest --install-xctest \
-
-    #'--swift-install-components=autolink-driver;compiler;clang-builtin-headers;stdlib;swift-remote-mirror;sdk-overlay;dev' \
-
-#test -e ${SWIFT_ANDROID_TOOLCHAIN_PATH} || exit 1
-#test -e ${SWIFT_ANDROID_BUILD_PATH} || exit 1
-#cp -r ${SWIFT_LINUX_BUILD_PATH}/swift-linux-x86_64/{bin,lib,include} ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
-#cp -r ${SWIFT_LINUX_BUILD_PATH}/swiftpm-linux-x86_64/.bootstrap/lib ${SWIFT_ANDROID_TOOLCHAIN_PATH}/usr
-
-#${SWIFT_PATH}/swift-corelibs-libdispatch/build-android 
-#${SWIFT_PATH}/swift-corelibs-foundation/build-android
+${SWIFT_PATH}/swift-corelibs-libdispatch/build-android 
+${SWIFT_PATH}/swift-corelibs-foundation/build-android
 
