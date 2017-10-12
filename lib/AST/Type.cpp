@@ -1143,12 +1143,10 @@ CanType TypeBase::getCanonicalType() {
       ->getCanonicalSignature();
     
     // Transform the input and result types.
-    auto &ctx = function->getInput()->getASTContext();
-    auto &mod = *ctx.TheBuiltinModule;
     auto inputTy = getCanonicalInputType(function, [&](Type type) -> CanType {
-      return type->getCanonicalType(sig, mod);
+      return type->getCanonicalType(sig);
     });
-    auto resultTy = function->getResult()->getCanonicalType(sig, mod);
+    auto resultTy = function->getResult()->getCanonicalType(sig);
     Result = GenericFunctionType::get(sig, inputTy, resultTy,
                                       function->getExtInfo());
     assert(Result->isCanonical());
@@ -1234,12 +1232,11 @@ CanType TypeBase::getCanonicalType() {
   return CanType(Result);
 }
 
-CanType TypeBase::getCanonicalType(GenericSignature *sig,
-                                   ModuleDecl &mod) {
+CanType TypeBase::getCanonicalType(GenericSignature *sig) {
   if (!sig)
     return getCanonicalType();
 
-  return sig->getCanonicalTypeInContext(this, mod);
+  return sig->getCanonicalTypeInContext(this);
 }
 
 TypeBase *TypeBase::reconstituteSugar(bool Recursive) {
@@ -2577,12 +2574,12 @@ Type TupleType::getVarArgsBaseType() const {
 ArchetypeType::ArchetypeType(
   const ASTContext &Ctx,
   llvm::PointerUnion<ArchetypeType *, GenericEnvironment *> ParentOrGenericEnv,
-  llvm::PointerUnion<AssociatedTypeDecl *, Identifier> AssocTypeOrName,
+  Type InterfaceType,
   ArrayRef<ProtocolDecl *> ConformsTo,
   Type Superclass, LayoutConstraint Layout)
     : SubstitutableType(TypeKind::Archetype, &Ctx,
                         RecursiveTypeProperties::HasArchetype),
-      AssocTypeOrName(AssocTypeOrName) {
+      InterfaceType(InterfaceType) {
   // Record the parent/generic environment.
   if (auto parent = ParentOrGenericEnv.dyn_cast<ArchetypeType *>()) {
     ParentOrOpenedOrEnvironment = parent;
@@ -2644,7 +2641,7 @@ ArchetypeType::ArchetypeType(const ASTContext &Ctx, Type Existential,
 CanArchetypeType ArchetypeType::getNew(
                                    const ASTContext &Ctx,
                                    ArchetypeType *Parent,
-                                   AssociatedTypeDecl *AssocType,
+                                   DependentMemberType *InterfaceType,
                                    SmallVectorImpl<ProtocolDecl *> &ConformsTo,
                                    Type Superclass,
                                    LayoutConstraint Layout) {
@@ -2660,18 +2657,18 @@ CanArchetypeType ArchetypeType::getNew(
       alignof(ArchetypeType), arena);
 
   return CanArchetypeType(new (mem) ArchetypeType(
-      Ctx, Parent, AssocType, ConformsTo, Superclass, Layout));
+      Ctx, Parent, InterfaceType, ConformsTo, Superclass, Layout));
 }
 
 CanArchetypeType
 ArchetypeType::getNew(const ASTContext &Ctx,
-                      GenericEnvironment *genericEnvironment,
-                      Identifier Name,
+                      GenericEnvironment *GenericEnv,
+                      GenericTypeParamType *InterfaceType,
                       SmallVectorImpl<ProtocolDecl *> &ConformsTo,
                       Type Superclass,
                       LayoutConstraint Layout) {
   assert(!Superclass || Superclass->getClassOrBoundGenericClass());
-  assert(genericEnvironment && "missing generic environment for archetype");
+  assert(GenericEnv && "missing generic environment for archetype");
 
   // Gather the set of protocol declarations to which this archetype conforms.
   ProtocolType::canonicalizeProtocols(ConformsTo);
@@ -2683,7 +2680,7 @@ ArchetypeType::getNew(const ASTContext &Ctx,
       alignof(ArchetypeType), arena);
 
   return CanArchetypeType(new (mem) ArchetypeType(
-      Ctx, genericEnvironment, Name, ConformsTo, Superclass, Layout));
+      Ctx, GenericEnv, InterfaceType, ConformsTo, Superclass, Layout));
 }
 
 bool ArchetypeType::requiresClass() const {
@@ -2827,11 +2824,17 @@ static void collectFullName(const ArchetypeType *Archetype,
                 Archetype->getName().str().end());
 }
 
+AssociatedTypeDecl *ArchetypeType::getAssocType() const {
+  if (auto *depMemTy = InterfaceType->getAs<DependentMemberType>())
+    return depMemTy->getAssocType();
+  return nullptr;
+}
+
 Identifier ArchetypeType::getName() const {
   if (auto assocType = getAssocType())
     return assocType->getName();
 
-  return AssocTypeOrName.get<Identifier>();
+  return InterfaceType->castTo<GenericTypeParamType>()->getName();
 }
 
 std::string ArchetypeType::getFullName() const {
@@ -3007,6 +3010,8 @@ static Type getMemberForBaseType(LookupConformanceFn lookupConformances,
 
     if (!conformance) return failed();
     if (!conformance->isConcrete()) return failed();
+    assert(conformance->getConditionalRequirements().empty() &&
+           "unhandled conditional requirements");
 
     // Retrieve the type witness.
     auto witness =

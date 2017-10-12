@@ -7,4 +7,6 @@
 
 // REQUIRES: asserts
 // RUN: not %target-swift-frontend %s -emit-ir
-class a:RangeReplaceableCollection}protocol P{{}typealias e:a{{}}typealias e:Collection
+protocol P{typealias e:A
+protocol A:P{}typealias a
+class a<a

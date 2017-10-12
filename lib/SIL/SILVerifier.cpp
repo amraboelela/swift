@@ -69,7 +69,7 @@ static bool isArchetypeValidInFunction(ArchetypeType *A, const SILFunction *F) {
   // Ok, we have a primary archetype, make sure it is in the nested generic
   // environment of our caller.
   if (auto *genericEnv = F->getGenericEnvironment())
-    if (genericEnv->containsPrimaryArchetype(A))
+    if (A->getGenericEnvironment() == genericEnv)
       return true;
 
   return false;
@@ -2115,8 +2115,7 @@ public:
     require(selfRequirement &&
             selfRequirement->getKind() == RequirementKind::Conformance,
             "first non-same-typerequirement should be conformance requirement");
-    auto conformsTo = genericSig->getConformsTo(selfGenericParam,
-                                                *F.getModule().getSwiftModule());
+    auto conformsTo = genericSig->getConformsTo(selfGenericParam);
     require(conformsTo.size() == 1,
             "requirement Self parameter must conform to exactly one protocol");
     require(conformsTo[0] == protocol,
@@ -2396,9 +2395,39 @@ public:
             break;
         case SILInstructionKind::DestroyAddrInst:
           return true;
-        case SILInstructionKind::UncheckedAddrCastInst:
-          // Escaping use lets be conservative here.
+        case SILInstructionKind::UncheckedAddrCastInst: {
+          // Don't be too conservative here, we have a new case:
+          // sil-combine producing a new code pattern for devirtualizer
+          // open_existential_addr immutable_access -> witness_method
+          // witness_method gets transformed into unchecked_addr_cast
+          // we are "OK" If one of the new users is an non-consuming apply
+          // we are also "OK" if we have a single non-consuming user
+          auto isCastToNonConsuming = [=](UncheckedAddrCastInst *I) -> bool {
+            for (auto *use : I->getUses()) {
+              auto *inst = use->getUser();
+              switch (inst->getKind()) {
+              case SILInstructionKind::ApplyInst:
+              case SILInstructionKind::TryApplyInst:
+              case SILInstructionKind::PartialApplyInst:
+                if (!isConsumingOrMutatingApplyUse(use))
+                  return true;
+                break;
+              case SILInstructionKind::LoadInst:
+              case SILInstructionKind::DebugValueAddrInst:
+                if (I->hasOneUse())
+                  return true;
+                break;
+              default:
+                break;
+              }
+            }
+            return false;
+          };
+          if (isCastToNonConsuming(dyn_cast<UncheckedAddrCastInst>(inst))) {
+            break;
+          }
           return true;
+        }
         case SILInstructionKind::CheckedCastAddrBranchInst:
           if (cast<CheckedCastAddrBranchInst>(inst)->getConsumptionKind() !=
               CastConsumptionKind::CopyOnSuccess)
@@ -4490,7 +4519,7 @@ void SILWitnessTable::verify(const SILModule &M) const {
                SILFunctionTypeRepresentation::WitnessMethod &&
                "Witnesses must have witness_method representation.");
         auto *witnessSelfProtocol = F->getLoweredFunctionType()
-            ->getDefaultWitnessMethodProtocol(*M.getSwiftModule());
+            ->getDefaultWitnessMethodProtocol();
         assert((witnessSelfProtocol == nullptr ||
                 witnessSelfProtocol == protocol) &&
                "Witnesses must either have a concrete Self, or an "
@@ -4518,7 +4547,7 @@ void SILDefaultWitnessTable::verify(const SILModule &M) const {
            SILFunctionTypeRepresentation::WitnessMethod &&
            "Default witnesses must have witness_method representation.");
     auto *witnessSelfProtocol = F->getLoweredFunctionType()
-        ->getDefaultWitnessMethodProtocol(*M.getSwiftModule());
+        ->getDefaultWitnessMethodProtocol();
     assert(witnessSelfProtocol == getProtocol() &&
            "Default witnesses must have an abstract Self parameter "
            "constrained to their protocol.");

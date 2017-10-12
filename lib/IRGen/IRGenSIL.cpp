@@ -1461,6 +1461,11 @@ static void emitLocalSelfMetadata(IRGenSILFunction &IGF) {
 void IRGenModule::emitSILFunction(SILFunction *f) {
   if (f->isExternalDeclaration())
     return;
+  // Do not emit bodies of public_external functions.
+  // The only exception is transparent functions.
+  if (hasPublicVisibility(f->getLinkage()) && f->isAvailableExternally() &&
+      !f->isTransparent())
+    return;
 
   PrettyStackTraceSILFunction stackTrace("emitting IR", f);
   IRGenSILFunction(*this, f).emitSILFunction();
@@ -1953,10 +1958,9 @@ static llvm::Value *getObjCClassForValue(IRGenFunction &IGF,
 static llvm::Value *emitWitnessTableForLoweredCallee(IRGenSILFunction &IGF,
                                               CanSILFunctionType origCalleeType,
                                               SubstitutionList subs) {
-  auto &M = *IGF.getSwiftModule();
   llvm::Value *wtable;
 
-  if (auto *proto = origCalleeType->getDefaultWitnessMethodProtocol(M)) {
+  if (auto *proto = origCalleeType->getDefaultWitnessMethodProtocol()) {
     // The generic signature for a witness method with abstract Self must
     // have exactly one protocol requirement.
     //

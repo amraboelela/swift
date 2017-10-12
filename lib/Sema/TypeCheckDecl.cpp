@@ -367,17 +367,6 @@ void TypeChecker::checkInheritanceClause(Decl *decl,
         return;
       }
     }
-
-    // Constrained extensions cannot have inheritance clauses.
-    if (!inheritedClause.empty() &&
-        ext->getGenericParams() &&
-        ext->getGenericParams()->hasTrailingWhereClause()) {
-      diagnose(ext->getLoc(), diag::extension_constrained_inheritance,
-               ext->getExtendedType())
-      .highlight(SourceRange(inheritedClause.front().getSourceRange().Start,
-                             inheritedClause.back().getSourceRange().End));
-      ext->setInherited({ });
-    }
   }
 
   // Retrieve the location of the start of the inheritance clause.
@@ -2993,7 +2982,13 @@ static void checkEnumRawValues(TypeChecker &TC, EnumDecl *ED) {
     // primitive literal protocols.
     auto conformsToProtocol = [&](KnownProtocolKind protoKind) {
         ProtocolDecl *proto = TC.getProtocol(ED->getLoc(), protoKind);
-        return TC.conformsToProtocol(rawTy, proto, ED->getDeclContext(), None);
+        auto conformance =
+            TC.conformsToProtocol(rawTy, proto, ED->getDeclContext(), None);
+        if (conformance)
+          assert(conformance->getConditionalRequirements().empty() &&
+                 "conditionally conforming to literal protocol not currently "
+                 "supported");
+        return conformance;
     };
 
     static auto otherLiteralProtocolKinds = {
@@ -4239,7 +4234,7 @@ public:
       gp->setOuterParameters(dc->getGenericParamsOfContext());
 
       auto *sig = TC.validateGenericSubscriptSignature(SD);
-      auto *env = sig->createGenericEnvironment(*SD->getModuleContext());
+      auto *env = sig->createGenericEnvironment();
       SD->setGenericEnvironment(env);
 
       // Revert the types within the signature so it can be type-checked with
@@ -5219,7 +5214,7 @@ public:
         env = cast<SubscriptDecl>(storage)->getGenericEnvironment();
         assert(env && "accessor has generics but subscript is not generic");
       } else {
-        env = sig->createGenericEnvironment(*FD->getModuleContext());
+        env = sig->createGenericEnvironment();
       }
       FD->setGenericEnvironment(env);
 
@@ -5978,12 +5973,9 @@ public:
         // Canonicalize with respect to the override's generic signature, if any.
         auto *genericSig = decl->getInnermostDeclContext()
           ->getGenericSignatureOfContext();
-        auto *module = dc->getParentModule();
 
-        auto canDeclTy =
-          declTy->getCanonicalType(genericSig, *module);
-        auto canParentDeclTy =
-          parentDeclTy->getCanonicalType(genericSig, *module);
+        auto canDeclTy = declTy->getCanonicalType(genericSig);
+        auto canParentDeclTy = parentDeclTy->getCanonicalType(genericSig);
 
         if (canDeclTy == canParentDeclTy) {
           matches.push_back({parentDecl, true, parentDeclTy});
@@ -6970,7 +6962,7 @@ public:
       gp->setOuterParameters(CD->getDeclContext()->getGenericParamsOfContext());
 
       auto *sig = TC.validateGenericFuncSignature(CD);
-      auto *env = sig->createGenericEnvironment(*CD->getModuleContext());
+      auto *env = sig->createGenericEnvironment();
       CD->setGenericEnvironment(env);
 
       // Revert the types within the signature so it can be type-checked with
