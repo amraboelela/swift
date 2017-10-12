@@ -900,7 +900,7 @@ void ASTMangler::appendType(Type type) {
 
     case TypeKind::GenericFunction: {
       auto genFunc = cast<GenericFunctionType>(tybase);
-      appendFunctionType(genFunc, /*forceSingleParam*/ false);
+      appendFunctionType(genFunc);
       appendGenericSignature(genFunc->getGenericSignature());
       appendOperator("u");
       return;
@@ -943,7 +943,7 @@ void ASTMangler::appendType(Type type) {
     }
       
     case TypeKind::Function:
-      appendFunctionType(cast<FunctionType>(tybase), /*forceSingleParam*/ false);
+      appendFunctionType(cast<FunctionType>(tybase));
       return;
       
     case TypeKind::SILBox: {
@@ -1311,7 +1311,9 @@ void ASTMangler::appendContext(const DeclContext *ctx) {
       appendModule(ExtD->getParentModule());
       if (sig && ExtD->isConstrainedExtension()) {
         Mod = ExtD->getModuleContext();
-        appendGenericSignature(sig);
+        auto nominalSig = ExtD->getAsNominalTypeOrNominalTypeExtensionContext()
+                            ->getGenericSignatureOfContext();
+        appendGenericSignature(sig, nominalSig);
       }
       return appendOperator("E");
     }
@@ -1438,12 +1440,11 @@ void ASTMangler::appendAnyGenericType(const GenericTypeDecl *decl) {
   addSubstitution(key.getPointer());
 }
 
-void ASTMangler::appendFunctionType(AnyFunctionType *fn,
-                                    bool forceSingleParam) {
+void ASTMangler::appendFunctionType(AnyFunctionType *fn) {
   assert((DWARFMangling || fn->isCanonical()) &&
          "expecting canonical types when not mangling for the debugger");
 
-  appendFunctionSignature(fn, forceSingleParam);
+  appendFunctionSignature(fn);
 
   // Note that we do not currently use thin representations in the AST
   // for the types of function decls.  This may need to change at some
@@ -1470,48 +1471,66 @@ void ASTMangler::appendFunctionType(AnyFunctionType *fn,
   }
 }
 
-void ASTMangler::appendFunctionSignature(AnyFunctionType *fn,
-                                         bool forceSingleParam) {
-  appendParams(fn->getResult(), /*forceSingleParam*/ false);
-  appendParams(fn->getInput(), forceSingleParam);
+void ASTMangler::appendFunctionSignature(AnyFunctionType *fn) {
+  appendFunctionResultType(fn->getResult());
+  appendFunctionInputType(fn->getParams());
   if (fn->throws())
     appendOperator("K");
 }
 
-void ASTMangler::appendParams(Type ParamsTy, bool forceSingleParam) {
-  if (TupleType *Tuple = ParamsTy->getAs<TupleType>()) {
-    if (Tuple->getNumElements() == 0) {
-      if (forceSingleParam) {
-        // A tuple containing a single empty tuple.
-        appendOperator("y");
-        appendOperator("t");
-        appendListSeparator();
-        appendOperator("t");
-      } else {
-        appendOperator("y");
-      }
-      return;
-    }
-    if (forceSingleParam && Tuple->getNumElements() > 1) {
-      auto flags = ParameterTypeFlags();
-      if (ParenType *Paren = dyn_cast<ParenType>(ParamsTy.getPointer())) {
-        ParamsTy = Paren->getUnderlyingType();
-        flags = Paren->getParameterFlags();
-      }
+void ASTMangler::appendFunctionInputType(
+    ArrayRef<AnyFunctionType::Param> params) {
+  auto getParamType = [](const AnyFunctionType::Param &param) -> Type {
+    auto type = param.getType();
 
-      appendType(ParamsTy);
-      if (flags.isShared())
-        appendOperator("h");
-      appendListSeparator();
-      appendOperator("t");
-      return;
+    // FIXME: Change mangling for variadic parameters so
+    //        the enclosing array type is not required.
+    if (param.isVariadic()) {
+      auto *arrayDecl = type->getASTContext().getArrayDecl();
+      assert(arrayDecl);
+      return BoundGenericType::get(arrayDecl, Type(), {type});
     }
+
+    return type;
+  };
+
+  switch (params.size()) {
+  case 0:
+    appendOperator("y");
+    break;
+
+  case 1: {
+    const auto &param = params.front();
+    auto type = param.getType();
+
+    // If this is just a single parenthesized type,
+    // to save space in the mangled name, let's encode
+    // it as a single type dropping sugar.
+    if (!param.hasLabel() && !param.isVariadic() &&
+        !isa<TupleType>(type.getPointer())) {
+      appendType(type);
+      break;
+    }
+
+    // If this is a tuple type with a single labeled element
+    // let's handle it as a general case.
+    LLVM_FALLTHROUGH;
   }
 
-  if (ParenType *Paren = dyn_cast<ParenType>(ParamsTy.getPointer()))
-    ParamsTy = Paren->getUnderlyingType();
+  default:
+    bool isFirstParam = true;
+    for (auto &param : params) {
+      appendTypeListElement(param.getLabel(), getParamType(param),
+                            param.getParameterFlags());
+      appendListSeparator(isFirstParam);
+    }
+    appendOperator("t");
+    break;
+  }
+}
 
-  appendType(ParamsTy);
+void ASTMangler::appendFunctionResultType(Type resultType) {
+  return resultType->isVoid() ? appendOperator("y") : appendType(resultType);
 }
 
 void ASTMangler::appendTypeList(Type listTy) {
@@ -1520,21 +1539,27 @@ void ASTMangler::appendTypeList(Type listTy) {
       return appendOperator("y");
     bool firstField = true;
     for (auto &field : tuple->getElements()) {
-      appendType(field.getType()->getInOutObjectType());
-      if (field.isInOut())
-        appendOperator("z");
-      if (field.getParameterFlags().isShared())
-        appendOperator("h");
-      if (field.hasName())
-        appendIdentifier(field.getName().str());
-      if (field.isVararg())
-        appendOperator("d");
+      appendTypeListElement(field.getName(), field.getType(),
+                            field.getParameterFlags());
       appendListSeparator(firstField);
     }
   } else {
     appendType(listTy);
     appendListSeparator();
   }
+}
+
+void ASTMangler::appendTypeListElement(Identifier name, Type elementType,
+                                       ParameterTypeFlags flags) {
+  appendType(elementType->getInOutObjectType());
+  if (flags.isInOut())
+    appendOperator("z");
+  if (flags.isShared())
+    appendOperator("h");
+  if (!name.empty())
+    appendIdentifier(name.str());
+  if (flags.isVariadic())
+    appendOperator("d");
 }
 
 bool ASTMangler::appendGenericSignature(const GenericSignature *sig,
@@ -1566,16 +1591,30 @@ bool ASTMangler::appendGenericSignature(const GenericSignature *sig,
       --firstParam;
     genericParams = genericParams.slice(firstParam);
 
-    for (auto &reqt : canSig->getRequirements()) {
-      // If the requirement is satisfied by the context signature,
-      // we don't need to mangle it here.
-      if (contextSig->isRequirementSatisfied(reqt))
-        continue;
+    // Special case: if we would be mangling zero generic parameters, but
+    // the context signature is a single, unconstrained generic parameter,
+    // it's better to mangle the complete canonical signature because we
+    // have a special-case mangling for that.
+    if (genericParams.empty() &&
+        contextSig->getGenericParams().size() == 1 &&
+        contextSig->getRequirements().empty()) {
+      initialParamDepth = 0;
+      genericParams = canSig->getGenericParams();
+      requirements = canSig->getRequirements();
+    } else {
+      // Otherwise, only include those requirements that aren't satisfied by the
+      // context signature.
+      for (auto &reqt : canSig->getRequirements()) {
+        // If the requirement is satisfied by the context signature,
+        // we don't need to mangle it here.
+        if (contextSig->isRequirementSatisfied(reqt))
+          continue;
 
-      // Mangle the requirement.
-      requirementsBuffer.push_back(reqt);
+        // Mangle the requirement.
+        requirementsBuffer.push_back(reqt);
+      }
+      requirements = requirementsBuffer;
     }
-    requirements = requirementsBuffer;
   } else {
     // Use the complete canonical signature.
     initialParamDepth = 0;
@@ -1828,23 +1867,10 @@ void ASTMangler::appendDeclType(const ValueDecl *decl, bool isFunctionMangling) 
   auto type = getDeclTypeForMangling(decl, genericSig, parentGenericSig);
 
   if (AnyFunctionType *FuncTy = type->getAs<AnyFunctionType>()) {
-
-    const ParameterList *Params = nullptr;
-    if (const auto *FDecl = dyn_cast<AbstractFunctionDecl>(decl)) {
-      unsigned PListIdx = isMethodDecl(decl) ? 1 : 0;
-      if (PListIdx < FDecl->getNumParameterLists()) {
-        Params = FDecl->getParameterList(PListIdx);
-      }
-    } else if (const auto *SDecl = dyn_cast<SubscriptDecl>(decl)) {
-        Params = SDecl->getIndices();
-    }
-    bool forceSingleParam = Params && (Params->size() == 1);
-          
-
     if (isFunctionMangling) {
-      appendFunctionSignature(FuncTy, forceSingleParam);
+      appendFunctionSignature(FuncTy);
     } else {
-      appendFunctionType(FuncTy, forceSingleParam);
+      appendFunctionType(FuncTy);
     }
   } else {
     appendType(type);
