@@ -8,7 +8,7 @@ cd $SWIFT_PATH
 
 if [ ${PARAM} = "x-c" ] || [ ${PARAM2} = "x-c" ] ; then
 echo ========== Cleaning ===========
-rm -rf build/android
+rm -rf build/Ninja-ReleaseAssert
 fi
 
 if [ ${PARAM} = "x-u" ] || [ ${PARAM2} = "x-u" ] ; then
