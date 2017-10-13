@@ -19,6 +19,7 @@
 #include "swift/Subsystems.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/GenericSignature.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/SubstitutionMap.h"
@@ -342,6 +343,7 @@ public:
         if (inOutArgs[i]) arg = InOutType::get(arg);
         elts.push_back(arg);
       }
+      input = TupleType::get(elts, Ctx);
     }
 
     return FunctionType::get(input, output, einfo);

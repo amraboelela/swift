@@ -326,7 +326,8 @@ public:
     }
 
     const void * const *getArguments() const {
-      return &FlagsArgsAndResult[1];
+      return getFlags().getNumArguments() == 0
+              ? nullptr : &FlagsArgsAndResult[1];
     }
   };
 
@@ -2725,7 +2726,7 @@ void *MetadataAllocator::Allocate(size_t size, size_t alignment) {
                                               std::memory_order_relaxed)) {
       // If that succeeded, we've successfully allocated.
       __msan_allocated_memory(allocation, size);
-      __asan_poison_memory_region(allocation, size);
+      __asan_unpoison_memory_region(allocation, size);
       return allocation;
     }
 

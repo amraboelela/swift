@@ -1602,17 +1602,7 @@ bool ASTMangler::appendGenericSignature(const GenericSignature *sig,
       genericParams = canSig->getGenericParams();
       requirements = canSig->getRequirements();
     } else {
-      // Otherwise, only include those requirements that aren't satisfied by the
-      // context signature.
-      for (auto &reqt : canSig->getRequirements()) {
-        // If the requirement is satisfied by the context signature,
-        // we don't need to mangle it here.
-        if (contextSig->isRequirementSatisfied(reqt))
-          continue;
-
-        // Mangle the requirement.
-        requirementsBuffer.push_back(reqt);
-      }
+      requirementsBuffer = canSig->requirementsNotSatisfiedBy(contextSig);
       requirements = requirementsBuffer;
     }
   } else {
@@ -1984,6 +1974,7 @@ void ASTMangler::appendEntity(const ValueDecl *decl) {
 }
 
 void ASTMangler::appendProtocolConformance(const ProtocolConformance *conformance){
+  GenericSignature *contextSig = nullptr;
   Mod = conformance->getDeclContext()->getParentModule();
   if (auto behaviorStorage = conformance->getBehaviorDecl()) {
     auto topLevelContext =
@@ -2001,9 +1992,12 @@ void ASTMangler::appendProtocolConformance(const ProtocolConformance *conformanc
     appendType(conformingType->getCanonicalType());
     appendProtocolName(conformance->getProtocol());
     appendModule(conformance->getDeclContext()->getParentModule());
+
+    contextSig =
+      conformingType->getAnyNominal()->getGenericSignatureOfContext();
   }
   if (GenericSignature *Sig = conformance->getGenericSignature()) {
-    appendGenericSignature(Sig);
+    appendGenericSignature(Sig, contextSig);
   }
 }
 
