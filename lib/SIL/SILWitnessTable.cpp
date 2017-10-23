@@ -159,21 +159,19 @@ Identifier SILWitnessTable::getIdentifier() const {
 }
 
 bool SILWitnessTable::conformanceIsSerialized(ProtocolConformance *conformance,
-                                              ResilienceStrategy strategy,
-                                              bool silSerializeWitnessTables) {
+                                              ResilienceStrategy strategy) {
   // Serialize witness tables for conformances synthesized by
   // the ClangImporter.
   if (isa<ClangModuleUnit>(conformance->getDeclContext()->getModuleScopeContext()))
     return true;
 
   auto *nominal = conformance->getType()->getAnyNominal();
-  // Only serialize if the witness table is sufficiently static, and resilience
-  // is explicitly enabled for this compilation or if we serialize all eligible
-  // witness tables.
-  auto moduleIsResilient = strategy == ResilienceStrategy::Resilient;
+  // Only serialize witness tables for fixed layout types.
+  //
+  // FIXME: This is not the right long term solution. We need an explicit
+  // mechanism for declaring conformances as 'fragile'.
   auto protocolIsPublic =
       conformance->getProtocol()->getEffectiveAccess() >= AccessLevel::Public;
   auto typeIsPublic = nominal->getEffectiveAccess() >= AccessLevel::Public;
-  return (moduleIsResilient || silSerializeWitnessTables) &&
-         nominal->hasFixedLayout() && protocolIsPublic && typeIsPublic;
+  return nominal->hasFixedLayout() && protocolIsPublic && typeIsPublic;
 }

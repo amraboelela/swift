@@ -370,16 +370,12 @@ CalleeCandidateInfo::evaluateCloseness(UncurriedCandidate candidate,
     // Bindings specify the arguments that source the parameter.  The only case
     // this returns a non-singular value is when there are varargs in play.
     auto &bindings = paramBindings[i];
-    auto paramType = getParamResultType(candArgs[i]);
+    auto param = candArgs[i];
+    auto paramType = getParamResultType(param);
     
     for (auto argNo : bindings) {
       auto argType = getParamResultType(actualArgs[argNo]);
       auto rArgType = argType->getRValueType();
-      
-      // If the argument has an unresolved type, then we're not actually
-      // matching against it.
-      if (rArgType->is<UnresolvedType>())
-        continue;
       
       // FIXME: Right now, a "matching" overload is one with a parameter whose
       // type is identical to the argument type, or substitutable via handling
@@ -391,13 +387,13 @@ CalleeCandidateInfo::evaluateCloseness(UncurriedCandidate candidate,
       bool matched;
       if (paramType->hasUnresolvedType())
         matched = true;
-      else if (rArgType->hasTypeVariable())
+      else if (rArgType->hasTypeVariable() || rArgType->hasUnresolvedType())
         matched = false;
       else {
         auto matchType = paramType;
         // If the parameter is an inout type, and we have a proper lvalue, match
         // against the type contained therein.
-        if (paramType->is<InOutType>() && argType->is<LValueType>())
+        if (param.isInOut() && argType->is<LValueType>())
           matchType = matchType->getInOutObjectType();
         
         if (candidate.substituted) {
@@ -476,10 +472,14 @@ CalleeCandidateInfo::evaluateCloseness(UncurriedCandidate candidate,
       if (matched)
         continue;
       
-      if (archetypesMap.empty())
-        mismatchesAreNearMisses &= argumentMismatchIsNearMiss(argType, paramType);
-      
-      ++mismatchingArgs;
+      // If the real argument is unresolved, the candidate isn't a mismatch because
+      // the type could be anything, but it's still useful to save the argument as
+      // failureInfo.
+      if (!rArgType->hasUnresolvedType()) {
+        if (archetypesMap.empty())
+          mismatchesAreNearMisses &= argumentMismatchIsNearMiss(argType, paramType);
+        ++mismatchingArgs;
+      }
       
       failureInfo.argumentNumber = argNo;
       failureInfo.parameterType = paramType;
@@ -489,7 +489,7 @@ CalleeCandidateInfo::evaluateCloseness(UncurriedCandidate candidate,
   }
   
   if (mismatchingArgs == 0)
-    return { CC_ExactMatch, {}};
+    return { CC_ExactMatch, failureInfo};
   
   // Check to see if the first argument expects an inout argument, but is not
   // an lvalue.

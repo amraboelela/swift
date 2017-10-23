@@ -1,5 +1,3 @@
-// A similar struct with Codable properties adopting Codable should get a
-// synthesized init(from:), along with the memberwise initializer.
 //===--- TypeCheckDecl.cpp - Type Checking for Declarations ---------------===//
 //
 // This source file is part of the Swift.org open source project
@@ -3986,12 +3984,6 @@ public:
 
   void visitBoundVariable(VarDecl *VD) {
     TC.validateDecl(VD);
-    
-    if (!VD->getType()->isMaterializable()) {
-      TC.diagnose(VD->getStartLoc(), diag::var_type_not_materializable,
-                  VD->getType());
-      VD->markInvalid();
-    }
 
     // Check the behavior.
     checkVarBehavior(VD, TC);
@@ -7370,8 +7362,6 @@ void TypeChecker::validateDecl(ValueDecl *D) {
 
     assocType->setIsBeingValidated();
     SWIFT_DEFER { assocType->setIsBeingValidated(false); };
-
-    validateAccessControl(assocType);
 
     checkDeclAttributesEarly(assocType);
     checkInheritanceClause(assocType);

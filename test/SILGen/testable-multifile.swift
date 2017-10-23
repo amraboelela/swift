@@ -50,7 +50,7 @@ public class PublicSub: Base {
 // CHECK-NEXT:   #Sub.deinit!deallocator: _T04main3SubCfD
 // CHECK-NEXT: }
 
-// CHECK-LABEL: sil_vtable PublicSub {
+// CHECK-LABEL: sil_vtable [serialized] PublicSub {
 // CHECK-NEXT:   #Base.foo!1: {{.*}} : _T04main9PublicSubC3fooyyF
 // CHECK-NEXT:   #Base.init!initializer.1: {{.*}} : _T04main9PublicSubCACycfc
 // CHECK-NEXT:   #PublicSub.deinit!deallocator: _T04main9PublicSubCfD
@@ -62,6 +62,6 @@ public class PublicSub: Base {
 // CHECK-NEXT:  method #Fooable.foo!1: {{.*}} : @_T04main7FooImplVAA7FooableA2aDP3fooyyFTW
 // CHECK-NEXT: }
 
-// CHECK-LABEL: sil_witness_table PublicFooImpl: Fooable module main {
+// CHECK-LABEL: sil_witness_table [serialized] PublicFooImpl: Fooable module main {
 // CHECK-NEXT:  method #Fooable.foo!1: {{.*}} : @_T04main13PublicFooImplVAA7FooableA2aDP3fooyyFTW
 // CHECK-NEXT: }

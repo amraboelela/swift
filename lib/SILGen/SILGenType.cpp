@@ -226,8 +226,14 @@ public:
                                dtorFn->getLinkage()});
     }
 
+    IsSerialized_t serialized = IsNotSerialized;
+    auto classIsPublic = theClass->getEffectiveAccess() >= AccessLevel::Public;
+    // Only public, fixed-layout classes should be serialized.
+    if (classIsPublic && theClass->hasFixedLayout())
+      serialized = IsSerialized;
+
     // Finally, create the vtable.
-    SILVTable::create(SGM.M, theClass, vtableEntries);
+    SILVTable::create(SGM.M, theClass, serialized, vtableEntries);
   }
 
   void visitAncestor(ClassDecl *ancestor) {
@@ -376,8 +382,7 @@ public:
 
     // ... or if the conformance itself thinks it should be.
     if (SILWitnessTable::conformanceIsSerialized(
-            Conformance, SGM.M.getSwiftModule()->getResilienceStrategy(),
-            SGM.M.getOptions().SILSerializeWitnessTables))
+            Conformance, SGM.M.getSwiftModule()->getResilienceStrategy()))
       Serialized = IsSerialized;
 
     // Not all protocols use witness tables; in this case we just skip

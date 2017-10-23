@@ -3422,7 +3422,6 @@ bool SILParser::parseSILInstruction(SILBuilder &B) {
     bool OnStack = false;
     SmallVector<SILType, 2> ElementTypes;
     SmallVector<SILValue, 2> ElementCounts;
-    StringRef Optional;
     while (P.consumeIf(tok::l_square)) {
       Identifier Id;
       parseSILIdentifier(Id, diag::expected_in_attribute_list);
@@ -5109,6 +5108,12 @@ bool SILParserTUState::parseSILVTable(Parser &P) {
   P.consumeToken(tok::kw_sil_vtable);
   SILParser VTableState(P);
 
+  IsSerialized_t Serialized = IsNotSerialized;
+  if (parseDeclSILOptional(nullptr, &Serialized, nullptr, nullptr,
+                           nullptr, nullptr, nullptr, nullptr, nullptr,
+                           nullptr, VTableState))
+    return true;
+
   // Parse the class name.
   Identifier Name;
   SourceLoc Loc;
@@ -5196,7 +5201,7 @@ bool SILParserTUState::parseSILVTable(Parser &P) {
   P.parseMatchingToken(tok::r_brace, RBraceLoc, diag::expected_sil_rbrace,
                        LBraceLoc);
 
-  SILVTable::create(M, theClass, vtableEntries);
+  SILVTable::create(M, theClass, Serialized, vtableEntries);
   return false;
 }
 

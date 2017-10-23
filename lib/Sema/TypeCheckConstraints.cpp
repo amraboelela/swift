@@ -635,7 +635,14 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
   // FIXME: If we reach this point, the program we're being handed is likely
   // very broken, but it's still conceivable that this may happen due to
   // invalid shadowed declarations.
-  // llvm_unreachable("Can't represent lookup result");
+  //
+  // Make sure we emit a diagnostic, since returning an ErrorExpr without
+  // producing one will break things downstream.
+  diagnose(Loc, diag::ambiguous_decl_ref, Name);
+  for (auto Result : Lookup) {
+    auto *Decl = Result.getValueDecl();
+    diagnose(Decl, diag::decl_declared_here, Decl->getFullName());
+  }
   return new (Context) ErrorExpr(UDRE->getSourceRange());
 }
 
@@ -2179,6 +2186,28 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
 
   auto resultTy = typeCheckExpression(initializer, DC, contextualType,
                                       contextualPurpose, flags, &listener);
+
+  // If we detected that the initializer would have a non-materializable type,
+  // complain.
+  if (resultTy && listener.isInOut()) {
+    diagnose(pattern->getStartLoc(), diag::var_type_not_materializable,
+             resultTy);
+
+    pattern->setType(ErrorType::get(Context));
+    pattern->forEachVariable([&](VarDecl *var) {
+      // Don't change the type of a variable that we've been able to
+      // compute a type for.
+      if (var->hasType() &&
+          !var->getType()->hasUnboundGenericType() &&
+          !var->getType()->hasError())
+        return;
+
+      var->markInvalid();
+    });
+
+    return true;
+  }
+
   if (resultTy) {
     TypeResolutionOptions options;
     options |= TR_OverrideType;
@@ -2196,7 +2225,7 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
 
     // Apply the solution to the pattern as well.
     if (coercePatternToType(pattern, DC, initTy, options,
-                            nullptr, TypeLoc(), listener.isInOut())) {
+                            nullptr, TypeLoc())) {
       return true;
     }
   }

@@ -2080,7 +2080,8 @@ void SILSerializer::writeSILVTable(const SILVTable &vt) {
   VTableList[vt.getClass()->getName()] = NextVTableID++;
   VTableOffset.push_back(Out.GetCurrentBitNo());
   VTableLayout::emitRecord(Out, ScratchRecord, SILAbbrCodes[VTableLayout::Code],
-                           S.addDeclRef(vt.getClass()));
+                           S.addDeclRef(vt.getClass()),
+                           vt.isSerialized() == IsSerialized ? 1 : 0);
 
   for (auto &entry : vt.getEntries()) {
     SmallVector<ValueID, 4> ListOfValues;
@@ -2287,16 +2288,14 @@ void SILSerializer::writeSILBlock(const SILModule *SILMod) {
   const DeclContext *assocDC = SILMod->getAssociatedContext();
   assert(assocDC && "cannot serialize SIL without an associated DeclContext");
   for (const SILVTable &vt : SILMod->getVTables()) {
-    if ((ShouldSerializeAll || SILMod->getOptions().SILSerializeVTables) &&
+    if ((ShouldSerializeAll || vt.isSerialized()) &&
         vt.getClass()->isChildContextOf(assocDC))
       writeSILVTable(vt);
   }
 
   // Write out fragile WitnessTables.
   for (const SILWitnessTable &wt : SILMod->getWitnessTables()) {
-    if ((ShouldSerializeAll || SILMod->getOptions().SILSerializeWitnessTables ||
-         wt.isSerialized()) &&
-        wt.getConformance()->getDeclContext()->isChildContextOf(assocDC))
+    if (wt.getConformance()->getDeclContext()->isChildContextOf(assocDC))
       writeSILWitnessTable(wt);
   }
 
