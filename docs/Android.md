@@ -36,11 +36,11 @@ To follow along with this guide, you'll need:
    for Linux by following the instructions in the Swift project README.
 2. The latest version of the Android NDK (r14 at the time of this writing),
    available to download here:
-   http://developer.android.com/ndk/downloads/index.html.
+   http://developer.android.com/ndk/downloads/index.html
 3. An Android device with remote debugging enabled. We require remote
    debugging in order to deploy built stdlib products to the device. You may
    turn on remote debugging by following the official instructions:
-   https://developer.chrome.com/devtools/docs/remote-debugging.
+   https://developer.chrome.com/devtools/docs/remote-debugging
 
 ## "Hello, world" on Android
 
@@ -164,7 +164,7 @@ To:
 || exit 1
 ```
 
-Now change the libraries file names on the last step of th build, by adding `swift` at the end of each one, by changing:
+Finally change the libraries file names on the last step of the build, by adding `swift` at the end of each one, by changing:
 
 ```
 for f in libicudata libicutest libicui18n libicuio libicule libiculx libicutu libicuuc; do
