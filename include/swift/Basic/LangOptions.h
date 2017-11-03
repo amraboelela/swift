@@ -153,6 +153,9 @@ namespace swift {
     /// \brief Enable the iterative type checker.
     bool IterativeTypeChecker = false;
 
+    /// \brief Enable named lazy member loading.
+    bool NamedLazyMemberLoading = false;
+
     /// Debug the generic signatures computed by the generic signature builder.
     bool DebugGenericSignatures = false;
 
@@ -160,12 +163,6 @@ namespace swift {
     /// identifier reference with the provided prefix name.
     /// This is for testing purposes.
     std::string DebugForbidTypecheckPrefix;
-
-    /// Number of parallel processes performing AST verification.
-    unsigned ASTVerifierProcessCount = 1U;
-
-    /// ID of the current process for the purposes of AST verification.
-    unsigned ASTVerifierProcessId = 1U;
 
     /// \brief The upper bound, in bytes, of temporary data that can be
     /// allocated by the constraint solver.

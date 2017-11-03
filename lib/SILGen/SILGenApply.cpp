@@ -138,13 +138,10 @@ replaceSelfTypeForDynamicLookup(ASTContext &ctx,
     }
   }
 
-  return SILFunctionType::get(nullptr,
-                              fnType->getExtInfo(),
-                              fnType->getCalleeConvention(),
-                              newParams,
-                              newResults,
-                              fnType->getOptionalErrorResult(),
-                              ctx);
+  return SILFunctionType::get(nullptr, fnType->getExtInfo(),
+                              fnType->getCalleeConvention(), newParams,
+                              newResults, fnType->getOptionalErrorResult(), ctx,
+                              fnType->getWitnessMethodConformanceOrNone());
 }
 
 /// Retrieve the type to use for a method found via dynamic lookup.
@@ -917,9 +914,8 @@ public:
     std::tie(selfMetaObjC, instanceType) = convertToObjCMetatype(selfMeta, loc);
 
     // Allocate the object.
-    return SGF.emitManagedRValueWithCleanup(
-        SGF.B.createAllocRefDynamic(loc, selfMetaObjC.getValue(), instanceType,
-                                    /*objc=*/true, {}, {}));
+    return SGF.B.createAllocRefDynamic(loc, selfMetaObjC, instanceType,
+                                       /*objc=*/true, {}, {});
   }
 
   void processProtocolDecl(DeclRefExpr *e, AbstractFunctionDecl *afd,

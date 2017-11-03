@@ -142,7 +142,7 @@ Type CompleteGenericTypeResolver::resolveDependentMemberType(
 
   // Look for a nested type with the given name.
   if (auto nestedType =
-          baseEquivClass->lookupNestedType(ref->getIdentifier())) {
+          baseEquivClass->lookupNestedType(builder, ref->getIdentifier())) {
     // Record the type we found.
     ref->setValue(nestedType, nullptr);
   } else {
@@ -472,7 +472,7 @@ static bool checkGenericFuncSignature(TypeChecker &tc,
   if (auto fn = dyn_cast<FuncDecl>(func)) {
     if (!fn->getBodyResultTypeLoc().isNull()) {
       // Check the result type of the function.
-      TypeResolutionOptions options;
+      TypeResolutionOptions options = TR_AllowIUO;
       if (fn->hasDynamicSelf())
         options |= TR_DynamicSelfResult;
 
@@ -932,8 +932,7 @@ static bool checkGenericSubscriptSignature(TypeChecker &tc,
 
   // Check the element type.
   badType |= tc.validateType(subscript->getElementTypeLoc(), subscript,
-                             TypeResolutionOptions(),
-                             &resolver);
+                             TR_AllowIUO, &resolver);
 
   // Infer requirements from it.
   if (genericParams && builder) {
@@ -949,8 +948,11 @@ static bool checkGenericSubscriptSignature(TypeChecker &tc,
   // Check the indices.
   auto params = subscript->getIndices();
 
+  TypeResolutionOptions options;
+  options |= TR_SubscriptParameters;
+
   badType |= tc.typeCheckParameterList(params, subscript,
-                                       TR_SubscriptParameters,
+                                       options,
                                        resolver);
 
   // Infer requirements from the pattern.

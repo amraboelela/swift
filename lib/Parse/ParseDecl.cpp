@@ -1587,6 +1587,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, bool justChecking) {
   bool isAutoclosureEscaping = false;
   SourceRange autoclosureEscapingParenRange;
   StringRef conventionName;
+  StringRef witnessMethodProtocol;
 
   // Handle @autoclosure(escaping)
   if (attr == TAK_autoclosure) {
@@ -1623,6 +1624,25 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, bool justChecking) {
 
     conventionName = Tok.getText();
     consumeToken(tok::identifier);
+
+    if (conventionName == "witness_method") {
+      if (Tok.isNot(tok::colon)) {
+        if (!justChecking)
+          diagnose(Tok,
+                   diag::convention_attribute_witness_method_expected_colon);
+        return true;
+      }
+      consumeToken(tok::colon);
+      if (Tok.isNot(tok::identifier)) {
+        if (!justChecking)
+          diagnose(Tok,
+                   diag::convention_attribute_witness_method_expected_protocol);
+        return true;
+      }
+
+      witnessMethodProtocol = Tok.getText();
+      consumeToken(tok::identifier);
+    }
 
     // Parse the ')'.  We can't use parseMatchingToken if we're in
     // just-checking mode.
@@ -1663,7 +1683,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, bool justChecking) {
             .fixItReplace(autoclosureEscapingParenRange, " @escaping ");
       }
       Attributes.setAttr(TAK_escaping, Loc);
-    } else if (Attributes.has(TAK_noescape)) {
+    } else if (Attributes.has(TAK_noescape) && !isInSILMode()) {
       diagnose(Loc, diag::attr_noescape_implied_by_autoclosure);
     }
     break;
@@ -1676,7 +1696,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, bool justChecking) {
     }
 
     // @noescape after @autoclosure is redundant.
-    if (Attributes.has(TAK_autoclosure)) {
+    if (Attributes.has(TAK_autoclosure) && !isInSILMode()) {
       diagnose(Loc, diag::attr_noescape_implied_by_autoclosure);
     }
 
@@ -1770,6 +1790,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, bool justChecking) {
   // Convention attribute.
   case TAK_convention:
     Attributes.convention = conventionName;
+    Attributes.conventionWitnessMethodProtocol = witnessMethodProtocol;
     break;
   }
 
@@ -1820,19 +1841,22 @@ bool Parser::parseTypeAttributeListPresent(VarDecl::Specifier &Specifier,
                                            SourceLoc &SpecifierLoc,
                                            TypeAttributes &Attributes) {
   Specifier = VarDecl::Specifier::Owned;
-  while (Tok.isAny(tok::kw_inout, tok::kw___shared, tok::kw___owned)) {
+  while (Tok.is(tok::kw_inout) ||
+         (Tok.is(tok::identifier) &&
+          (Tok.getRawText().equals("__shared") ||
+           Tok.getRawText().equals("__owned")))) {
     if (SpecifierLoc.isValid()) {
       diagnose(Tok, diag::parameter_specifier_repeated)
         .fixItRemove(SpecifierLoc);
     } else {
-      if (Tok.is(tok::kw___owned)) {
-        Specifier = VarDecl::Specifier::Owned;
-      } else if (Tok.is(tok::kw_inout)) {
+      if (Tok.is(tok::kw_inout)) {
         Specifier = VarDecl::Specifier::InOut;
-      } else if (Tok.is(tok::kw___shared)) {
-        Specifier = VarDecl::Specifier::Shared;
-      } else {
-        llvm_unreachable("unhandled specifier kind?");
+      } else if (Tok.is(tok::identifier)) {
+        if (Tok.getRawText().equals("__shared")) {
+          Specifier = VarDecl::Specifier::Shared;
+        } else if (Tok.getRawText().equals("__owned")) {
+          Specifier = VarDecl::Specifier::Owned;
+        }
       }
     }
     SpecifierLoc = consumeToken();

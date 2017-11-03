@@ -884,6 +884,12 @@ public:
   void visitValueMetatypeInst(ValueMetatypeInst *i);
   void visitExistentialMetatypeInst(ExistentialMetatypeInst *i);
   void visitTupleExtractInst(TupleExtractInst *i);
+  void visitDestructureTupleInst(DestructureTupleInst *i) {
+    llvm_unreachable("unimplemented");
+  }
+  void visitDestructureStructInst(DestructureStructInst *i) {
+    llvm_unreachable("unimplemented");
+  }
   void visitTupleElementAddrInst(TupleElementAddrInst *i);
   void visitStructExtractInst(StructExtractInst *i);
   void visitStructElementAddrInst(StructElementAddrInst *i);
@@ -5015,7 +5021,6 @@ void IRGenSILFunction::visitCopyAddrInst(swift::CopyAddrInst *i) {
   auto &loweredDest = getLoweredValue(i->getDest());
   assert(!loweredDest.isUnallocatedAddressInBuffer());
   Address dest = loweredDest.getAnyAddress();
-
   if (i->isInitializationOfDest()) {
     if (i->isTakeOfSrc()) {
       addrTI.initializeWithTake(*this, dest, src, addrTy);

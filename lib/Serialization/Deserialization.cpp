@@ -31,6 +31,7 @@
 #include "swift/Basic/Statistic.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "Serialization"
@@ -759,6 +760,10 @@ GenericParamList *ModuleFile::maybeReadGenericParams(DeclContext *DC,
     if (!shouldContinue)
       break;
   }
+
+  // Don't create empty generic parameter lists.
+  if (params.empty())
+    return nullptr;
 
   auto paramList = GenericParamList::create(getContext(), SourceLoc(),
                                             params, SourceLoc(), { },
@@ -2104,6 +2109,20 @@ Decl *ModuleFile::getDecl(DeclID DID, Optional<DeclContext *> ForcedContext) {
 
 Expected<Decl *>
 ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
+  // Tag every deserialized ValueDecl coming out of getDeclChecked with its ID.
+  Expected<Decl *> deserialized = getDeclCheckedImpl(DID, ForcedContext);
+  if (deserialized && deserialized.get()) {
+    if (auto *IDC = dyn_cast<IterableDeclContext>(deserialized.get())) {
+      if (IDC->wasDeserialized()) {
+        IDC->setDeclID(DID);
+      }
+    }
+  }
+  return deserialized;
+}
+
+Expected<Decl *>
+ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext) {
   if (DID == 0)
     return nullptr;
 
@@ -2872,7 +2891,7 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
     bool isImplicit;
     bool isStatic;
     uint8_t rawStaticSpelling, rawAccessLevel, rawAddressorKind, rawMutModifier;
-    bool isObjC, hasDynamicSelf, throws;
+    bool isObjC, hasDynamicSelf, hasForcedStaticDispatch, throws;
     unsigned numParamPatterns, numNameComponentsBiased;
     GenericEnvironmentID genericEnvID;
     TypeID interfaceTypeID;
@@ -2885,7 +2904,8 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
 
     decls_block::FuncLayout::readRecord(scratch, contextID, isImplicit,
                                         isStatic, rawStaticSpelling, isObjC,
-                                        rawMutModifier, hasDynamicSelf, throws,
+                                        rawMutModifier, hasDynamicSelf,
+                                        hasForcedStaticDispatch, throws,
                                         numParamPatterns, genericEnvID,
                                         interfaceTypeID,
                                         associatedDeclID, overriddenID,
@@ -3030,6 +3050,7 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
     if (isImplicit)
       fn->setImplicit();
     fn->setDynamicSelf(hasDynamicSelf);
+    fn->setForcedStaticDispatch(hasForcedStaticDispatch);
     fn->setNeedsNewVTableEntry(needsNewVTableEntry);
 
     if (auto defaultArgumentResilienceExpansion = getActualResilienceExpansion(
@@ -3104,13 +3125,14 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
   case decls_block::PROTOCOL_DECL: {
     IdentifierID nameID;
     DeclContextID contextID;
-    bool isImplicit, isClassBounded, isObjC;
+    bool isImplicit, isClassBounded, isObjC, existentialTypeSupported;
     GenericEnvironmentID genericEnvID;
     uint8_t rawAccessLevel;
     ArrayRef<uint64_t> rawInheritedIDs;
 
     decls_block::ProtocolLayout::readRecord(scratch, nameID, contextID,
                                             isImplicit, isClassBounded, isObjC,
+                                            existentialTypeSupported,
                                             genericEnvID, rawAccessLevel,
                                             rawInheritedIDs);
 
@@ -3124,7 +3146,8 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
     declOrOffset = proto;
 
     proto->setRequiresClass(isClassBounded);
-    
+    proto->setExistentialTypeSupported(existentialTypeSupported);
+
     if (auto accessLevel = getActualAccessLevel(rawAccessLevel)) {
       proto->setAccess(*accessLevel);
     } else {
@@ -4438,6 +4461,11 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
                   cast<GenericTypeParamType>(getType(id)->getCanonicalType()));
     }
 
+    Optional<ProtocolConformanceRef> witnessMethodConformance;
+    if (*representation == SILFunctionTypeRepresentation::WitnessMethod) {
+      witnessMethodConformance = readConformance(DeclTypeCursor);
+    }
+
     // Read the generic requirements, if any.
     SmallVector<Requirement, 4> requirements;
     readGenericRequirements(requirements, DeclTypeCursor);
@@ -4447,10 +4475,9 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
       genericSig = GenericSignature::get(genericParamTypes, requirements,
                                          /*isKnownCanonical=*/true);
 
-    typeOrOffset = SILFunctionType::get(genericSig, extInfo,
-                                        calleeConvention.getValue(),
-                                        allParams, allResults, errorResult,
-                                        ctx);
+    typeOrOffset = SILFunctionType::get(
+        genericSig, extInfo, calleeConvention.getValue(), allParams, allResults,
+        errorResult, ctx, witnessMethodConformance);
     break;
   }
 

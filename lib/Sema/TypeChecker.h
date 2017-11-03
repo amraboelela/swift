@@ -536,6 +536,9 @@ enum TypeResolutionFlags : unsigned {
 
   /// Whether we are checking the parameter list of a subscript.
   TR_SubscriptParameters = 0x2000000,
+
+  /// Is it okay to resolve an IUO sigil ("!") here?
+  TR_AllowIUO = 0x4000000,
 };
 
 /// Option set describing how type resolution should work.
@@ -554,6 +557,7 @@ withoutContext(TypeResolutionOptions options, bool preserveSIL = false) {
   options -= TR_VariadicFunctionInput;
   options -= TR_EnumCase;
   options -= TR_ImmediateOptionalTypeArgument;
+  options -= TR_AllowIUO;
   if (!preserveSIL) options -= TR_SILType;
   return options;
 }

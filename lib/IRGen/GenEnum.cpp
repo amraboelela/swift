@@ -1591,19 +1591,17 @@ namespace {
     /// Emit a call into the runtime to get the current enum payload tag.
     /// This returns a tag index in the range
     /// [-ElementsWithPayload..ElementsWithNoPayload-1].
-    llvm::Value *
-    emitGetEnumTag(IRGenFunction &IGF, SILType T, Address enumAddr)
-    const override {
-      auto payloadMetadata = emitPayloadMetadataForLayout(IGF, T);
-      auto numEmptyCases = llvm::ConstantInt::get(IGF.IGM.Int32Ty,
-                                                  ElementsWithNoPayload.size());
+    llvm::Value *emitGetEnumTag(IRGenFunction &IGF, SILType T,
+                                Address enumAddr) const override {
+      auto numEmptyCases =
+          llvm::ConstantInt::get(IGF.IGM.Int32Ty, ElementsWithNoPayload.size());
 
-      auto opaqueAddr = IGF.Builder.CreateBitCast(enumAddr.getAddress(),
-                                                  IGF.IGM.OpaquePtrTy);
-
-      return IGF.Builder.CreateCall(
-                 IGF.IGM.getGetEnumCaseSinglePayloadFn(),
-                 {opaqueAddr, payloadMetadata, numEmptyCases});
+      auto PayloadT = getPayloadType(IGF.IGM, T);
+      auto opaqueAddr = Address(
+          IGF.Builder.CreateBitCast(enumAddr.getAddress(), IGF.IGM.OpaquePtrTy),
+          enumAddr.getAlignment());
+      return emitGetEnumTagSinglePayloadCall(IGF, PayloadT, numEmptyCases,
+                                             opaqueAddr);
     }
 
     /// The payload for a single-payload enum is always placed in front and
@@ -2411,16 +2409,16 @@ namespace {
         }
         return;
       }
+      llvm::Value *opaqueAddr =
+          IGF.Builder.CreateBitCast(dest.getAddress(), IGF.IGM.OpaquePtrTy);
 
-      // Ask the runtime to store the tag.
-      llvm::Value *opaqueAddr = IGF.Builder.CreateBitCast(dest.getAddress(),
-                                                          IGF.IGM.OpaquePtrTy);
-      llvm::Value *metadata = emitPayloadMetadataForLayout(IGF, T);
-      IGF.Builder.CreateCall(IGF.IGM.getStoreEnumTagSinglePayloadFn(),
-                             {opaqueAddr, metadata,
-                              llvm::ConstantInt::getSigned(IGF.IGM.Int32Ty, -1),
-                              llvm::ConstantInt::get(IGF.IGM.Int32Ty,
-                                                 ElementsWithNoPayload.size())});
+      auto PayloadT = getPayloadType(IGF.IGM, T);
+      auto Addr = Address(opaqueAddr, dest.getAlignment());
+      auto *whichCase = llvm::ConstantInt::getSigned(IGF.IGM.Int32Ty, -1);
+      auto *numEmptyCases =
+          llvm::ConstantInt::get(IGF.IGM.Int32Ty, ElementsWithNoPayload.size());
+      emitStoreEnumTagSinglePayloadCall(IGF, PayloadT, whichCase, numEmptyCases,
+                                        Addr);
     }
 
     /// Emit a reassignment sequence from an enum at one address to another.
@@ -2598,25 +2596,57 @@ namespace {
     void assignWithCopy(IRGenFunction &IGF, Address dest, Address src,
                         SILType T)
     const override {
-      emitIndirectAssign(IGF, dest, src, T, IsNotTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectAssign(IGF, dest, src, T, IsNotTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedAssignWithCopyFunction);
+      }
     }
 
     void assignWithTake(IRGenFunction &IGF, Address dest, Address src,
                         SILType T)
     const override {
-      emitIndirectAssign(IGF, dest, src, T, IsTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectAssign(IGF, dest, src, T, IsTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedAssignWithTakeFunction);
+      }
     }
 
     void initializeWithCopy(IRGenFunction &IGF, Address dest, Address src,
                             SILType T)
     const override {
-      emitIndirectInitialize(IGF, dest, src, T, IsNotTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectInitialize(IGF, dest, src, T, IsNotTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedInitializeWithCopyFunction);
+      }
     }
 
     void initializeWithTake(IRGenFunction &IGF, Address dest, Address src,
                             SILType T)
     const override {
-      emitIndirectInitialize(IGF, dest, src, T, IsTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectInitialize(IGF, dest, src, T, IsTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedInitializeWithTakeFunction);
+      }
     }
 
     void storeTag(IRGenFunction &IGF,
@@ -2625,7 +2655,6 @@ namespace {
                   EnumElementDecl *Case) const override {
       if (TIK < Fixed) {
         // If the enum isn't fixed-layout, get the runtime to do this for us.
-        llvm::Value *payload = emitPayloadMetadataForLayout(IGF, T);
         llvm::Value *caseIndex;
         if (Case == getPayloadElement()) {
           caseIndex = llvm::ConstantInt::getSigned(IGF.IGM.Int32Ty, -1);
@@ -2645,10 +2674,10 @@ namespace {
         llvm::Value *opaqueAddr
           = IGF.Builder.CreateBitCast(enumAddr.getAddress(),
                                       IGF.IGM.OpaquePtrTy);
-
-        IGF.Builder.CreateCall(IGF.IGM.getStoreEnumTagSinglePayloadFn(),
-                               {opaqueAddr, payload, caseIndex, numEmptyCases});
-
+        auto PayloadT = getPayloadType(IGF.IGM, T);
+        auto Addr = Address(opaqueAddr, enumAddr.getAlignment());
+        emitStoreEnumTagSinglePayloadCall(IGF, PayloadT, caseIndex,
+                                          numEmptyCases, Addr);
         return;
       }
 
@@ -2675,20 +2704,18 @@ namespace {
 
     /// Constructs an enum value using a tag index in the range
     /// [-ElementsWithPayload..ElementsWithNoPayload-1].
-    void emitStoreTag(IRGenFunction &IGF,
-                      SILType T,
-                      Address enumAddr,
+    void emitStoreTag(IRGenFunction &IGF, SILType T, Address enumAddr,
                       llvm::Value *tag) const override {
-      llvm::Value *payload = emitPayloadMetadataForLayout(IGF, T);
-      llvm::Value *numEmptyCases = llvm::ConstantInt::get(IGF.IGM.Int32Ty,
-                                                ElementsWithNoPayload.size());
-
+      auto PayloadT = getPayloadType(IGF.IGM, T);
       llvm::Value *opaqueAddr
         = IGF.Builder.CreateBitCast(enumAddr.getAddress(),
-                                    IGF.IGM.OpaquePtrTy);
+                                      IGF.IGM.OpaquePtrTy);
 
-      IGF.Builder.CreateCall(IGF.IGM.getStoreEnumTagSinglePayloadFn(),
-                             {opaqueAddr, payload, tag, numEmptyCases});
+      llvm::Value *numEmptyCases = llvm::ConstantInt::get(IGF.IGM.Int32Ty,
+                                                ElementsWithNoPayload.size());
+      auto Addr = Address(opaqueAddr, enumAddr.getAlignment());
+      emitStoreEnumTagSinglePayloadCall(IGF, PayloadT, tag, numEmptyCases,
+                                        Addr);
     }
 
     void initializeMetadata(IRGenFunction &IGF,
@@ -4211,25 +4238,57 @@ namespace {
     void assignWithCopy(IRGenFunction &IGF, Address dest, Address src,
                         SILType T)
     const override {
-      emitIndirectAssign(IGF, dest, src, T, IsNotTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectAssign(IGF, dest, src, T, IsNotTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedAssignWithCopyFunction);
+      }
     }
 
     void assignWithTake(IRGenFunction &IGF, Address dest, Address src,
                         SILType T)
     const override {
-      emitIndirectAssign(IGF, dest, src, T, IsTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectAssign(IGF, dest, src, T, IsTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedAssignWithTakeFunction);
+      }
     }
 
     void initializeWithCopy(IRGenFunction &IGF, Address dest, Address src,
                             SILType T)
     const override {
-      emitIndirectInitialize(IGF, dest, src, T, IsNotTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectInitialize(IGF, dest, src, T, IsNotTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedInitializeWithCopyFunction);
+      }
     }
 
     void initializeWithTake(IRGenFunction &IGF, Address dest, Address src,
                             SILType T)
     const override {
-      emitIndirectInitialize(IGF, dest, src, T, IsTake);
+      if (IGF.isInOutlinedFunction() || (TIK < Loadable) ||
+          (T.hasArchetype())) {
+        emitIndirectInitialize(IGF, dest, src, T, IsTake);
+      } else {
+        // Create an outlined function to avoid explosion
+        IGF.IGM.generateCallToOutlinedCopyAddr(
+            IGF, *TI, dest, src, T,
+            &IRGenModule::getOrCreateOutlinedInitializeWithTakeFunction);
+      }
     }
 
     void destroy(IRGenFunction &IGF, Address addr, SILType T) const override {

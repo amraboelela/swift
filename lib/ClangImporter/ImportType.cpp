@@ -1296,29 +1296,9 @@ static Type adjustTypeForConcreteImport(ClangImporter::Implementation &impl,
 
   // SwiftTypeConverter turns block pointers into @convention(block) types.
   // In a bridgeable context, or in the direct structure of a typedef,
-  // we would prefer to instead use the default Swift convention.  But this
-  // does means that, when we're using a typedef of a block pointer type in
-  // an unbridgable context, we need to go back and do a fully-unbridged
-  // import of the underlying type.
+  // we would prefer to instead use the default Swift convention.
   if (hint == ImportHint::Block) {
-    if (bridging == Bridgeability::None) {
-      if (auto typedefType = clangType->getAs<clang::TypedefType>()) {
-        // In non-bridged contexts, drop the typealias sugar for blocks.
-        // FIXME: This will do the wrong thing if there's any adjustment to do
-        // besides optionality.
-        Type underlyingTy = impl.importType(typedefType->desugar(),
-                                            importKind,
-                                            allowNSUIntegerAsInt,
-                                            bridging,
-                                            OTK_None);
-        if (Type unwrappedTy = underlyingTy->getAnyOptionalObjectType())
-          underlyingTy = unwrappedTy;
-        if (!underlyingTy->isEqual(importedType))
-          importedType = underlyingTy;
-      }
-    }
-
-    if (bridging == Bridgeability::Full) {
+    if (canBridgeTypes(importKind) || importKind == ImportTypeKind::Typedef) {
       auto fTy = importedType->castTo<FunctionType>();
       FunctionType::ExtInfo einfo = fTy->getExtInfo();
       if (einfo.getRepresentation() != FunctionTypeRepresentation::Swift) {
@@ -1361,7 +1341,6 @@ static Type adjustTypeForConcreteImport(ClangImporter::Implementation &impl,
   // If we have a bridged Objective-C type and we are allowed to
   // bridge, do so.
   if (hint == ImportHint::ObjCBridged &&
-      bridging == Bridgeability::Full &&
       canBridgeTypes(importKind) &&
       importKind != ImportTypeKind::PropertyWithReferenceSemantics) {
     // id and Any can be bridged without Foundation. There would be

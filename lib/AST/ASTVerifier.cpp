@@ -2097,10 +2097,17 @@ public:
                  "Storage overrides but setter does not");
         if (ASD->getMaterializeForSetFunc() &&
             baseASD->getMaterializeForSetFunc() &&
-            baseASD->isSetterAccessibleFrom(ASD->getDeclContext()))
-          assert(ASD->getMaterializeForSetFunc()->getOverriddenDecl() ==
-                 baseASD->getMaterializeForSetFunc() &&
-                 "Storage override but materializeForSet does not");
+            baseASD->isSetterAccessibleFrom(ASD->getDeclContext())) {
+          if (baseASD->getMaterializeForSetFunc()->hasForcedStaticDispatch()) {
+            assert(ASD->getMaterializeForSetFunc()->getOverriddenDecl() == nullptr
+                   && "Forced static dispatch materializeForSet should not be "
+                   "overridden");
+          } else {
+            assert(ASD->getMaterializeForSetFunc()->getOverriddenDecl() ==
+                   baseASD->getMaterializeForSetFunc() &&
+                   "Storage override but materializeForSet does not");
+          }
+        }
       } else {
         if (ASD->getGetter())
           assert(!ASD->getGetter()->getOverriddenDecl() &&
@@ -3287,13 +3294,6 @@ void swift::verify(SourceFile &SF) {
 
 bool swift::shouldVerify(const Decl *D, const ASTContext &Context) {
 #if !(defined(NDEBUG) || defined(SWIFT_DISABLE_AST_VERIFIER))
-  unsigned ProcessCount = Context.LangOpts.ASTVerifierProcessCount;
-  unsigned ProcessId = Context.LangOpts.ASTVerifierProcessId;
-  if (ProcessCount == 1) {
-    // No parallelism, verify all declarations.
-    return true;
-  }
-
   if (const auto *ED = dyn_cast<ExtensionDecl>(D)) {
     return shouldVerify(ED->getExtendedType()->getAnyNominal(), Context);
   }
@@ -3304,8 +3304,7 @@ bool swift::shouldVerify(const Decl *D, const ASTContext &Context) {
     return true;
   }
 
-  size_t Hash = llvm::hash_value(VD->getBaseName().userFacingName());
-  return Hash % ProcessCount == ProcessId;
+  return true;
 #else
   return false;
 #endif

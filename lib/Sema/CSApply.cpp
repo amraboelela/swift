@@ -945,7 +945,6 @@ namespace {
       // Handle dynamic references.
       if (isDynamic || member->getAttrs().hasAttribute<OptionalAttr>()) {
         base = cs.coerceToRValue(base);
-        if (!base) return nullptr;
         Expr *ref = new (context) DynamicMemberRefExpr(base, dotLoc, memberRef,
                                                        memberLoc);
         ref->setImplicit(Implicit);
@@ -2555,13 +2554,14 @@ namespace {
       auto selected = *selectedElt;
       switch (selected.choice.getKind()) {
       case OverloadChoiceKind::DeclViaBridge: {
+        base = cs.coerceToRValue(base);
+
         // Look through an implicitly unwrapped optional.
-        auto baseTy = cs.getType(base)->getRValueType();
+        auto baseTy = cs.getType(base);
         if (auto objTy = cs.lookThroughImplicitlyUnwrappedOptionalType(baseTy)){
           base = coerceImplicitlyUnwrappedOptionalToValue(base, objTy,
                                          cs.getConstraintLocator(base));
-
-          baseTy = cs.getType(base)->getRValueType();
+          baseTy = objTy;
         }
 
         auto &tc = cs.getTypeChecker();
@@ -2911,7 +2911,6 @@ namespace {
     Expr *visitDynamicTypeExpr(DynamicTypeExpr *expr) {
       Expr *base = expr->getBase();
       base = cs.coerceToRValue(base);
-      if (!base) return nullptr;
       expr->setBase(base);
 
       return simplifyExprType(expr);
@@ -3015,9 +3014,7 @@ namespace {
       auto &tc = cs.getTypeChecker();
       auto toType = simplifyType(expr->getCastTypeLoc().getType());
       auto sub = cs.coerceToRValue(expr->getSubExpr());
-      if (!sub)
-        return nullptr;
-      
+
       checkForImportedUsedConformances(toType);
       expr->setSubExpr(sub);
 
@@ -3343,10 +3340,8 @@ namespace {
       auto &tc = cs.getTypeChecker();
 
       // Turn the subexpression into an rvalue.
-      if (auto rvalueSub = cs.coerceToRValue(expr->getSubExpr()))
-        expr->setSubExpr(rvalueSub);
-      else
-        return nullptr;
+      auto rvalueSub = cs.coerceToRValue(expr->getSubExpr());
+      expr->setSubExpr(rvalueSub);
 
       // If we weren't explicitly told by the caller which disjunction choice,
       // get it from the solution to determine whether we've picked a coercion
@@ -3413,8 +3408,6 @@ namespace {
       // The subexpression is always an rvalue.
       auto &tc = cs.getTypeChecker();
       auto sub = cs.coerceToRValue(expr->getSubExpr());
-      if (!sub)
-        return nullptr;
       expr->setSubExpr(sub);
 
       auto castContextKind =
@@ -3480,8 +3473,6 @@ namespace {
       // The subexpression is always an rvalue.
       auto &tc = cs.getTypeChecker();
       auto sub = cs.coerceToRValue(expr->getSubExpr());
-      if (!sub)
-        return nullptr;
       expr->setSubExpr(sub);
 
 
@@ -6994,10 +6985,7 @@ Expr *ExprRewriter::finishApply(ApplyExpr *apply, Type openedType,
 
   // The function is always an rvalue.
   fn = cs.coerceToRValue(fn);
-  assert(fn && "Rvalue conversion failed?");
-  if (!fn)
-    return nullptr;
-  
+
   // Resolve applications of decls with special semantics.
   if (auto declRef =
       dyn_cast<DeclRefExpr>(getSemanticExprForDeclOrMemberRef(fn))) {
@@ -7083,7 +7071,6 @@ Expr *ExprRewriter::finishApply(ApplyExpr *apply, Type openedType,
       CEA = TSE->getSubExpr();
     // The argument is either a ParenExpr or TupleExpr.
     ArrayRef<Expr *> arguments;
-    ArrayRef<TypeBase *> types;
 
     SmallVector<Expr *, 1> Scratch;
     if (auto *TE = dyn_cast<TupleExpr>(CEA))
