@@ -1187,10 +1187,10 @@ static bool isDefaultInitializable(const TypeRepr *typeRepr) {
 
 // @NSManaged properties never get default initialized, nor do debugger
 // variables and immutable properties.
-bool isNeverDefaultInitializable(const Pattern *p) {
+bool Pattern::isNeverDefaultInitializable() const {
   bool result = false;
 
-  p->forEachVariable([&](const VarDecl *var) {
+  forEachVariable([&](const VarDecl *var) {
     if (var->getAttrs().hasAttribute<NSManagedAttr>())
       return;
 
@@ -1209,7 +1209,7 @@ bool PatternBindingDecl::isDefaultInitializable(unsigned i) const {
   if (entry.getInit())
     return true;
 
-  if (isNeverDefaultInitializable(entry.getPattern()))
+  if (entry.getPattern()->isNeverDefaultInitializable())
     return false;
 
   // If the pattern is typed as optional (or tuples thereof), it is
@@ -2679,6 +2679,25 @@ DestructorDecl *ClassDecl::getDestructor() {
   assert(results.size() == 1 && "More than one destructor?");
   return cast<DestructorDecl>(results.front());
 }
+
+DestructorDecl *ClassDecl::addImplicitDestructor() {
+  if (hasDestructor() || isInvalid())
+    return nullptr;
+
+  auto *selfDecl = ParamDecl::createSelf(getLoc(), this);
+
+  auto &ctx = getASTContext();
+  auto *DD = new (ctx) DestructorDecl(getLoc(), selfDecl, this);
+
+  DD->setImplicit();
+
+  // Create an empty body for the destructor.
+  DD->setBody(BraceStmt::create(ctx, getLoc(), { }, getLoc(), true));
+  addMember(DD);
+  setHasDestructor();
+  return DD;
+}
+
 
 bool ClassDecl::hasMissingDesignatedInitializers() const {
   auto *mutableThis = const_cast<ClassDecl *>(this);
