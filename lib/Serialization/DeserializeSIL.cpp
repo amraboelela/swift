@@ -710,7 +710,7 @@ static SILDeclRef getSILDeclRef(ModuleFile *MF,
                   (SILDeclRef::Kind)ListOfValues[NextIdx+1],
                   (swift::ResilienceExpansion)ListOfValues[NextIdx+2],
                   /*isCurried=*/false, ListOfValues[NextIdx+4] > 0);
-  if (ListOfValues[NextIdx+3] < DRef.getUncurryLevel())
+  if (ListOfValues[NextIdx+3] < DRef.getParameterListCount() - 1)
     DRef = DRef.asCurried();
   NextIdx += 5;
   return DRef;
@@ -2110,6 +2110,27 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
   }
   case SILInstructionKind::UnreachableInst: {
     ResultVal = Builder.createUnreachable(Loc);
+    break;
+  }
+  case SILInstructionKind::UnwindInst: {
+    ResultVal = Builder.createUnwind(Loc);
+    break;
+  }
+  case SILInstructionKind::YieldInst: {
+    SILBasicBlock *unwindBB = getBBForReference(Fn, ListOfValues.back());
+    ListOfValues = ListOfValues.drop_back();
+    SILBasicBlock *resumeBB = getBBForReference(Fn, ListOfValues.back());
+    ListOfValues = ListOfValues.drop_back();
+
+    SmallVector<SILValue, 4> yieldedValues;
+    for (unsigned I = 0, E = ListOfValues.size(); I < E; I += 3) {
+      auto valueTy = MF->getType(ListOfValues[I]);
+      auto valueCategory = (SILValueCategory) ListOfValues[I+1];
+      yieldedValues.push_back(
+        getLocalValue(ListOfValues[I+2], getSILType(valueTy, valueCategory)));
+    }
+
+    ResultVal = Builder.createYield(Loc, yieldedValues, resumeBB, unwindBB);
     break;
   }
   case SILInstructionKind::KeyPathInst: {

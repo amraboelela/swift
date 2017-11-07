@@ -196,10 +196,13 @@ CanSILFunctionType Lowering::adjustFunctionType(
       type->getWitnessMethodConformanceOrNone() == witnessMethodConformance)
     return type;
 
-  return SILFunctionType::get(type->getGenericSignature(), extInfo, callee,
-                              type->getParameters(), type->getResults(),
+  return SILFunctionType::get(type->getGenericSignature(),
+                              extInfo, type->getCoroutineKind(), callee,
+                              type->getParameters(), type->getYields(),
+                              type->getResults(),
                               type->getOptionalErrorResult(),
-                              type->getASTContext(), witnessMethodConformance);
+                              type->getASTContext(),
+                              witnessMethodConformance);
 }
 
 namespace {
@@ -960,7 +963,8 @@ static CanSILFunctionType getSILFunctionType(
     .withIsPseudogeneric(pseudogeneric)
     .withNoEscape(extInfo.isNoEscape());
   
-  return SILFunctionType::get(genericSig, silExtInfo, calleeConvention, inputs,
+  return SILFunctionType::get(genericSig, silExtInfo, SILCoroutineKind::None,
+                              calleeConvention, inputs, /*yields*/ {},
                               results, errorResult, M.getASTContext(),
                               witnessMethodConformance);
 }
@@ -1777,7 +1781,7 @@ static bool isImporterGeneratedAccessor(const clang::Decl *clangDecl,
     return false;
 
   // Must be a type member.
-  if (constant.getUncurryLevel() != 1)
+  if (constant.getParameterListCount() != 2)
     return false;
 
   // Must be imported from a function.
@@ -2235,6 +2239,12 @@ namespace {
         substParams.push_back(subst(origParam));
       }
 
+      SmallVector<SILYieldInfo, 8> substYields;
+      substYields.reserve(origType->getYields().size());
+      for (auto &origYield : origType->getYields()) {
+        substYields.push_back(subst(origYield));
+      }
+
       Optional<ProtocolConformanceRef> witnessMethodConformance;
       if (auto conformance = origType->getWitnessMethodConformanceOrNone()) {
         assert(origType->getExtInfo().hasSelfParam());
@@ -2253,8 +2263,9 @@ namespace {
       }
 
       return SILFunctionType::get(nullptr, origType->getExtInfo(),
+                                  origType->getCoroutineKind(),
                                   origType->getCalleeConvention(), substParams,
-                                  substResults, substErrorResult,
+                                  substYields, substResults, substErrorResult,
                                   getASTContext(), witnessMethodConformance);
     }
 
@@ -2265,6 +2276,10 @@ namespace {
 
     SILResultInfo subst(SILResultInfo orig) {
       return SILResultInfo(visit(orig.getType()), orig.getConvention());
+    }
+
+    SILYieldInfo subst(SILYieldInfo orig) {
+      return SILYieldInfo(visit(orig.getType()), orig.getConvention());
     }
 
     SILParameterInfo subst(SILParameterInfo orig) {
@@ -2486,7 +2501,7 @@ getAbstractionPatternForConstant(ASTContext &ctx, SILDeclRef constant,
 TypeConverter::LoweredFormalTypes
 TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
                                      CanAnyFunctionType fnType) {
-  unsigned uncurryLevel = constant.getUncurryLevel();
+  unsigned uncurryLevel = constant.getParameterListCount() - 1;
   auto extInfo = fnType->getExtInfo();
 
   // Form an abstraction pattern for bridging purposes.

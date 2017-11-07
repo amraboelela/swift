@@ -1042,8 +1042,11 @@ emitRValueForDecl(SILLocation loc, ConcreteDeclRef declRef, Type ncRefType,
   // If the referenced decl isn't a VarDecl, it should be a constant of some
   // sort.
   SILDeclRef silDeclRef(decl);
-  if (silDeclRef.getUncurryLevel() > 0)
+  if (silDeclRef.getParameterListCount() == 2) {
+    // Unqualified reference to an instance method from a static context,
+    // without applying 'self'.
     silDeclRef = silDeclRef.asCurried();
+  }
 
   ManagedValue result = emitClosureValue(loc, silDeclRef, refType,
                                          declRef.getSubstitutions());
@@ -3029,8 +3032,9 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenFunction &SGF,
     SILFunctionType::ExtInfo(SILFunctionType::Representation::Thin,
                              /*pseudogeneric*/ false,
                              /*noescape*/ false),
+    SILCoroutineKind::None,
     ParameterConvention::Direct_Unowned,
-    params, result, None, SGF.getASTContext());
+    params, {}, result, None, SGF.getASTContext());
   
   // Find the function and see if we already created it.
   SmallVector<CanType, 2> interfaceSubs;
@@ -3149,8 +3153,9 @@ SILFunction *getOrCreateKeyPathSetter(SILGenFunction &SGF,
     SILFunctionType::ExtInfo(SILFunctionType::Representation::Thin,
                              /*pseudogeneric*/ false,
                              /*noescape*/ false),
+    SILCoroutineKind::None,
     ParameterConvention::Direct_Unowned,
-    params, {}, None, SGF.getASTContext());
+    params, {}, {}, None, SGF.getASTContext());
   
   // Mangle the name of the thunk to see if we already created it.
   SmallString<64> nameBuf;
@@ -3317,8 +3322,9 @@ getOrCreateKeyPathEqualsAndHash(SILGenFunction &SGF,
       SILFunctionType::ExtInfo(SILFunctionType::Representation::Thin,
                                /*pseudogeneric*/ false,
                                /*noescape*/ false),
+    SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
-      params, results, None, C);
+      params, /*yields*/ {}, results, None, C);
     
     // Mangle the name of the thunk to see if we already created it.
     SmallString<64> nameBuf;
@@ -3483,8 +3489,9 @@ getOrCreateKeyPathEqualsAndHash(SILGenFunction &SGF,
       SILFunctionType::ExtInfo(SILFunctionType::Representation::Thin,
                                /*pseudogeneric*/ false,
                                /*noescape*/ false),
+      SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
-      params, results, None, C);
+      params, /*yields*/ {}, results, None, C);
     
     // Mangle the name of the thunk to see if we already created it.
     SmallString<64> nameBuf;

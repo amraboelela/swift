@@ -351,7 +351,7 @@ void SILDeclRef::print(raw_ostream &OS) const {
     break;
   }
 
-  auto uncurryLevel = getUncurryLevel();
+  auto uncurryLevel = getParameterListCount() - 1;
   if (uncurryLevel != 0)
     OS << (isDot ? '.' : '!')  << uncurryLevel;
 
@@ -1852,6 +1852,21 @@ public:
   
   void visitThrowInst(ThrowInst *TI) {
     *this << getIDAndType(TI->getOperand());
+  }
+
+  void visitUnwindInst(UnwindInst *UI) {
+    // no operands
+  }
+
+  void visitYieldInst(YieldInst *YI) {
+    auto values = YI->getYieldedValues();
+    if (values.size() != 1) *this << '(';
+    interleave(values,
+               [&](SILValue value) { *this << getIDAndType(value); },
+               [&] { *this << ", "; });
+    if (values.size() != 1) *this << ')';
+    *this << ", resume " << Ctx.getID(YI->getResumeBB())
+          << ", unwind " << Ctx.getID(YI->getUnwindBB());
   }
 
   void visitSwitchValueInst(SwitchValueInst *SII) {
