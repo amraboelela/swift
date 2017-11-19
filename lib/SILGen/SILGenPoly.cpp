@@ -60,8 +60,11 @@
 // Witness thunks
 // ==============
 //
-// Currently protocol witness methods are called with an additional generic
-// parameter bound to the Self type, and thus always require a thunk.
+// Protocol witness methods are called with an additional generic parameter
+// bound to the Self type, and thus always require a thunk. Thunks are also
+// required for conditional conformances, since the extra requirements aren't
+// part of the protocol and so any witness tables need to be loaded from the
+// original protocol's witness table and passed into the real witness method.
 //
 // Thunks for class method witnesses dispatch through the vtable allowing
 // inherited witnesses to be overridden in subclasses. Hence a witness thunk
@@ -2817,12 +2820,15 @@ CanSILFunctionType SILGenFunction::buildThunkType(
       extInfo = extInfo.withIsPseudogeneric();
 
   // Add the function type as the parameter.
+  auto contextConvention = SGM.M.getOptions().EnableGuaranteedClosureContexts
+                               ? ParameterConvention::Direct_Guaranteed
+                               : DefaultThickCalleeConvention;
   SmallVector<SILParameterInfo, 4> params;
   params.append(expectedType->getParameters().begin(),
                 expectedType->getParameters().end());
   params.push_back({sourceType,
                     sourceType->getExtInfo().hasContext()
-                      ? DefaultThickCalleeConvention
+                      ? contextConvention
                       : ParameterConvention::Direct_Unowned});
 
   // Map the parameter and expected types out of context to get the interface
@@ -2830,8 +2836,7 @@ CanSILFunctionType SILGenFunction::buildThunkType(
   SmallVector<SILParameterInfo, 4> interfaceParams;
   interfaceParams.reserve(params.size());
   for (auto &param : params) {
-    auto paramIfaceTy = GenericEnvironment::mapTypeOutOfContext(
-        genericEnv, param.getType());
+    auto paramIfaceTy = param.getType()->mapTypeOutOfContext();
     interfaceParams.push_back(
       SILParameterInfo(paramIfaceTy->getCanonicalType(genericSig),
                        param.getConvention()));
@@ -2839,8 +2844,7 @@ CanSILFunctionType SILGenFunction::buildThunkType(
 
   SmallVector<SILYieldInfo, 4> interfaceYields;
   for (auto &yield : expectedType->getYields()) {
-    auto yieldIfaceTy = GenericEnvironment::mapTypeOutOfContext(
-        genericEnv, yield.getType());
+    auto yieldIfaceTy = yield.getType()->mapTypeOutOfContext();
     auto interfaceYield =
       yield.getWithType(yieldIfaceTy->getCanonicalType(genericSig));
     interfaceYields.push_back(interfaceYield);
@@ -2848,8 +2852,7 @@ CanSILFunctionType SILGenFunction::buildThunkType(
 
   SmallVector<SILResultInfo, 4> interfaceResults;
   for (auto &result : expectedType->getResults()) {
-    auto resultIfaceTy = GenericEnvironment::mapTypeOutOfContext(
-        genericEnv, result.getType());
+    auto resultIfaceTy = result.getType()->mapTypeOutOfContext();
     auto interfaceResult =
       result.getWithType(resultIfaceTy->getCanonicalType(genericSig));
     interfaceResults.push_back(interfaceResult);
@@ -2858,8 +2861,7 @@ CanSILFunctionType SILGenFunction::buildThunkType(
   Optional<SILResultInfo> interfaceErrorResult;
   if (expectedType->hasErrorResult()) {
     auto errorResult = expectedType->getErrorResult();
-    auto errorIfaceTy = GenericEnvironment::mapTypeOutOfContext(
-        genericEnv, errorResult.getType());
+    auto errorIfaceTy = errorResult.getType()->mapTypeOutOfContext();
     interfaceErrorResult = SILResultInfo(
         errorIfaceTy->getCanonicalType(genericSig),
         expectedType->getErrorResult().getConvention());
@@ -2901,7 +2903,6 @@ static ManagedValue createThunk(SILGenFunction &SGF,
                                       genericEnv,
                                       interfaceSubs);
   auto thunk = SGF.SGM.getOrCreateReabstractionThunk(
-                                       genericEnv,
                                        thunkType,
                                        sourceType,
                                        toType,
@@ -2984,9 +2985,8 @@ ManagedValue Transform::transformFunction(ManagedValue fn,
   // Apply any ABI-compatible conversions before doing thin-to-thick.
   if (fnType != newFnType) {
     SILType resTy = SILType::getPrimitiveObjectType(newFnType);
-    fn = ManagedValue(
-        SGF.B.createConvertFunction(Loc, fn.getValue(), resTy),
-        fn.getCleanup());
+    fn = SGF.emitManagedRValueWithCleanup(
+        SGF.B.createConvertFunction(Loc, fn.forward(SGF), resTy));
   }
 
   // Now do thin-to-thick if necessary.
@@ -3284,9 +3284,7 @@ getWitnessFunctionRef(SILGenFunction &SGF,
     return SGF.emitDynamicMethodRef(loc, witness, witnessFTy);
   case WitnessDispatchKind::Class: {
     SILValue selfPtr = witnessParams.back().getValue();
-    assert(!witness.isForeign);
-    return SGF.B.createClassMethod(loc, selfPtr, witness,
-                                   SILType::getPrimitiveObjectType(witnessFTy));
+    return SGF.emitClassMethodRef(loc, selfPtr, witness, witnessFTy);
   }
   }
 

@@ -1418,7 +1418,15 @@ static void diagSyntacticUseRestrictions(TypeChecker &TC, const Expr *E,
     ///       x == nil    // also !=
     ///
     void checkOptionalPromotions(ApplyExpr *call) {
-      auto DRE = dyn_cast<DeclRefExpr>(call->getSemanticFn());
+      // We only care about binary expressions.
+      if (!isa<BinaryExpr>(call)) return;
+
+      // Dig out the function we're calling.
+      auto fnExpr = call->getSemanticFn();
+      if (auto dotSyntax = dyn_cast<DotSyntaxCallExpr>(fnExpr))
+        fnExpr = dotSyntax->getSemanticFn();
+
+      auto DRE = dyn_cast<DeclRefExpr>(fnExpr);
       auto args = dyn_cast<TupleExpr>(call->getArg());
       if (!DRE || !DRE->getDecl()->isOperator() ||
           !args || args->getNumElements() != 2)
@@ -3724,21 +3732,12 @@ Optional<DeclName> TypeChecker::omitNeedlessWords(AbstractFunctionDecl *afd) {
   if (params->size() != 0 && !params->get(0)->getName().empty())
     firstParamName = params->get(0)->getName().str();
 
-  // Find the set of property names.
-  const InheritedNameSet *allPropertyNames = nullptr;
-  if (contextType) {
-    if (auto classDecl = contextType->getClassOrBoundGenericClass()) {
-      allPropertyNames = Context.getAllPropertyNames(classDecl,
-                                                     afd->isInstanceMember());
-    }
-  }
-
   StringScratchSpace scratch;
   if (!swift::omitNeedlessWords(baseNameStr, argNameStrs, firstParamName,
                                 getTypeNameForOmission(resultType),
                                 getTypeNameForOmission(contextType),
                                 paramTypes, returnsSelf, false,
-                                allPropertyNames, scratch))
+                                /*allPropertyNames=*/nullptr, scratch))
     return None;
 
   /// Retrieve a replacement identifier.
@@ -3790,23 +3789,13 @@ Optional<Identifier> TypeChecker::omitNeedlessWords(VarDecl *var) {
   while (auto optObjectTy = type->getAnyOptionalObjectType())
     type = optObjectTy;
 
-  // Find the set of property names.
-  const InheritedNameSet *allPropertyNames = nullptr;
-  if (contextType) {
-    if (auto classDecl = contextType->getClassOrBoundGenericClass()) {
-      allPropertyNames = Context.getAllPropertyNames(classDecl,
-                                                     var->isInstanceMember());
-    }
-  }
-
-
   // Omit needless words.
   StringScratchSpace scratch;
   OmissionTypeName typeName = getTypeNameForOmission(var->getInterfaceType());
   OmissionTypeName contextTypeName = getTypeNameForOmission(contextType);
   if (::omitNeedlessWords(name, { }, "", typeName, contextTypeName, { },
-                          /*returnsSelf=*/false, true, allPropertyNames,
-                          scratch)) {
+                          /*returnsSelf=*/false, true,
+                          /*allPropertyNames=*/nullptr, scratch)) {
     return Context.getIdentifier(name);
   }
 

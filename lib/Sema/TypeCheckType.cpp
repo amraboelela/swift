@@ -458,6 +458,14 @@ Type TypeChecker::applyGenericArguments(Type type, TypeDecl *decl,
     }  
   }
 
+  // Cannot extend a bound generic type.
+  if (options.contains(TR_ExtensionBinding)) {
+    diagnose(loc, diag::extension_specialization,
+             genericDecl->getName())
+      .highlight(generic->getSourceRange());
+    return ErrorType::get(Context);
+  }
+
   // FIXME: More principled handling of circularity.
   if (!genericDecl->hasValidSignature()) {
     diagnose(loc, diag::recursive_type_reference,
@@ -676,22 +684,26 @@ static Type resolveTypeDecl(TypeChecker &TC, TypeDecl *typeDecl, SourceLoc loc,
                             UnsatisfiedDependency *unsatisfiedDependency) {
   assert(fromDC && "No declaration context for type resolution?");
 
-  // If we have a callback to report dependencies, do so.
-  if (unsatisfiedDependency) {
-    if ((*unsatisfiedDependency)(requestResolveTypeDecl(typeDecl)))
-      return nullptr;
-  } else {
-    // Validate the declaration.
-    TC.validateDeclForNameLookup(typeDecl);
-  }
+  // Don't validate nominal type declarations during extension binding.
+  if (!options.contains(TR_ExtensionBinding) ||
+      !isa<NominalTypeDecl>(typeDecl)) {
+    // If we have a callback to report dependencies, do so.
+    if (unsatisfiedDependency) {
+      if ((*unsatisfiedDependency)(requestResolveTypeDecl(typeDecl)))
+        return nullptr;
+    } else {
+      // Validate the declaration.
+      TC.validateDeclForNameLookup(typeDecl);
+    }
 
-  // If we didn't bail out with an unsatisfiedDependency,
-  // and were not able to validate recursively, bail out.
-  if (!typeDecl->hasInterfaceType()) {
-    TC.diagnose(loc, diag::recursive_type_reference,
-                typeDecl->getDescriptiveKind(), typeDecl->getName());
-    TC.diagnose(typeDecl->getLoc(), diag::type_declared_here);
-    return ErrorType::get(TC.Context);
+    // If we didn't bail out with an unsatisfiedDependency,
+    // and were not able to validate recursively, bail out.
+    if (!typeDecl->hasInterfaceType()) {
+      TC.diagnose(loc, diag::recursive_type_reference,
+                  typeDecl->getDescriptiveKind(), typeDecl->getName());
+      TC.diagnose(typeDecl->getLoc(), diag::type_declared_here);
+      return ErrorType::get(TC.Context);
+    }
   }
 
   // Resolve the type declaration to a specific type. How this occurs
@@ -2334,8 +2346,8 @@ Type TypeResolver::resolveASTFunctionType(FunctionTypeRepr *repr,
 
   // SIL uses polymorphic function types to resolve overloaded member functions.
   if (auto genericEnv = repr->getGenericEnvironment()) {
-    inputTy = genericEnv->mapTypeOutOfContext(inputTy);
-    outputTy = genericEnv->mapTypeOutOfContext(outputTy);
+    inputTy = inputTy->mapTypeOutOfContext();
+    outputTy = outputTy->mapTypeOutOfContext();
     return GenericFunctionType::get(genericEnv->getGenericSignature(),
                                     inputTy, outputTy, extInfo);
   }
@@ -2394,7 +2406,7 @@ Type TypeResolver::resolveSILBoxType(SILBoxTypeRepr *repr,
     genericSig = genericEnv->getGenericSignature()->getCanonicalSignature();
     
     for (auto &field : fields) {
-      auto transTy = genericEnv->mapTypeOutOfContext(field.getLoweredType());
+      auto transTy = field.getLoweredType()->mapTypeOutOfContext();
       field = {transTy->getCanonicalType(), field.isMutable()};
     }
   }
@@ -2535,24 +2547,24 @@ Type TypeResolver::resolveSILFunctionType(FunctionTypeRepr *repr,
     genericSig = genericEnv->getGenericSignature()->getCanonicalSignature();
  
     for (auto &param : params) {
-      auto transParamType = genericEnv->mapTypeOutOfContext(
-          param.getType())->getCanonicalType();
+      auto transParamType = param.getType()->mapTypeOutOfContext()
+          ->getCanonicalType();
       interfaceParams.push_back(param.getWithType(transParamType));
     }
     for (auto &yield : yields) {
-      auto transYieldType = genericEnv->mapTypeOutOfContext(
-          yield.getType())->getCanonicalType();
+      auto transYieldType = yield.getType()->mapTypeOutOfContext()
+          ->getCanonicalType();
       interfaceYields.push_back(yield.getWithType(transYieldType));
     }
     for (auto &result : results) {
-      auto transResultType = genericEnv->mapTypeOutOfContext(
-          result.getType())->getCanonicalType();
+      auto transResultType = result.getType()->mapTypeOutOfContext()
+          ->getCanonicalType();
       interfaceResults.push_back(result.getWithType(transResultType));
     }
 
     if (errorResult) {
-      auto transErrorResultType = genericEnv->mapTypeOutOfContext(
-          errorResult->getType())->getCanonicalType();
+      auto transErrorResultType = errorResult->getType()->mapTypeOutOfContext()
+          ->getCanonicalType();
       interfaceErrorResult =
         errorResult->getWithType(transErrorResultType);
     }

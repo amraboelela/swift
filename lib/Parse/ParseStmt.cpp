@@ -592,17 +592,14 @@ ParserResult<BraceStmt> Parser::parseBraceItemList(Diag<> ID) {
   }
   SyntaxParsingContextChild LocalContext(SyntaxContext, SyntaxKind::CodeBlock);
   SourceLoc LBLoc = consumeToken(tok::l_brace);
-  LocalContext.addTokenSyntax(LBLoc);
 
   SmallVector<ASTNode, 16> Entries;
   SourceLoc RBLoc;
 
   ParserStatus Status = parseBraceItems(Entries, BraceItemListKind::Brace,
                                         BraceItemListKind::Brace);
-  if (!parseMatchingToken(tok::r_brace, RBLoc,
-                          diag::expected_rbrace_in_brace_stmt, LBLoc)) {
-    LocalContext.addTokenSyntax(RBLoc);
-  }
+  parseMatchingToken(tok::r_brace, RBLoc,
+                     diag::expected_rbrace_in_brace_stmt, LBLoc);
 
   return makeParserResult(Status,
                           BraceStmt::create(Context, LBLoc, Entries, RBLoc));
@@ -659,6 +656,7 @@ ParserResult<Stmt> Parser::parseStmtContinue() {
 ///     'return' expr?
 ///   
 ParserResult<Stmt> Parser::parseStmtReturn(SourceLoc tryLoc) {
+  SyntaxParsingContextChild LocalContext(SyntaxContext, SyntaxKind::ReturnStmt);
   SourceLoc ReturnLoc = consumeToken(tok::kw_return);
 
   if (Tok.is(tok::code_complete)) {

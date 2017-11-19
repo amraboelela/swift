@@ -305,11 +305,6 @@ Type DeclContext::mapTypeIntoContext(Type type) const {
       getGenericEnvironmentOfContext(), type);
 }
 
-Type DeclContext::mapTypeOutOfContext(Type type) const {
-  return GenericEnvironment::mapTypeOutOfContext(
-      getGenericEnvironmentOfContext(), type);
-}
-
 DeclContext *DeclContext::getLocalContext() {
   if (isLocalContext())
     return this;
@@ -434,6 +429,23 @@ DeclContext *DeclContext::getParentForLookup() const {
       return getModuleScopeContext();
   }
   return getParent();
+}
+
+DeclContext *DeclContext::getCommonParentContext(DeclContext *A,
+                                                 DeclContext *B) {
+  if (A == B)
+    return A;
+
+  if (A->isChildContextOf(B))
+    return B;
+
+  // Peel away layers of A until we reach a common parent
+  for (DeclContext *CurDC = A; CurDC; CurDC = CurDC->getParent()) {
+    if (B->isChildContextOf(CurDC))
+      return CurDC;
+  }
+
+  return nullptr;
 }
 
 ModuleDecl *DeclContext::getParentModule() const {

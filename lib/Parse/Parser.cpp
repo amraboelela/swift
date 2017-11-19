@@ -35,6 +35,7 @@
 #include "llvm/ADT/Twine.h"
 
 using namespace swift;
+using namespace swift::syntax;
 
 void DelayedParsingCallbacks::anchor() { }
 void SILParserTUStateBase::anchor() { }
@@ -126,6 +127,14 @@ static void parseDelayedDecl(
     CodeCompletion->doneParsing();
 }
 } // unnamed namespace
+
+
+swift::Parser::BacktrackingScope::~BacktrackingScope() {
+  if (Backtrack) {
+    P.backtrackToPosition(PP);
+    DT.abort();
+  }
+}
 
 void swift::performDelayedParsing(
     DeclContext *DC, PersistentParserState &PersistentState,
@@ -438,8 +447,8 @@ Parser::Parser(std::unique_ptr<Lexer> Lex, SourceFile &SF,
     TokReceiver(SF.shouldKeepSyntaxInfo() ?
                 new TokenRecorder(SF) :
                 new ConsumeTokenReceiver()),
-    SyntaxContext(new syntax::SyntaxParsingContextRoot(SF, L->getBufferID(), Tok)) {
-
+    SyntaxContext(new syntax::SyntaxParsingContextRoot(SF, L->getBufferID(),
+                                                       Tok)) {
   State = PersistentState;
   if (!State) {
     OwnedState.reset(new PersistentParserState());
@@ -817,12 +826,33 @@ bool Parser::parseMatchingToken(tok K, SourceLoc &TokLoc, Diag<> ErrorDiag,
   return false;
 }
 
+static Optional<SyntaxKind> getListElementKind(SyntaxKind ListKind) {
+  switch (ListKind) {
+  case SyntaxKind::FunctionCallArgumentList:
+    return SyntaxKind::FunctionCallArgument;
+  case SyntaxKind::ArrayElementList:
+    return SyntaxKind::ArrayElement;
+  case SyntaxKind::DictionaryElementList:
+    return SyntaxKind::DictionaryElement;
+  default:
+    return None;
+  }
+}
+
 ParserStatus
 Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
-                  bool AllowSepAfterLast, Diag<> ErrorDiag,
+                  bool AllowSepAfterLast, Diag<> ErrorDiag, SyntaxKind Kind,
                   std::function<ParserStatus()> callback) {
+  SyntaxParsingContextChild ListContext(SyntaxContext);
+  Optional<SyntaxKind> ElementKind = getListElementKind(Kind);
+  if (ElementKind)
+    ListContext.setSyntaxKind(Kind);
+  else
+    // FIXME: we shouldn't need this when all cases are handled.
+    ListContext.disable();
 
   if (Tok.is(RightK)) {
+    ListContext.finalize();
     RightLoc = consumeToken(RightK);
     return makeParserSuccess();
   }
@@ -835,6 +865,12 @@ Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
       consumeToken();
     }
     SourceLoc StartLoc = Tok.getLoc();
+    SyntaxParsingContextChild ElementContext(SyntaxContext);
+    if (ElementKind) {
+      ElementContext.setSyntaxKind(*ElementKind);
+    } else {
+      ElementContext.disable();
+    }
     Status |= callback();
     if (Tok.is(RightK))
       break;
@@ -878,6 +914,7 @@ Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
     Status.setIsParseError();
   }
 
+  ListContext.finalize();
   if (Status.isError()) {
     // If we've already got errors, don't emit missing RightK diagnostics.
     RightLoc = Tok.is(RightK) ? consumeToken() : PreviousLoc;

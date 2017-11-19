@@ -625,7 +625,7 @@ NormalProtocolConformance *ModuleFile::readNormalConformance(
 
   ASTContext &ctx = getContext();
   DeclContext *dc = getDeclContext(contextID);
-  Type conformingType = dc->getDeclaredTypeInContext();
+  Type conformingType = dc->getDeclaredInterfaceType();
   PrettyStackTraceType trace(ctx, "reading conformance for", conformingType);
 
   auto proto = cast<ProtocolDecl>(getDecl(protoID));
@@ -1277,9 +1277,18 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
     DeclBaseName name = getDeclBaseName(IID);
     pathTrace.addValue(name);
 
-    Type filterTy = getType(TID);
-    if (!isType)
+    Type filterTy;
+    if (!isType) {
+      auto maybeType = getTypeChecked(TID);
+      if (!maybeType) {
+        // FIXME: Don't throw away the inner error's information.
+        llvm::consumeError(maybeType.takeError());
+        return llvm::make_error<XRefError>("couldn't decode type",
+                                           pathTrace, name);
+      }
+      filterTy = maybeType.get();
       pathTrace.addType(filterTy);
+    }
 
     baseModule->lookupQualified(ModuleType::get(baseModule), name,
                                 NL_QualifiedDefault | NL_KnownNoDependency,
@@ -1482,9 +1491,18 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
 
       pathTrace.addValue(memberName);
 
-      Type filterTy = getType(TID);
-      if (!isType)
+      Type filterTy;
+      if (!isType) {
+        auto maybeType = getTypeChecked(TID);
+        if (!maybeType) {
+          // FIXME: Don't throw away the inner error's information.
+          llvm::consumeError(maybeType.takeError());
+          return llvm::make_error<XRefError>("couldn't decode type",
+                                             pathTrace, memberName);
+        }
+        filterTy = maybeType.get();
         pathTrace.addType(filterTy);
+      }
 
       if (values.size() != 1) {
         return llvm::make_error<XRefError>("multiple matching base values",
@@ -2148,7 +2166,10 @@ ModuleFile::getDeclChecked(DeclID DID, Optional<DeclContext *> ForcedContext) {
   Expected<Decl *> deserialized = getDeclCheckedImpl(DID, ForcedContext);
   if (deserialized && deserialized.get()) {
     if (auto *IDC = dyn_cast<IterableDeclContext>(deserialized.get())) {
-      if (IDC->wasDeserialized()) {
+      // Only set the DeclID on the returned Decl if it's one that was loaded
+      // and _wasn't_ one that had its DeclID set elsewhere (a followed XREF).
+      if (IDC->wasDeserialized() &&
+          static_cast<uint32_t>(IDC->getDeclID()) == 0) {
         IDC->setDeclID(DID);
       }
     }
@@ -2312,6 +2333,14 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
         serialization::decls_block::InlineDeclAttrLayout::readRecord(
             scratch, kind);
         Attr = new (ctx) InlineAttr((InlineKind)kind);
+        break;
+      }
+
+      case decls_block::Optimize_DECL_ATTR: {
+        unsigned kind;
+        serialization::decls_block::OptimizeDeclAttrLayout::readRecord(
+            scratch, kind);
+        Attr = new (ctx) OptimizeAttr((OptimizationMode)kind);
         break;
       }
 
@@ -2485,11 +2514,22 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     bool isImplicit;
     GenericEnvironmentID genericEnvID;
     uint8_t rawAccessLevel;
+    ArrayRef<uint64_t> dependencyIDs;
 
     decls_block::TypeAliasLayout::readRecord(scratch, nameID, contextID,
                                              underlyingTypeID, interfaceTypeID,
                                              isImplicit, genericEnvID,
-                                             rawAccessLevel);
+                                             rawAccessLevel, dependencyIDs);
+
+    Identifier name = getIdentifier(nameID);
+
+    for (TypeID dependencyID : dependencyIDs) {
+      auto dependency = getTypeChecked(dependencyID);
+      if (!dependency) {
+        return llvm::make_error<TypeError>(
+            name, takeErrorInfo(dependency.takeError()));
+      }
+    }
 
     auto DC = ForcedContext ? *ForcedContext : getDeclContext(contextID);
 
@@ -2497,8 +2537,7 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     if (declOrOffset.isComplete())
       return declOrOffset;
 
-    auto alias = createDecl<TypeAliasDecl>(SourceLoc(), SourceLoc(),
-                                           getIdentifier(nameID),
+    auto alias = createDecl<TypeAliasDecl>(SourceLoc(), SourceLoc(), name,
                                            SourceLoc(), genericParams, DC);
     declOrOffset = alias;
 
@@ -2833,8 +2872,30 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     for (TypeID dependencyID : dependencyIDs) {
       auto dependency = getTypeChecked(dependencyID);
       if (!dependency) {
+        // Stored properties in classes still impact class object layout because
+        // their offset is computed and stored in the field offset vector.
+        DeclDeserializationError::Flags flags;
+        
+        if (!isStatic) {
+          switch ((StorageKind)storageKind) {
+          case StorageKind::Stored:
+          case StorageKind::StoredWithObservers:
+          case StorageKind::StoredWithTrivialAccessors:
+            flags |= DeclDeserializationError::Flag::NeedsFieldOffsetVectorEntry;
+            break;
+            
+          case StorageKind::Addressed:
+          case StorageKind::AddressedWithObservers:
+          case StorageKind::AddressedWithTrivialAccessors:
+          case StorageKind::Computed:
+          case StorageKind::ComputedWithMutableAddress:
+          case StorageKind::InheritedWithObservers:
+            break;
+          }
+        }
+        
         return llvm::make_error<TypeError>(
-            name, takeErrorInfo(dependency.takeError()));
+            name, takeErrorInfo(dependency.takeError()), flags);
       }
     }
 
@@ -4651,6 +4712,9 @@ Decl *handleErrorAndSupplyMissingClassMember(ASTContext &context,
     } else if (error.needsVTableEntry()) {
       suppliedMissingMember = MissingMemberDecl::forMethod(
           context, containingClass, error.getName(), error.needsVTableEntry());
+    } else if (error.needsFieldOffsetVectorEntry()) {
+      suppliedMissingMember = MissingMemberDecl::forStoredProperty(
+          context, containingClass, error.getName());
     }
     // FIXME: Handle other kinds of missing members: properties,
     // subscripts, and methods that don't need vtable entries.
