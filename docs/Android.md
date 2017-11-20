@@ -33,7 +33,7 @@ To follow along with this guide, you'll need:
    Ubuntu 16.04 or Ubuntu 15.10 (Ubuntu 14.04 has not been tested recently).
    The stdlib is currently only buildable for Android from a Linux environment.
    Before attempting to build for Android, please make sure you are able to build
-   for Linux by following the instructions in the Swift project README.
+   for Linux by following the instructions in the Swift project [README](../README.md).
 2. The latest version of the Android NDK (r14 at the time of this writing),
    available to download here:
    http://developer.android.com/ndk/downloads/index.html
