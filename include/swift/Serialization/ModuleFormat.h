@@ -54,7 +54,7 @@ const uint16_t VERSION_MAJOR = 0;
 /// in source control, you should also update the comment to briefly
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
-const uint16_t VERSION_MINOR = 381; // Last change: generic signature
+const uint16_t VERSION_MINOR = 388; // Last change: Outlined Destroy
 
 using DeclIDField = BCFixed<31>;
 
@@ -819,7 +819,8 @@ namespace decls_block {
     TypeIDField, // interface type (no longer used)
     BCFixed<1>,  // implicit flag
     GenericEnvironmentIDField, // generic environment
-    AccessLevelField // access level
+    AccessLevelField, // access level
+    BCArray<TypeIDField> // dependency types
     // Trailed by generic parameters (if any).
   >;
 
@@ -1399,6 +1400,11 @@ namespace decls_block {
   using InlineDeclAttrLayout = BCRecordLayout<
     Inline_DECL_ATTR,
     BCFixed<2>  // inline value
+  >;
+
+  using OptimizeDeclAttrLayout = BCRecordLayout<
+    Optimize_DECL_ATTR,
+    BCFixed<2>  // optimize value
   >;
 
   // Encodes a VersionTuple:

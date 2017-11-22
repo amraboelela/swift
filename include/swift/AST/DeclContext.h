@@ -323,9 +323,6 @@ public:
   /// Map an interface type to a contextual type within this context.
   Type mapTypeIntoContext(Type type) const;
 
-  /// Map a type within this context to an interface type.
-  Type mapTypeOutOfContext(Type type) const;
-
   /// Returns this or the first local parent context, or nullptr if it is not
   /// contained in one.
   DeclContext *getLocalContext();
@@ -384,6 +381,10 @@ public:
         return true;
     return false;
   }
+
+  /// Compute a context C such that C is a parent context of A and B.
+  /// If no such context exists, return \c nullptr.
+  static DeclContext *getCommonParentContext(DeclContext *A, DeclContext *B);
 
   /// Returns the module context that contains this context.
   ModuleDecl *getParentModule() const;

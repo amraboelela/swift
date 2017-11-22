@@ -826,17 +826,33 @@ bool Parser::parseMatchingToken(tok K, SourceLoc &TokLoc, Diag<> ErrorDiag,
   return false;
 }
 
+static Optional<SyntaxKind> getListElementKind(SyntaxKind ListKind) {
+  switch (ListKind) {
+  case SyntaxKind::FunctionCallArgumentList:
+    return SyntaxKind::FunctionCallArgument;
+  case SyntaxKind::ArrayElementList:
+    return SyntaxKind::ArrayElement;
+  case SyntaxKind::DictionaryElementList:
+    return SyntaxKind::DictionaryElement;
+  default:
+    return None;
+  }
+}
+
 ParserStatus
 Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
                   bool AllowSepAfterLast, Diag<> ErrorDiag, SyntaxKind Kind,
                   std::function<ParserStatus()> callback) {
-  std::unique_ptr<SyntaxParsingContext> pListContext;
-  if (Kind == SyntaxKind::FunctionCallArgumentList) {
-    pListContext.reset(new SyntaxParsingContextChild(SyntaxContext, Kind));
-  }
+  SyntaxParsingContextChild ListContext(SyntaxContext);
+  Optional<SyntaxKind> ElementKind = getListElementKind(Kind);
+  if (ElementKind)
+    ListContext.setSyntaxKind(Kind);
+  else
+    // FIXME: we shouldn't need this when all cases are handled.
+    ListContext.disable();
 
   if (Tok.is(RightK)) {
-    pListContext.reset();
+    ListContext.finalize();
     RightLoc = consumeToken(RightK);
     return makeParserSuccess();
   }
@@ -849,10 +865,11 @@ Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
       consumeToken();
     }
     SourceLoc StartLoc = Tok.getLoc();
-    std::unique_ptr<SyntaxParsingContext> pElementContext;
-    if (Kind == SyntaxKind::FunctionCallArgumentList) {
-      pElementContext.reset(new SyntaxParsingContextChild(SyntaxContext,
-                                            SyntaxKind::FunctionCallArgument));
+    SyntaxParsingContextChild ElementContext(SyntaxContext);
+    if (ElementKind) {
+      ElementContext.setSyntaxKind(*ElementKind);
+    } else {
+      ElementContext.disable();
     }
     Status |= callback();
     if (Tok.is(RightK))
@@ -897,7 +914,7 @@ Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
     Status.setIsParseError();
   }
 
-  pListContext.reset();
+  ListContext.finalize();
   if (Status.isError()) {
     // If we've already got errors, don't emit missing RightK diagnostics.
     RightLoc = Tok.is(RightK) ? consumeToken() : PreviousLoc;

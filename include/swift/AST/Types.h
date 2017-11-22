@@ -524,6 +524,9 @@ public:
   /// underlying type.
   Type eraseDynamicSelfType();
 
+  /// Map a contextual type to an interface type.
+  Type mapTypeOutOfContext();
+
   /// \brief Compute and return the set of type variables that occur within this
   /// type.
   ///
@@ -3797,7 +3800,23 @@ public:
   }
 };
 DEFINE_EMPTY_CAN_TYPE_WRAPPER(SILBlockStorageType, Type)
-  
+
+/// A singleton 'token' type, which establishes a formal dependency
+/// between two SIL nodes.  A token 'value' cannot be abstracted in
+/// SIL: it cannot be returned, yielded, or passed as a function or
+/// block argument.
+class SILTokenType final : public TypeBase {
+  friend class ASTContext;
+  SILTokenType(const ASTContext &C)
+    : TypeBase(TypeKind::SILToken, &C, RecursiveTypeProperties()) {}
+public:
+  // The singleton instance of this type is ASTContext::TheSILTokenType.
+
+  static bool classof(const TypeBase *T) {
+    return T->getKind() == TypeKind::SILToken;
+  }
+};
+DEFINE_EMPTY_CAN_TYPE_WRAPPER(SILTokenType, Type)
 
 /// A type with a special syntax that is always sugar for a library type.
 ///

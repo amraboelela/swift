@@ -21,10 +21,6 @@ def triple : Separate<["-"], "triple">, Alias<target>;
 def color_diagnostics : Flag<["-"], "color-diagnostics">,
   HelpText<"Print diagnostics in color">;
 
-def delayed_function_body_parsing :
-  Flag<["-"], "delayed-function-body-parsing">,
-  HelpText<"Delay function body parsing until the end of all files">;
-
 def primary_file : Separate<["-"], "primary-file">,
   HelpText<"Produce output for this file, not the whole module">;
 
@@ -196,9 +192,6 @@ def enable_guaranteed_closure_contexts : Flag<["-"], "enable-guaranteed-closure-
 
 def disable_sil_partial_apply : Flag<["-"], "disable-sil-partial-apply">,
   HelpText<"Disable use of partial_apply in SIL generation">;
-
-def remove_runtime_asserts : Flag<["-"], "remove-runtime-asserts">,
-  HelpText<"Remove runtime asserts.">;
 
 def disable_access_control : Flag<["-"], "disable-access-control">,
   HelpText<"Don't respect access control restrictions">;

@@ -63,6 +63,20 @@ template <typename DerivedT> std::string Remark<DerivedT>::getMsg() const {
   return OS.str();
 }
 
+template <typename DerivedT> std::string Remark<DerivedT>::getDebugMsg() const {
+  std::string Str;
+  llvm::raw_string_ostream OS(Str);
+
+  if (IndentDebugWidth)
+    OS << std::string(" ", IndentDebugWidth);
+
+  for (const Argument &Arg : Args)
+    OS << Arg.Val;
+
+  OS << "\n";
+  return OS.str();
+}
+
 Emitter::Emitter(StringRef PassName, SILModule &M)
     : Module(M), PassName(PassName),
       PassedEnabled(
@@ -77,6 +91,8 @@ Emitter::Emitter(StringRef PassName, SILModule &M)
 template <typename RemarkT, typename... ArgTypes>
 static void emitRemark(SILModule &Module, const Remark<RemarkT> &R,
                        Diag<ArgTypes...> ID, bool DiagEnabled) {
+  if (R.getLocation().isInvalid())
+    return;
   if (auto *Out = Module.getOptRecordStream())
     // YAMLTraits takes a non-const reference even when outputting.
     *Out << const_cast<Remark<RemarkT> &>(R);
@@ -90,6 +106,14 @@ void Emitter::emit(const RemarkPassed &R) {
 
 void Emitter::emit(const RemarkMissed &R) {
   emitRemark(Module, R, diag::opt_remark_missed, isEnabled<RemarkMissed>());
+}
+
+void Emitter::emitDebug(const RemarkPassed &R) {
+  llvm::dbgs() << R.getDebugMsg();
+}
+
+void Emitter::emitDebug(const RemarkMissed &R) {
+  llvm::dbgs() << R.getDebugMsg();
 }
 
 namespace llvm {

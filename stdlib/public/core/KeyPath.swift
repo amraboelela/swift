@@ -1526,7 +1526,7 @@ internal struct KeyPathBuffer {
             src: UnsafeMutableRawPointer(mutating: raw.baseAddress.unsafelyUnwrapped),
             size: UInt(MemoryLayout<T>.size))
     let result = resultBuf.pointee
-    resultBuf.deallocate(capacity: 1)
+    resultBuf.deallocate()
     return result
   }
   @_inlineable // FIXME(sil-serialize-all)
@@ -2390,8 +2390,8 @@ internal func _instantiateKeyPathBuffer(
         // offset within the metadata object.
         let metadataPtr = unsafeBitCast(base, to: UnsafeRawPointer.self)
         let offsetOfOffset = patternBuffer.pop(UInt32.self)
-        let offset = metadataPtr.load(fromByteOffset: Int(offsetOfOffset),
-                                      as: UInt32.self)
+        let offset = UInt32(metadataPtr.load(fromByteOffset: Int(offsetOfOffset),
+                                       as: UInt.self))
         // Rewrite the header for a resolved offset.
         var newHeader = header
         newHeader.payload = RawKeyPathComponent.Header.outOfLineOffsetPayload
