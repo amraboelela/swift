@@ -1492,6 +1492,17 @@ void Serializer::writeNormalConformance(
   unsigned numValueWitnesses = 0;
   unsigned numTypeWitnesses = 0;
 
+  conformance->forEachTypeWitness(/*resolver=*/nullptr,
+                                  [&](AssociatedTypeDecl *assocType,
+                                      Type type, TypeDecl *typeDecl) {
+    data.push_back(addDeclRef(assocType));
+    data.push_back(addTypeRef(type));
+    data.push_back(addDeclRef(typeDecl, /*forceSerialization*/false,
+                              /*allowTypeAliasXRef*/true));
+    ++numTypeWitnesses;
+    return false;
+  });
+
   conformance->forEachValueWitness(nullptr,
     [&](ValueDecl *req, Witness witness) {
       ++numValueWitnesses;
@@ -1519,17 +1530,6 @@ void Serializer::writeNormalConformance(
       data.push_back(witness.getSubstitutions().size());
   });
 
-  conformance->forEachTypeWitness(/*resolver=*/nullptr,
-                                  [&](AssociatedTypeDecl *assocType,
-                                      Type type, TypeDecl *typeDecl) {
-    data.push_back(addDeclRef(assocType));
-    data.push_back(addTypeRef(type));
-    data.push_back(addDeclRef(typeDecl, /*forceSerialization*/false,
-                              /*allowTypeAliasXRef*/true));
-    ++numTypeWitnesses;
-    return false;
-  });
-
   unsigned numSignatureConformances =
       conformance->getSignatureConformances().size();
 
@@ -1538,8 +1538,8 @@ void Serializer::writeNormalConformance(
   auto ownerID = addDeclContextRef(conformance->getDeclContext());
   NormalProtocolConformanceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                               addDeclRef(protocol), ownerID,
-                                              numValueWitnesses,
                                               numTypeWitnesses,
+                                              numValueWitnesses,
                                               numSignatureConformances,
                                               data);
 
@@ -1718,6 +1718,7 @@ static bool shouldSerializeMember(Decl *D) {
     llvm_unreachable("should never need to reserialize a member placeholder");
 
   case DeclKind::IfConfig:
+  case DeclKind::PoundDiagnostic:
     return false;
 
   case DeclKind::EnumCase:
@@ -1738,6 +1739,7 @@ static bool shouldSerializeMember(Decl *D) {
   case DeclKind::Var:
   case DeclKind::Param:
   case DeclKind::Func:
+  case DeclKind::Accessor:
     return true;
   }
 
@@ -1809,8 +1811,6 @@ void Serializer::writeDefaultWitnessTable(const ProtocolDecl *proto,
 
 static serialization::AccessorKind getStableAccessorKind(swift::AccessorKind K){
   switch (K) {
-  case swift::AccessorKind::NotAccessor:
-    llvm_unreachable("should only be called for actual accessors");
 #define CASE(NAME) \
   case swift::AccessorKind::Is##NAME: return serialization::NAME;
   CASE(Getter)
@@ -1868,8 +1868,16 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
 
     auto generic = cast<GenericTypeDecl>(DC);
     abbrCode = DeclTypeAbbrCodes[XRefTypePathPieceLayout::Code];
+
+    Identifier discriminator;
+    if (generic->isOutermostPrivateOrFilePrivateScope()) {
+      auto *containingFile = cast<FileUnit>(generic->getModuleScopeContext());
+      discriminator = containingFile->getDiscriminatorForPrivateValue(generic);
+    }
+
     XRefTypePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                         addDeclBaseNameRef(generic->getName()),
+                                        addDeclBaseNameRef(discriminator),
                                         false);
     break;
   }
@@ -1906,30 +1914,29 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
   }
       
   case DeclContextKind::AbstractFunctionDecl: {
-    if (auto fn = dyn_cast<FuncDecl>(DC)) {
-      if (auto storage = fn->getAccessorStorageDecl()) {
-        writeCrossReference(storage->getDeclContext(), pathLen + 2);
+    if (auto fn = dyn_cast<AccessorDecl>(DC)) {
+      auto storage = fn->getStorage();
+      writeCrossReference(storage->getDeclContext(), pathLen + 2);
 
-        Type ty = storage->getInterfaceType()->getCanonicalType();
-        IdentifierID nameID = addDeclBaseNameRef(storage->getBaseName());
-        bool isProtocolExt = fn->getDeclContext()->getAsProtocolExtensionContext();
-        abbrCode = DeclTypeAbbrCodes[XRefValuePathPieceLayout::Code];
-        XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                             addTypeRef(ty), nameID,
-                                             isProtocolExt,
-                                             storage->isStatic());
+      Type ty = storage->getInterfaceType()->getCanonicalType();
+      IdentifierID nameID = addDeclBaseNameRef(storage->getBaseName());
+      bool isProtocolExt = fn->getDeclContext()->getAsProtocolExtensionContext();
+      abbrCode = DeclTypeAbbrCodes[XRefValuePathPieceLayout::Code];
+      XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
+                                           addTypeRef(ty), nameID,
+                                           isProtocolExt,
+                                           storage->isStatic());
 
-        abbrCode =
-          DeclTypeAbbrCodes[XRefOperatorOrAccessorPathPieceLayout::Code];
-        auto emptyID = addDeclBaseNameRef(Identifier());
-        auto accessorKind = getStableAccessorKind(fn->getAccessorKind());
-        assert(!fn->isObservingAccessor() &&
-               "cannot form cross-reference to observing accessors");
-        XRefOperatorOrAccessorPathPieceLayout::emitRecord(Out, ScratchRecord,
-                                                          abbrCode, emptyID,
-                                                          accessorKind);
-        break;
-      }
+      abbrCode =
+        DeclTypeAbbrCodes[XRefOperatorOrAccessorPathPieceLayout::Code];
+      auto emptyID = addDeclBaseNameRef(Identifier());
+      auto accessorKind = getStableAccessorKind(fn->getAccessorKind());
+      assert(!fn->isObservingAccessor() &&
+             "cannot form cross-reference to observing accessors");
+      XRefOperatorOrAccessorPathPieceLayout::emitRecord(Out, ScratchRecord,
+                                                        abbrCode, emptyID,
+                                                        accessorKind);
+      break;
     }
 
     auto fn = cast<AbstractFunctionDecl>(DC);
@@ -2020,8 +2027,17 @@ void Serializer::writeCrossReference(const Decl *D) {
   bool isProtocolExt = D->getDeclContext()->getAsProtocolExtensionContext();
   if (auto type = dyn_cast<TypeDecl>(D)) {
     abbrCode = DeclTypeAbbrCodes[XRefTypePathPieceLayout::Code];
+
+    Identifier discriminator;
+    if (type->isOutermostPrivateOrFilePrivateScope()) {
+      auto *containingFile =
+         cast<FileUnit>(type->getDeclContext()->getModuleScopeContext());
+      discriminator = containingFile->getDiscriminatorForPrivateValue(type);
+    }
+
     XRefTypePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                         addDeclBaseNameRef(type->getName()),
+                                        addDeclBaseNameRef(discriminator),
                                         isProtocolExt);
     return;
   }
@@ -2160,6 +2176,7 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
   case DAK_Implements:
   case DAK_ObjCRuntimeName:
   case DAK_RestatedObjCConformance:
+  case DAK_ClangImporterSynthesizedType:
     llvm_unreachable("cannot serialize attribute");
 
   case DAK_Count:
@@ -2570,6 +2587,15 @@ static void collectDependenciesFromType(llvm::SmallSetVector<Type, 4> &seen,
   });
 }
 
+static void
+collectDependenciesFromRequirement(llvm::SmallSetVector<Type, 4> &seen,
+                                   const Requirement &req,
+                                   const ModuleDecl *excluding) {
+  collectDependenciesFromType(seen, req.getFirstType(), excluding);
+  if (req.getKind() != RequirementKind::Layout)
+    collectDependenciesFromType(seen, req.getSecondType(), excluding);
+}
+
 static SmallVector<Type, 4> collectDependenciesFromType(Type ty) {
   llvm::SmallSetVector<Type, 4> result;
   collectDependenciesFromType(result, ty, /*excluding*/nullptr);
@@ -2635,6 +2661,9 @@ void Serializer::writeDecl(const Decl *D) {
 
   case DeclKind::IfConfig:
     llvm_unreachable("#if block declarations should not be serialized");
+
+  case DeclKind::PoundDiagnostic:
+    llvm_unreachable("#warning/#error declarations should not be serialized");
 
   case DeclKind::Extension: {
     auto extension = cast<ExtensionDecl>(D);
@@ -2831,17 +2860,17 @@ void Serializer::writeDecl(const Decl *D) {
 
     auto underlying = typeAlias->getUnderlyingTypeLoc().getType();
 
-    SmallVector<TypeID, 2> dependencies;
-    for (Type dep : collectDependenciesFromType(underlying->getCanonicalType()))
-      dependencies.push_back(addTypeRef(dep));
-
+    llvm::SmallSetVector<Type, 4> dependencies;
+    collectDependenciesFromType(dependencies, underlying->getCanonicalType(),
+                                /*excluding*/nullptr);
     for (Requirement req : typeAlias->getGenericRequirements()) {
-      for (Type dep : collectDependenciesFromType(req.getFirstType()))
-        dependencies.push_back(addTypeRef(dep));
-      if (req.getKind() != RequirementKind::Layout)
-        for (Type dep : collectDependenciesFromType(req.getSecondType()))
-          dependencies.push_back(addTypeRef(dep));
+      collectDependenciesFromRequirement(dependencies, req,
+                                         /*excluding*/nullptr);
     }
+
+    SmallVector<TypeID, 4> dependencyIDs;
+    for (Type dep : dependencies)
+      dependencyIDs.push_back(addTypeRef(dep));
 
     uint8_t rawAccessLevel =
       getRawStableAccessLevel(typeAlias->getFormalAccess());
@@ -2856,7 +2885,7 @@ void Serializer::writeDecl(const Decl *D) {
                                 addGenericEnvironmentRef(
                                              typeAlias->getGenericEnvironment()),
                                 rawAccessLevel,
-                                dependencies);
+                                dependencyIDs);
     writeGenericParams(typeAlias->getGenericParams());
     break;
   }
@@ -2954,6 +2983,10 @@ void Serializer::writeDecl(const Decl *D) {
       collectDependenciesFromType(dependencyTypes,
                                   nextElt->getArgumentInterfaceType(),
                                   /*excluding*/theEnum->getParentModule());
+    }
+    for (Requirement req : theEnum->getGenericRequirements()) {
+      collectDependenciesFromRequirement(dependencyTypes, req,
+                                         /*excluding*/nullptr);
     }
     for (Type ty : dependencyTypes)
       inheritedAndDependencyTypes.push_back(addTypeRef(ty));
@@ -3135,8 +3168,6 @@ void Serializer::writeDecl(const Decl *D) {
       nameComponentsAndDependencies.push_back(addDeclBaseNameRef(argName));
 
     uint8_t rawAccessLevel = getRawStableAccessLevel(fn->getFormalAccess());
-    uint8_t rawAddressorKind =
-      getRawStableAddressorKind(fn->getAddressorKind());
     uint8_t rawDefaultArgumentResilienceExpansion =
       getRawStableResilienceExpansion(
           fn->getDefaultArgumentResilienceExpansion());
@@ -3157,16 +3188,13 @@ void Serializer::writeDecl(const Decl *D) {
                            fn->hasDynamicSelf(),
                            fn->hasForcedStaticDispatch(),
                            fn->hasThrows(),
-                           fn->getParameterLists().size(),
                            addGenericEnvironmentRef(
                                                   fn->getGenericEnvironment()),
                            addTypeRef(ty),
                            addDeclRef(fn->getOperatorDecl()),
                            addDeclRef(fn->getOverriddenDecl()),
-                           addDeclRef(fn->getAccessorStorageDecl()),
                            fn->getFullName().getArgumentNames().size() +
                              fn->getFullName().isCompoundName(),
-                           rawAddressorKind,
                            rawAccessLevel,
                            fn->needsNewVTableEntry(),
                            rawDefaultArgumentResilienceExpansion,
@@ -3175,8 +3203,64 @@ void Serializer::writeDecl(const Decl *D) {
     writeGenericParams(fn->getGenericParams());
 
     // Write the body parameters.
-    for (auto pattern : fn->getParameterLists())
-      writeParameterList(pattern);
+    writeParameterList(fn->getParameterLists().back());
+
+    if (auto errorConvention = fn->getForeignErrorConvention())
+      writeForeignErrorConvention(*errorConvention);
+
+    break;
+  }
+
+  case DeclKind::Accessor: {
+    auto fn = cast<AccessorDecl>(D);
+    verifyAttrSerializable(fn);
+
+    auto contextID = addDeclContextRef(fn->getDeclContext());
+
+    unsigned abbrCode = DeclTypeAbbrCodes[AccessorLayout::Code];
+
+    uint8_t rawAccessLevel = getRawStableAccessLevel(fn->getFormalAccess());
+    uint8_t rawAccessorKind =
+      uint8_t(getStableAccessorKind(fn->getAccessorKind()));
+    uint8_t rawAddressorKind =
+      getRawStableAddressorKind(fn->getAddressorKind());
+    uint8_t rawDefaultArgumentResilienceExpansion =
+      getRawStableResilienceExpansion(
+          fn->getDefaultArgumentResilienceExpansion());
+    Type ty = fn->getInterfaceType();
+
+    SmallVector<IdentifierID, 4> dependencies;
+    for (auto dependency : collectDependenciesFromType(ty->getCanonicalType()))
+      dependencies.push_back(addTypeRef(dependency));
+
+    AccessorLayout::emitRecord(Out, ScratchRecord, abbrCode,
+                               contextID,
+                               fn->isImplicit(),
+                               fn->isStatic(),
+                               uint8_t(getStableStaticSpelling(
+                                                  fn->getStaticSpelling())),
+                               fn->isObjC(),
+                               uint8_t(getStableSelfAccessKind(
+                                                  fn->getSelfAccessKind())),
+                               fn->hasDynamicSelf(),
+                               fn->hasForcedStaticDispatch(),
+                               fn->hasThrows(),
+                               addGenericEnvironmentRef(
+                                                  fn->getGenericEnvironment()),
+                               addTypeRef(ty),
+                               addDeclRef(fn->getOverriddenDecl()),
+                               addDeclRef(fn->getStorage()),
+                               rawAccessorKind,
+                               rawAddressorKind,
+                               rawAccessLevel,
+                               fn->needsNewVTableEntry(),
+                               rawDefaultArgumentResilienceExpansion,
+                               dependencies);
+
+    writeGenericParams(fn->getGenericParams());
+
+    // Write the body parameters.
+    writeParameterList(fn->getParameterLists().back());
 
     if (auto errorConvention = fn->getForeignErrorConvention())
       writeForeignErrorConvention(*errorConvention);
@@ -3314,10 +3398,10 @@ void Serializer::writeDecl(const Decl *D) {
                                   nameComponentsAndDependencies);
 
     writeGenericParams(ctor->getGenericParams());
+
     assert(ctor->getParameterLists().size() == 2);
-    // Why is this writing out the param list for self?
-    for (auto paramList : ctor->getParameterLists())
-      writeParameterList(paramList);
+    writeParameterList(ctor->getParameterLists().back());
+
     if (auto errorConvention = ctor->getForeignErrorConvention())
       writeForeignErrorConvention(*errorConvention);
     break;
@@ -3337,9 +3421,6 @@ void Serializer::writeDecl(const Decl *D) {
                                  addGenericEnvironmentRef(
                                                 dtor->getGenericEnvironment()),
                                  addTypeRef(dtor->getInterfaceType()));
-    assert(dtor->getParameterLists().size() == 1);
-    // Why is this writing out the param list for self?
-    writeParameterList(dtor->getParameterLists()[0]);
     break;
   }
 
@@ -3779,17 +3860,6 @@ void Serializer::writeType(Type ty) {
     break;
   }
 
-  case TypeKind::ImplicitlyUnwrappedOptional: {
-    auto optionalTy = cast<ImplicitlyUnwrappedOptionalType>(ty.getPointer());
-
-    Type base = optionalTy->getBaseType();
-
-    unsigned abbrCode = DeclTypeAbbrCodes[ImplicitlyUnwrappedOptionalTypeLayout::Code];
-    ImplicitlyUnwrappedOptionalTypeLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                                      addTypeRef(base));
-    break;
-  }
-
   case TypeKind::ProtocolComposition: {
     auto composition = cast<ProtocolCompositionType>(ty.getPointer());
 
@@ -3887,7 +3957,6 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<ReferenceStorageTypeLayout>();
   registerDeclTypeAbbr<UnboundGenericTypeLayout>();
   registerDeclTypeAbbr<OptionalTypeLayout>();
-  registerDeclTypeAbbr<ImplicitlyUnwrappedOptionalTypeLayout>();
   registerDeclTypeAbbr<DynamicSelfTypeLayout>();
   registerDeclTypeAbbr<OpenedExistentialTypeLayout>();
 
@@ -3899,6 +3968,7 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<VarLayout>();
   registerDeclTypeAbbr<ParamLayout>();
   registerDeclTypeAbbr<FuncLayout>();
+  registerDeclTypeAbbr<AccessorLayout>();
   registerDeclTypeAbbr<PatternBindingLayout>();
   registerDeclTypeAbbr<ProtocolLayout>();
   registerDeclTypeAbbr<DefaultWitnessTableLayout>();

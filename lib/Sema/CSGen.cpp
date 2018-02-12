@@ -103,8 +103,7 @@ namespace {
     unsigned haveIntLiteral : 1;
     unsigned haveFloatLiteral : 1;
     unsigned haveStringLiteral : 1;
-    unsigned haveCollectionLiteral : 1;
-    
+
     llvm::SmallSet<TypeBase*, 16> collectedTypes;
 
     llvm::SmallVector<TypeVariableType *, 16> intLiteralTyvars;
@@ -121,12 +120,10 @@ namespace {
       haveIntLiteral = false;
       haveFloatLiteral = false;
       haveStringLiteral = false;
-      haveCollectionLiteral = false;
     }
 
-    bool haveLiteral() { 
-      return haveIntLiteral || haveFloatLiteral || haveStringLiteral ||
-             haveCollectionLiteral;
+    bool hasLiteral() {
+      return haveIntLiteral || haveFloatLiteral || haveStringLiteral;
     }
   };
 
@@ -231,7 +228,6 @@ namespace {
       }
 
       if (isa<CollectionExpr>(expr)) {
-        LTI.haveCollectionLiteral = true;
         return { true, expr };
       }
       
@@ -408,6 +404,11 @@ namespace {
       // argument types, we can directly simplify the associated constraint
       // graph.
       auto simplifyBinOpExprTyVars = [&]() {
+        // Don't attempt to do linking if there are
+        // literals intermingled with other inferred types.
+        if (lti.hasLiteral())
+          return;
+
         for (auto binExp1 : lti.binaryExprs) {
           for (auto binExp2 : lti.binaryExprs) {
             if (binExp1 == binExp2)
@@ -996,7 +997,9 @@ namespace {
                                       TVO_CanBindToLValue |
                                       TVO_CanBindToInOut);
 
-      OverloadChoice choice(CS.getType(base), decl, functionRefKind);
+      OverloadChoice choice =
+          OverloadChoice(CS.getType(base), decl, functionRefKind);
+
       auto locator = CS.getConstraintLocator(expr, ConstraintLocator::Member);
       CS.addBindOverloadConstraint(tv, choice, locator, CurDC);
       return tv;
@@ -1098,7 +1101,8 @@ namespace {
       // a known subscript here. This might be cleaner if we split off a new
       // UnresolvedSubscriptExpr from SubscriptExpr.
       if (auto decl = declOrNull) {
-        OverloadChoice choice(baseTy, decl, FunctionRefKind::DoubleApply);
+        OverloadChoice choice =
+            OverloadChoice(baseTy, decl, FunctionRefKind::DoubleApply);
         CS.addBindOverloadConstraint(fnTy, choice, memberLocator,
                                      CurDC);
       } else {
@@ -1255,9 +1259,8 @@ namespace {
           CS.getConstraintLocator(expr, ConstraintLocator::ApplyArgument));
 
       Type result = tv;
-      if (constr->getFailability() != OTK_None) {
-        result = OptionalType::get(constr->getFailability(), result);
-      }
+      if (constr->getFailability() != OTK_None)
+        result = OptionalType::get(result);
 
       return result;
     }
@@ -1294,11 +1297,11 @@ namespace {
       // resolve it. This records the overload for use later.
       auto tv = CS.createTypeVariable(locator,
                                       TVO_CanBindToLValue);
-      CS.resolveOverload(locator, tv,
-                         OverloadChoice(Type(), E->getDecl(),
-                                        E->getFunctionRefKind()),
-                         CurDC);
-      
+
+      OverloadChoice choice =
+          OverloadChoice(Type(), E->getDecl(), E->getFunctionRefKind());
+      CS.resolveOverload(locator, tv, choice, CurDC);
+
       if (auto *VD = dyn_cast<VarDecl>(E->getDecl())) {
         if (VD->getInterfaceType() &&
             !VD->getInterfaceType()->is<TypeVariableType>()) {
@@ -1329,8 +1332,8 @@ namespace {
     }
 
     Type resolveTypeReferenceInExpression(TypeRepr *rep) {
-      TypeResolutionOptions options = TR_AllowUnboundGenerics;
-      options |= TR_InExpression;
+      TypeResolutionOptions options = TypeResolutionFlags::AllowUnboundGenerics;
+      options |= TypeResolutionFlags::InExpression;
       return CS.TC.resolveType(rep, CS.DC, options);
     }
 
@@ -1373,8 +1376,9 @@ namespace {
         if (decls[i]->isInvalid())
           continue;
 
-        choices.push_back(OverloadChoice(Type(), decls[i],
-                                         expr->getFunctionRefKind()));
+        OverloadChoice choice =
+            OverloadChoice(Type(), decls[i], expr->getFunctionRefKind());
+        choices.push_back(choice);
       }
 
       // If there are no valid overloads, give up.
@@ -1553,9 +1557,9 @@ namespace {
           // open type.
           auto locator = CS.getConstraintLocator(expr);
           for (size_t i = 0, size = specializations.size(); i < size; ++i) {
-            if (tc.validateType(specializations[i], CS.DC,
-                                (TR_InExpression |
-                                 TR_AllowUnboundGenerics)))
+            TypeResolutionOptions options = TypeResolutionFlags::InExpression;
+            options |= TypeResolutionFlags::AllowUnboundGenerics;
+            if (tc.validateType(specializations[i], CS.DC, options))
               return Type();
 
             CS.addConstraint(ConstraintKind::Equal,
@@ -2169,7 +2173,7 @@ namespace {
           pattern = pattern->getSemanticsProvidingPattern();
           while (auto isp = dyn_cast<IsPattern>(pattern)) {
             if (CS.TC.validateType(isp->getCastTypeLoc(), CS.DC,
-                                   TR_InExpression))
+                                   TypeResolutionFlags::InExpression))
               return false;
 
             if (!isp->hasSubPattern()) {
@@ -2189,7 +2193,7 @@ namespace {
           Type exnType = CS.TC.getExceptionType(CS.DC, clause->getCatchLoc());
           if (!exnType ||
               CS.TC.coercePatternToType(pattern, CS.DC, exnType,
-                                        TR_InExpression)) {
+                                        TypeResolutionFlags::InExpression)) {
             return false;
           }
 
@@ -2493,6 +2497,15 @@ namespace {
       llvm_unreachable("Already type-checked");
     }
 
+    Type
+    createTypeVariableAndDisjunctionForIUOCoercion(Type toType,
+                                                   ConstraintLocator *locator) {
+      auto typeVar = CS.createTypeVariable(locator, /*options=*/0);
+      CS.buildDisjunctionForImplicitlyUnwrappedOptional(typeVar, toType,
+                                                        locator);
+      return typeVar;
+    }
+
     Type visitForcedCheckedCastExpr(ForcedCheckedCastExpr *expr) {
       auto &tc = CS.getTypeChecker();
       auto fromExpr = expr->getSubExpr();
@@ -2500,8 +2513,8 @@ namespace {
         return nullptr;
 
       // Validate the resulting type.
-      TypeResolutionOptions options = TR_AllowUnboundGenerics;
-      options |= TR_InExpression;
+      TypeResolutionOptions options = TypeResolutionFlags::AllowUnboundGenerics;
+      options |= TypeResolutionFlags::InExpression;
       if (tc.validateType(expr->getCastTypeLoc(), CS.DC, options))
         return nullptr;
 
@@ -2511,10 +2524,16 @@ namespace {
       expr->getCastTypeLoc().setType(toType, /*validated=*/true);
 
       auto fromType = CS.getType(fromExpr);
-      auto locator = CS.getConstraintLocator(fromExpr);
+      auto locator = CS.getConstraintLocator(expr);
 
       // The source type can be checked-cast to the destination type.
       CS.addConstraint(ConstraintKind::CheckedCast, fromType, toType, locator);
+
+      // If the result type was declared IUO, add a disjunction for
+      // bindings for the result of the coercion.
+      auto *TR = expr->getCastTypeLoc().getTypeRepr();
+      if (TR && TR->getKind() == TypeReprKind::ImplicitlyUnwrappedOptional)
+        return createTypeVariableAndDisjunctionForIUOCoercion(toType, locator);
 
       return toType;
     }
@@ -2523,8 +2542,8 @@ namespace {
       auto &tc = CS.getTypeChecker();
       
       // Validate the resulting type.
-      TypeResolutionOptions options = TR_AllowUnboundGenerics;
-      options |= TR_InExpression;
+      TypeResolutionOptions options = TypeResolutionFlags::AllowUnboundGenerics;
+      options |= TypeResolutionFlags::InExpression;
       if (tc.validateType(expr->getCastTypeLoc(), CS.DC, options))
         return nullptr;
 
@@ -2536,8 +2555,17 @@ namespace {
       auto fromType = CS.getType(expr->getSubExpr());
       auto locator = CS.getConstraintLocator(expr);
 
-      CS.addExplicitConversionConstraint(fromType, toType, /*allowFixes=*/true,
-                                         locator);
+      // Add a conversion constraint for the direct conversion between
+      // types.
+      CS.addExplicitConversionConstraint(fromType, toType,
+                                         /*allowFixes=*/true, locator);
+
+      // If the result type was declared IUO, add a disjunction for
+      // bindings for the result of the coercion.
+      auto *TR = expr->getCastTypeLoc().getTypeRepr();
+      if (TR && TR->getKind() == TypeReprKind::ImplicitlyUnwrappedOptional)
+        return createTypeVariableAndDisjunctionForIUOCoercion(toType, locator);
+
       return toType;
     }
 
@@ -2548,8 +2576,8 @@ namespace {
         return nullptr;
 
       // Validate the resulting type.
-      TypeResolutionOptions options = TR_AllowUnboundGenerics;
-      options |= TR_InExpression;
+      TypeResolutionOptions options = TypeResolutionFlags::AllowUnboundGenerics;
+      options |= TypeResolutionFlags::InExpression;
       if (tc.validateType(expr->getCastTypeLoc(), CS.DC, options))
         return nullptr;
 
@@ -2559,16 +2587,25 @@ namespace {
       expr->getCastTypeLoc().setType(toType, /*validated=*/true);
 
       auto fromType = CS.getType(fromExpr);
-      auto locator = CS.getConstraintLocator(fromExpr);
+      auto locator = CS.getConstraintLocator(expr);
+
       CS.addConstraint(ConstraintKind::CheckedCast, fromType, toType, locator);
+
+      // If the result type was declared IUO, add a disjunction for
+      // bindings for the result of the coercion.
+      auto *TR = expr->getCastTypeLoc().getTypeRepr();
+      if (TR && TR->getKind() == TypeReprKind::ImplicitlyUnwrappedOptional)
+        return createTypeVariableAndDisjunctionForIUOCoercion(
+            OptionalType::get(toType), locator);
+
       return OptionalType::get(toType);
     }
 
     Type visitIsExpr(IsExpr *expr) {
       // Validate the type.
       auto &tc = CS.getTypeChecker();
-      TypeResolutionOptions options = TR_AllowUnboundGenerics;
-      options |= TR_InExpression;
+      TypeResolutionOptions options = TypeResolutionFlags::AllowUnboundGenerics;
+      options |= TypeResolutionFlags::InExpression;
       if (tc.validateType(expr->getCastTypeLoc(), CS.DC, options))
         return nullptr;
 
@@ -3451,14 +3488,15 @@ bool swift::typeCheckUnresolvedExpr(DeclContext &DC,
 
 bool swift::isExtensionApplied(DeclContext &DC, Type BaseTy,
                                const ExtensionDecl *ED) {
-  ConstraintSystemOptions Options;
-  NominalTypeDecl *Nominal = BaseTy->getNominalOrBoundGenericNominal();
-  if (!Nominal || !BaseTy->isSpecialized() ||
-      ED->getGenericRequirements().empty() ||
+  if (!ED->isConstrainedExtension() ||
       // We'll crash if we leak type variables from one constraint
       // system into the new one created below.
-      BaseTy->hasTypeVariable())
+      BaseTy->hasTypeVariable() ||
+      // We can't do anything if the base type has unbound generic
+      // parameters either.
+      BaseTy->hasUnboundGenericType())
     return true;
+
   std::unique_ptr<TypeChecker> CreatedTC;
   // If the current ast context has no type checker, create one for it.
   auto *TC = static_cast<TypeChecker*>(DC.getASTContext().getLazyResolver());
@@ -3466,11 +3504,10 @@ bool swift::isExtensionApplied(DeclContext &DC, Type BaseTy,
     CreatedTC.reset(new TypeChecker(DC.getASTContext()));
     TC = CreatedTC.get();
   }
-  if (ED->getAsProtocolExtensionContext())
-    return TC->isProtocolExtensionUsable(&DC, BaseTy, const_cast<ExtensionDecl*>(ED));
+
+  ConstraintSystemOptions Options;
   ConstraintSystem CS(*TC, &DC, Options);
   auto Loc = CS.getConstraintLocator(nullptr);
-  bool Failed = false;
 
   // Prepare type substitution map.
   SubstitutionMap Substitutions = BaseTy->getContextSubstitutionMap(
@@ -3481,11 +3518,9 @@ bool swift::isExtensionApplied(DeclContext &DC, Type BaseTy,
     if (auto resolved = Req.subst(Substitutions)) {
       CS.addConstraint(*resolved, Loc);
     } else {
-      Failed = true;
+      return false;
     }
   }
-  if (Failed)
-    return true;
 
   // Having a solution implies the extension's requirements have been fulfilled.
   return CS.solveSingle().hasValue();
@@ -3572,7 +3607,7 @@ swift::resolveValueMember(DeclContext &DC, Type BaseTy, DeclName Name) {
 
   // Keep track of all the unviable members.
   for (auto Can : LookupResult.UnviableCandidates)
-    Result.Impl.AllDecls.push_back(Can.first);
+    Result.Impl.AllDecls.push_back(Can.first.getDecl());
 
   // Keep track of the start of viable choices.
   Result.Impl.ViableStartIdx = Result.Impl.AllDecls.size();

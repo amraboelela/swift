@@ -619,8 +619,8 @@ NormalProtocolConformance *ModuleFile::readNormalConformance(
     return nullptr;
   }
   NormalProtocolConformanceLayout::readRecord(scratch, protoID,
-                                              contextID, valueCount,
-                                              typeCount, conformanceCount,
+                                              contextID, typeCount,
+                                              valueCount, conformanceCount,
                                               rawIDs);
 
   ASTContext &ctx = getContext();
@@ -1264,18 +1264,22 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
   case XREF_TYPE_PATH_PIECE:
   case XREF_VALUE_PATH_PIECE: {
     IdentifierID IID;
+    IdentifierID privateDiscriminator = 0;
     TypeID TID = 0;
     bool isType = (recordID == XREF_TYPE_PATH_PIECE);
     bool inProtocolExt = false;
     bool isStatic = false;
     if (isType)
-      XRefTypePathPieceLayout::readRecord(scratch, IID, inProtocolExt);
+      XRefTypePathPieceLayout::readRecord(scratch, IID, privateDiscriminator,
+                                          inProtocolExt);
     else
       XRefValuePathPieceLayout::readRecord(scratch, TID, IID, inProtocolExt,
                                            isStatic);
 
     DeclBaseName name = getDeclBaseName(IID);
     pathTrace.addValue(name);
+    if (privateDiscriminator)
+      pathTrace.addValue(getIdentifier(privateDiscriminator));
 
     Type filterTy;
     if (!isType) {
@@ -1290,9 +1294,14 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
       pathTrace.addType(filterTy);
     }
 
-    baseModule->lookupQualified(ModuleType::get(baseModule), name,
-                                NL_QualifiedDefault | NL_KnownNoDependency,
-                                /*typeResolver=*/nullptr, values);
+    if (privateDiscriminator) {
+      baseModule->lookupMember(values, baseModule, name,
+                               getIdentifier(privateDiscriminator));
+    } else {
+      baseModule->lookupQualified(ModuleType::get(baseModule), name,
+                                  NL_QualifiedDefault | NL_KnownNoDependency,
+                                  /*typeResolver=*/nullptr, values);
+    }
     filterValues(filterTy, nullptr, nullptr, isType, inProtocolExt, isStatic,
                  None, values);
     break;
@@ -1348,7 +1357,7 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
       switch (recordID) {
       case XREF_TYPE_PATH_PIECE: {
         IdentifierID IID;
-        XRefTypePathPieceLayout::readRecord(scratch, IID, None);
+        XRefTypePathPieceLayout::readRecord(scratch, IID, None, None);
         result = getIdentifier(IID);
         break;
       }
@@ -1405,8 +1414,13 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
         // Fast path for nested types that avoids deserializing all
         // members of the parent type.
         IdentifierID IID;
+        IdentifierID privateDiscriminator;
         bool onlyInNominal = false;
-        XRefTypePathPieceLayout::readRecord(scratch, IID, onlyInNominal);
+        XRefTypePathPieceLayout::readRecord(scratch, IID, privateDiscriminator,
+                                            onlyInNominal);
+        if (privateDiscriminator)
+          goto giveUpFastPath;
+
         Identifier memberName = getIdentifier(IID);
         pathTrace.addValue(memberName);
 
@@ -1449,21 +1463,25 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
 
         pathTrace.removeLast();
       }
+giveUpFastPath:
       LLVM_FALLTHROUGH;
     }
     case XREF_VALUE_PATH_PIECE:
     case XREF_INITIALIZER_PATH_PIECE: {
       TypeID TID = 0;
       DeclBaseName memberName;
+      Identifier privateDiscriminator;
       Optional<swift::CtorInitializerKind> ctorInit;
       bool isType = false;
       bool inProtocolExt = false;
       bool isStatic = false;
       switch (recordID) {
       case XREF_TYPE_PATH_PIECE: {
-        IdentifierID IID;
-        XRefTypePathPieceLayout::readRecord(scratch, IID, inProtocolExt);
+        IdentifierID IID, discriminatorID;
+        XRefTypePathPieceLayout::readRecord(scratch, IID, discriminatorID,
+                                            inProtocolExt);
         memberName = getDeclBaseName(IID);
+        privateDiscriminator = getIdentifier(discriminatorID);
         isType = true;
         break;
       }
@@ -1490,6 +1508,8 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
       }
 
       pathTrace.addValue(memberName);
+      if (!privateDiscriminator.empty())
+        pathTrace.addPrivateDiscriminator(privateDiscriminator);
 
       Type filterTy;
       if (!isType) {
@@ -1519,8 +1539,17 @@ ModuleFile::resolveCrossReference(ModuleDecl *baseModule, uint32_t pathLen) {
                                            getXRefDeclNameForError());
       }
 
-      auto members = nominal->lookupDirect(memberName);
-      values.append(members.begin(), members.end());
+      if (!privateDiscriminator.empty()) {
+        ModuleDecl *searchModule = M;
+        if (!searchModule)
+          searchModule = nominal->getModuleContext();
+        searchModule->lookupMember(values, nominal, memberName,
+                                   privateDiscriminator);
+
+      } else {
+        auto members = nominal->lookupDirect(memberName);
+        values.append(members.begin(), members.end());
+      }
       filterValues(filterTy, M, genericSig, isType, inProtocolExt, isStatic,
                    ctorInit, values);
       break;
@@ -1988,6 +2017,24 @@ getActualOptionalTypeKind(uint8_t raw) {
   return None;
 }
 
+static Optional<swift::AccessorKind>
+getActualAccessorKind(uint8_t raw) {
+  switch (serialization::AccessorKind(raw)) {
+#define CASE(RAWKIND, KIND) \
+  case serialization::AccessorKind::RAWKIND: return swift::AccessorKind::KIND;
+  CASE(Getter, IsGetter)
+  CASE(Setter, IsSetter)
+  CASE(WillSet, IsWillSet)
+  CASE(DidSet, IsDidSet)
+  CASE(MaterializeForSet, IsMaterializeForSet)
+  CASE(Addressor, IsAddressor)
+  CASE(MutableAddressor, IsMutableAddressor)
+  }
+#undef CASE
+
+  return None;
+}
+
 static Optional<swift::AddressorKind>
 getActualAddressorKind(uint8_t raw) {
   switch (serialization::AddressorKind(raw)) {
@@ -2044,23 +2091,23 @@ void ModuleFile::configureStorage(AbstractStorageDecl *decl,
 
   auto makeAddressed = [&] {
     decl->makeAddressed(beginLoc,
-                        cast_or_null<FuncDecl>(getDecl(addressor)),
-                        cast_or_null<FuncDecl>(getDecl(mutableAddressor)),
+                        cast_or_null<AccessorDecl>(getDecl(addressor)),
+                        cast_or_null<AccessorDecl>(getDecl(mutableAddressor)),
                         endLoc);
   };
 
   auto addTrivialAccessors = [&] {
     decl->addTrivialAccessors(
-                       cast_or_null<FuncDecl>(getDecl(getter)),
-                       cast_or_null<FuncDecl>(getDecl(setter)),
-                       cast_or_null<FuncDecl>(getDecl(materializeForSet)));
+                       cast_or_null<AccessorDecl>(getDecl(getter)),
+                       cast_or_null<AccessorDecl>(getDecl(setter)),
+                       cast_or_null<AccessorDecl>(getDecl(materializeForSet)));
   };
 
   auto setObservingAccessors = [&] {
     decl->setObservingAccessors(
-                       cast_or_null<FuncDecl>(getDecl(getter)),
-                       cast_or_null<FuncDecl>(getDecl(setter)),
-                       cast_or_null<FuncDecl>(getDecl(materializeForSet)));
+                       cast_or_null<AccessorDecl>(getDecl(getter)),
+                       cast_or_null<AccessorDecl>(getDecl(setter)),
+                       cast_or_null<AccessorDecl>(getDecl(materializeForSet)));
   };
 
   switch ((StorageKind) rawStorageKind) {
@@ -2073,16 +2120,16 @@ void ModuleFile::configureStorage(AbstractStorageDecl *decl,
 
   case StorageKind::StoredWithObservers:
     decl->makeStoredWithObservers(beginLoc,
-                       cast_or_null<FuncDecl>(getDecl(willSet)),
-                       cast_or_null<FuncDecl>(getDecl(didSet)),
+                       cast_or_null<AccessorDecl>(getDecl(willSet)),
+                       cast_or_null<AccessorDecl>(getDecl(didSet)),
                        endLoc);
     setObservingAccessors();
     return;
 
   case StorageKind::InheritedWithObservers:
     decl->makeInheritedWithObservers(beginLoc,
-                       cast_or_null<FuncDecl>(getDecl(willSet)),
-                       cast_or_null<FuncDecl>(getDecl(didSet)),
+                       cast_or_null<AccessorDecl>(getDecl(willSet)),
+                       cast_or_null<AccessorDecl>(getDecl(didSet)),
                        endLoc);
     setObservingAccessors();
     return;
@@ -2098,28 +2145,28 @@ void ModuleFile::configureStorage(AbstractStorageDecl *decl,
 
   case StorageKind::AddressedWithObservers:
     decl->makeAddressedWithObservers(beginLoc,
-                       cast_or_null<FuncDecl>(getDecl(addressor)),
-                       cast_or_null<FuncDecl>(getDecl(mutableAddressor)),
-                       cast_or_null<FuncDecl>(getDecl(willSet)),
-                       cast_or_null<FuncDecl>(getDecl(didSet)),
+                       cast_or_null<AccessorDecl>(getDecl(addressor)),
+                       cast_or_null<AccessorDecl>(getDecl(mutableAddressor)),
+                       cast_or_null<AccessorDecl>(getDecl(willSet)),
+                       cast_or_null<AccessorDecl>(getDecl(didSet)),
                        endLoc);
     setObservingAccessors();
     return;
 
   case StorageKind::Computed:
     decl->makeComputed(beginLoc,
-                       cast_or_null<FuncDecl>(getDecl(getter)),
-                       cast_or_null<FuncDecl>(getDecl(setter)),
-                       cast_or_null<FuncDecl>(getDecl(materializeForSet)),
+                       cast_or_null<AccessorDecl>(getDecl(getter)),
+                       cast_or_null<AccessorDecl>(getDecl(setter)),
+                       cast_or_null<AccessorDecl>(getDecl(materializeForSet)),
                        endLoc);
     return;
 
   case StorageKind::ComputedWithMutableAddress:
     decl->makeComputedWithMutableAddress(beginLoc,
-                       cast_or_null<FuncDecl>(getDecl(getter)),
-                       cast_or_null<FuncDecl>(getDecl(setter)),
-                       cast_or_null<FuncDecl>(getDecl(materializeForSet)),
-                       cast_or_null<FuncDecl>(getDecl(mutableAddressor)),
+                       cast_or_null<AccessorDecl>(getDecl(getter)),
+                       cast_or_null<AccessorDecl>(getDecl(setter)),
+                       cast_or_null<AccessorDecl>(getDecl(materializeForSet)),
+                       cast_or_null<AccessorDecl>(getDecl(mutableAddressor)),
                        endLoc);
     return;
   }
@@ -2788,12 +2835,15 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
       return nullptr;
     }
 
-    auto *bodyParams0 = readParameterList();
-    bodyParams0->get(0)->setImplicit();  // self is implicit.
-    
-    auto *bodyParams1 = readParameterList();
-    assert(bodyParams0 && bodyParams1 && "missing parameters for constructor");
-    ctor->setParameterLists(bodyParams0->get(0), bodyParams1);
+    bool mutating = parent->getDeclaredInterfaceType()->hasReferenceSemantics();
+    auto *selfDecl = ParamDecl::createSelf(SourceLoc(), parent,
+                                           /*static*/ false,
+                                           /*mutating*/ mutating);
+    selfDecl->setImplicit();
+
+    auto *bodyParams = readParameterList();
+    assert(bodyParams && "missing parameters for constructor");
+    ctor->setParameterLists(selfDecl, bodyParams);
 
     auto interfaceType = getType(interfaceID);
     ctor->setInterfaceType(interfaceType);
@@ -2982,13 +3032,17 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     break;
   }
 
-  case decls_block::FUNC_DECL: {
+  case decls_block::FUNC_DECL:
+  case decls_block::ACCESSOR_DECL: {
+    bool isAccessor = (recordID == decls_block::ACCESSOR_DECL);
+
     DeclContextID contextID;
     bool isImplicit;
     bool isStatic;
-    uint8_t rawStaticSpelling, rawAccessLevel, rawAddressorKind, rawMutModifier;
+    uint8_t rawStaticSpelling, rawAccessLevel, rawMutModifier;
+    uint8_t rawAccessorKind, rawAddressorKind;
     bool isObjC, hasDynamicSelf, hasForcedStaticDispatch, throws;
-    unsigned numParamPatterns, numNameComponentsBiased;
+    unsigned numNameComponentsBiased;
     GenericEnvironmentID genericEnvID;
     TypeID interfaceTypeID;
     DeclID associatedDeclID;
@@ -2998,40 +3052,95 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     uint8_t rawDefaultArgumentResilienceExpansion;
     ArrayRef<uint64_t> nameAndDependencyIDs;
 
-    decls_block::FuncLayout::readRecord(scratch, contextID, isImplicit,
-                                        isStatic, rawStaticSpelling, isObjC,
-                                        rawMutModifier, hasDynamicSelf,
-                                        hasForcedStaticDispatch, throws,
-                                        numParamPatterns, genericEnvID,
-                                        interfaceTypeID,
-                                        associatedDeclID, overriddenID,
-                                        accessorStorageDeclID,
-                                        numNameComponentsBiased,
-                                        rawAddressorKind, rawAccessLevel,
-                                        needsNewVTableEntry,
-                                        rawDefaultArgumentResilienceExpansion,
-                                        nameAndDependencyIDs);
-
-    // Resolve the name ids.
-    Identifier baseName = getIdentifier(nameAndDependencyIDs.front());
-    DeclName name;
-    ArrayRef<uint64_t> dependencyIDs;
-    if (numNameComponentsBiased != 0) {
-      SmallVector<Identifier, 2> names;
-      for (auto nameID : nameAndDependencyIDs.slice(1,
-                                                    numNameComponentsBiased-1)){
-        names.push_back(getIdentifier(nameID));
-      }
-      name = DeclName(ctx, baseName, names);
-      dependencyIDs = nameAndDependencyIDs.slice(numNameComponentsBiased);
+    if (!isAccessor) {
+      decls_block::FuncLayout::readRecord(scratch, contextID, isImplicit,
+                                          isStatic, rawStaticSpelling, isObjC,
+                                          rawMutModifier, hasDynamicSelf,
+                                          hasForcedStaticDispatch, throws,
+                                          genericEnvID,
+                                          interfaceTypeID,
+                                          associatedDeclID, overriddenID,
+                                          numNameComponentsBiased,
+                                          rawAccessLevel,
+                                          needsNewVTableEntry,
+                                          rawDefaultArgumentResilienceExpansion,
+                                          nameAndDependencyIDs);
     } else {
-      name = baseName;
-      dependencyIDs = nameAndDependencyIDs.drop_front();
+      decls_block::AccessorLayout::readRecord(scratch, contextID, isImplicit,
+                                          isStatic, rawStaticSpelling, isObjC,
+                                          rawMutModifier, hasDynamicSelf,
+                                          hasForcedStaticDispatch, throws,
+                                          genericEnvID,
+                                          interfaceTypeID,
+                                          overriddenID,
+                                          accessorStorageDeclID,
+                                          rawAccessorKind, rawAddressorKind,
+                                          rawAccessLevel,
+                                          needsNewVTableEntry,
+                                          rawDefaultArgumentResilienceExpansion,
+                                          nameAndDependencyIDs);
     }
 
     DeclDeserializationError::Flags errorFlags;
     if (needsNewVTableEntry)
       errorFlags |= DeclDeserializationError::NeedsVTableEntry;
+
+    // Parse the accessor-specific fields.
+    AbstractStorageDecl *storage = nullptr;
+    AccessorKind accessorKind;
+    AddressorKind addressorKind;
+    if (isAccessor) {
+      auto storageResult = getDeclChecked(accessorStorageDeclID);
+      if (!storageResult ||
+          !(storage =
+              dyn_cast_or_null<AbstractStorageDecl>(storageResult.get()))) {
+        // FIXME: "TypeError" isn't exactly correct for this.
+        return llvm::make_error<TypeError>(
+            DeclName(), takeErrorInfo(storageResult.takeError()), errorFlags);
+      }
+
+      if (auto accessorKindResult = getActualAccessorKind(rawAccessorKind)) {
+        accessorKind = *accessorKindResult;
+      } else {
+        error();
+        return nullptr;
+      }
+
+      if (auto addressorKindResult = getActualAddressorKind(rawAddressorKind)) {
+        addressorKind = *addressorKindResult;
+      } else {
+        error();
+        return nullptr;
+      }
+
+      // Deserializing the storage declaration will cause a recurrence
+      // into this code.  When we come out, don't create the accessor twice.
+      // TODO: find some better way of breaking this cycle, like lazily
+      // deserializing the accessors.
+      if (auto accessor = storage->getAccessorFunction(accessorKind))
+        return accessor;
+    }
+
+    // Resolve the name ids.
+    DeclName name;
+    ArrayRef<uint64_t> dependencyIDs;
+    if (isAccessor) {
+      dependencyIDs = nameAndDependencyIDs;
+    } else {
+      Identifier baseName = getIdentifier(nameAndDependencyIDs.front());
+      if (numNameComponentsBiased != 0) {
+        SmallVector<Identifier, 2> names;
+        for (auto nameID : nameAndDependencyIDs.slice(1,
+                                                      numNameComponentsBiased-1)){
+          names.push_back(getIdentifier(nameID));
+        }
+        name = DeclName(ctx, baseName, names);
+        dependencyIDs = nameAndDependencyIDs.slice(numNameComponentsBiased);
+      } else {
+        name = baseName;
+        dependencyIDs = nameAndDependencyIDs.drop_front();
+      }
+    }
 
     Expected<Decl *> overridden = getDeclChecked(overriddenID);
     if (!overridden) {
@@ -3051,15 +3160,6 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     if (declOrOffset.isComplete())
       return declOrOffset;
 
-    // If we are an accessor on a var or subscript, make sure it is deserialized
-    // first.
-    auto accessor = getDeclChecked(accessorStorageDeclID);
-    if (!accessor) {
-      // FIXME: "TypeError" isn't exactly correct for this.
-      return llvm::make_error<TypeError>(
-          name, takeErrorInfo(accessor.takeError()), errorFlags);
-    }
-
     // Read generic params before reading the type, because the type may
     // reference generic parameters, and we want them to have a dummy
     // DeclContext for now.
@@ -3074,12 +3174,22 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     if (declOrOffset.isComplete())
       return declOrOffset;
 
-    auto fn = FuncDecl::createDeserialized(
+    auto numParamPatterns = DC->isTypeContext() ? 2 : 1;
+    FuncDecl *fn;
+    if (!isAccessor) {
+      fn = FuncDecl::createDeserialized(
         ctx, /*StaticLoc=*/SourceLoc(), staticSpelling.getValue(),
         /*FuncLoc=*/SourceLoc(), name, /*NameLoc=*/SourceLoc(),
         /*Throws=*/throws, /*ThrowsLoc=*/SourceLoc(),
-        /*AccessorKeywordLoc=*/SourceLoc(), genericParams,
-        numParamPatterns, DC);
+        genericParams, numParamPatterns, DC);
+    } else {
+      fn = AccessorDecl::createDeserialized(
+        ctx, /*FuncLoc=*/SourceLoc(), /*AccessorKeywordLoc=*/SourceLoc(),
+        accessorKind, addressorKind, storage,
+        /*StaticLoc=*/SourceLoc(), staticSpelling.getValue(),
+        /*Throws=*/throws, /*ThrowsLoc=*/SourceLoc(),
+        genericParams, numParamPatterns, DC);
+    }
     fn->setEarlyAttrValidation();
     declOrOffset = fn;
 
@@ -3092,14 +3202,6 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
       return nullptr;
     }
 
-    if (auto addressorKind = getActualAddressorKind(rawAddressorKind)) {
-      if (*addressorKind != AddressorKind::NotAddressor)
-        fn->setAddressorKind(*addressorKind);
-    } else {
-      error();
-      return nullptr;
-    }
-    
     if (auto SelfAccessKind = getActualSelfAccessKind(rawMutModifier)) {
       fn->setSelfAccessKind(*SelfAccessKind);
     } else {
@@ -3107,17 +3209,19 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
       return nullptr;
     }
 
-    if (Decl *associated = getDecl(associatedDeclID)) {
-      if (auto op = dyn_cast<OperatorDecl>(associated)) {
-        fn->setOperatorDecl(op);
+    if (!isAccessor) {
+      if (Decl *associated = getDecl(associatedDeclID)) {
+        if (auto op = dyn_cast<OperatorDecl>(associated)) {
+          fn->setOperatorDecl(op);
 
-        if (isa<PrefixOperatorDecl>(op))
-          fn->getAttrs().add(new (ctx) PrefixAttr(/*implicit*/false));
-        else if (isa<PostfixOperatorDecl>(op))
-          fn->getAttrs().add(new (ctx) PostfixAttr(/*implicit*/false));
-        // Note that an explicit 'infix' is not required.
+          if (isa<PrefixOperatorDecl>(op))
+            fn->getAttrs().add(new (ctx) PrefixAttr(/*implicit*/false));
+          else if (isa<PostfixOperatorDecl>(op))
+            fn->getAttrs().add(new (ctx) PostfixAttr(/*implicit*/false));
+          // Note that an explicit 'infix' is not required.
+        }
+        // Otherwise, unknown associated decl kind.
       }
-      // Otherwise, unknown associated decl kind.
     }
 
     // Set the interface type.
@@ -3125,13 +3229,16 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
     fn->setInterfaceType(interfaceType);
 
     SmallVector<ParameterList*, 2> paramLists;
-    for (unsigned i = 0, e = numParamPatterns; i != e; ++i)
-      paramLists.push_back(readParameterList());
+    if (DC->isTypeContext()) {
+      auto *selfDecl = ParamDecl::createSelf(SourceLoc(), DC,
+                                             fn->isStatic(),
+                                             fn->isMutating());
+      selfDecl->setImplicit();
+      paramLists.push_back(ParameterList::create(ctx, selfDecl));
+    }
 
-    // If the first parameter list is (self), mark it implicit.
-    if (numParamPatterns && DC->isTypeContext())
-      paramLists[0]->get(0)->setImplicit();
-    
+    paramLists.push_back(readParameterList());
+
     fn->setDeserializedSignature(paramLists, TypeLoc());
 
     if (auto errorConvention = maybeReadForeignErrorConvention())
@@ -3780,11 +3887,11 @@ ModuleFile::getDeclCheckedImpl(DeclID DID, Optional<DeclContext *> ForcedContext
 
     dtor->setAccess(std::max(cast<ClassDecl>(DC)->getFormalAccess(),
                              AccessLevel::Internal));
-    auto *selfParams = readParameterList();
-    selfParams->get(0)->setImplicit();  // self is implicit.
-
-    assert(selfParams && "Didn't get self pattern?");
-    dtor->setSelfDecl(selfParams->get(0));
+    auto *selfDecl = ParamDecl::createSelf(SourceLoc(), DC,
+                                           /*static*/ false,
+                                           /*mutating*/ false);
+    selfDecl->setImplicit();
+    dtor->setSelfDecl(selfDecl);
 
     auto interfaceType = getType(interfaceID);
     dtor->setInterfaceType(interfaceType);
@@ -4644,18 +4751,6 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
     break;
   }
 
-  case decls_block::UNCHECKED_OPTIONAL_TYPE: {
-    TypeID baseID;
-    decls_block::ImplicitlyUnwrappedOptionalTypeLayout::readRecord(scratch, baseID);
-
-    auto baseTy = getTypeChecked(baseID);
-    if (!baseTy)
-      return baseTy.takeError();
-
-    typeOrOffset = ImplicitlyUnwrappedOptionalType::get(baseTy.get());
-    break;
-  }
-
   case decls_block::UNBOUND_GENERIC_TYPE: {
     DeclID genericID;
     TypeID parentID;
@@ -4891,8 +4986,8 @@ void ModuleFile::finishNormalConformance(NormalProtocolConformance *conformance,
   assert(kind == NORMAL_PROTOCOL_CONFORMANCE &&
          "registered lazy loader incorrectly");
   NormalProtocolConformanceLayout::readRecord(scratch, protoID,
-                                              contextID, valueCount,
-                                              typeCount, conformanceCount,
+                                              contextID, typeCount,
+                                              valueCount, conformanceCount,
                                               rawIDs);
 
   // Read requirement signature conformances.
@@ -4950,6 +5045,34 @@ void ModuleFile::finishNormalConformance(NormalProtocolConformance *conformance,
   conformance->setSignatureConformances(reqConformances);
 
   ArrayRef<uint64_t>::iterator rawIDIter = rawIDs.begin();
+
+  TypeWitnessMap typeWitnesses;
+  while (typeCount--) {
+    // FIXME: We don't actually want to allocate an archetype here; we just
+    // want to get an access path within the protocol.
+    auto first = cast<AssociatedTypeDecl>(getDecl(*rawIDIter++));
+    auto second = getType(*rawIDIter++);
+    auto third = cast_or_null<TypeDecl>(getDecl(*rawIDIter++));
+    if (third &&
+        isa<TypeAliasDecl>(third) &&
+        third->getModuleContext() != getAssociatedModule() &&
+        !third->getDeclaredInterfaceType()->isEqual(second)) {
+      // Conservatively drop references to typealiases in other modules
+      // that may have changed. This may also drop references to typealiases
+      // that /haven't/ changed but just happen to have generics in them, but
+      // in practice having a declaration here isn't actually required by the
+      // rest of the compiler.
+      third = nullptr;
+    }
+    typeWitnesses[first] = std::make_pair(second, third);
+  }
+  assert(rawIDIter <= rawIDs.end() && "read too much");
+
+  // Set type witnesses.
+  for (auto typeWitness : typeWitnesses) {
+    conformance->setTypeWitness(typeWitness.first, typeWitness.second.first,
+                                typeWitness.second.second);
+  }
 
   // An imported requirement may have changed type between Swift versions.
   // In this situation we need to do a post-pass to fill in missing
@@ -5057,35 +5180,6 @@ void ModuleFile::finishNormalConformance(NormalProtocolConformance *conformance,
                           syntheticEnv, reqToSyntheticSubs));
   }
   assert(rawIDIter <= rawIDs.end() && "read too much");
-
-  TypeWitnessMap typeWitnesses;
-  while (typeCount--) {
-    // FIXME: We don't actually want to allocate an archetype here; we just
-    // want to get an access path within the protocol.
-    auto first = cast<AssociatedTypeDecl>(getDecl(*rawIDIter++));
-    auto second = getType(*rawIDIter++);
-    auto third = cast_or_null<TypeDecl>(getDecl(*rawIDIter++));
-    if (third &&
-        isa<TypeAliasDecl>(third) &&
-        third->getModuleContext() != getAssociatedModule() &&
-        !third->getDeclaredInterfaceType()->isEqual(second)) {
-      // Conservatively drop references to typealiases in other modules
-      // that may have changed. This may also drop references to typealiases
-      // that /haven't/ changed but just happen to have generics in them, but
-      // in practice having a declaration here isn't actually required by the
-      // rest of the compiler.
-      third = nullptr;
-    }
-    typeWitnesses[first] = std::make_pair(second, third);
-  }
-  assert(rawIDIter <= rawIDs.end() && "read too much");
-
-
-  // Set type witnesses.
-  for (auto typeWitness : typeWitnesses) {
-    conformance->setTypeWitness(typeWitness.first, typeWitness.second.first,
-                                typeWitness.second.second);
-  }
   
   // Fill in opaque value witnesses if we need to.
   if (needToFillInOpaqueValueWitnesses) {

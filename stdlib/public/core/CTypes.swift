@@ -87,7 +87,7 @@ public typealias CBool = Bool
 /// Opaque pointers are used to represent C pointers to types that
 /// cannot be represented in Swift, such as incomplete struct types.
 @_fixed_layout
-public struct OpaquePointer : Hashable {
+public struct OpaquePointer {
   @_versioned
   internal var _rawValue: Builtin.RawPointer
 
@@ -147,7 +147,16 @@ public struct OpaquePointer : Hashable {
     guard let unwrapped = from else { return nil }
     self.init(unwrapped)
   }
+}
 
+extension OpaquePointer: Equatable {
+  @_inlineable // FIXME(sil-serialize-all)
+  public static func == (lhs: OpaquePointer, rhs: OpaquePointer) -> Bool {
+    return Bool(Builtin.cmp_eq_RawPointer(lhs._rawValue, rhs._rawValue))
+  }
+}
+
+extension OpaquePointer: Hashable {
   /// The pointer's hash value.
   ///
   /// The hash value is not guaranteed to be stable across different
@@ -195,13 +204,6 @@ extension UInt {
   }
 }
 
-extension OpaquePointer : Equatable {
-  @_inlineable // FIXME(sil-serialize-all)
-  public static func == (lhs: OpaquePointer, rhs: OpaquePointer) -> Bool {
-    return Bool(Builtin.cmp_eq_RawPointer(lhs._rawValue, rhs._rawValue))
-  }
-}
-
 /// A wrapper around a C `va_list` pointer.
 @_fixed_layout
 public struct CVaListPointer {
@@ -227,7 +229,7 @@ extension CVaListPointer : CustomDebugStringConvertible {
 @_inlineable
 internal func _memcpy(
   dest destination: UnsafeMutableRawPointer,
-  src: UnsafeMutableRawPointer,
+  src: UnsafeRawPointer,
   size: UInt
 ) {
   let dest = destination._rawValue

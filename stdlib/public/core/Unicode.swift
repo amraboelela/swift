@@ -303,14 +303,14 @@ extension Unicode.UTF8 : UnicodeCodec {
   public static func _nullCodeUnitOffset(
     in input: UnsafePointer<CodeUnit>
   ) -> Int {
-    return Int(_swift_stdlib_strlen_unsigned(input))
+    return Int(_stdlib_strlen_unsigned(input))
   }
   // Support parsing C strings as-if they are UTF8 strings.
   @_inlineable // FIXME(sil-serialize-all)
   public static func _nullCodeUnitOffset(
     in input: UnsafePointer<CChar>
   ) -> Int {
-    return Int(_swift_stdlib_strlen(input))
+    return Int(_stdlib_strlen(input))
   }
 }
 
@@ -744,7 +744,7 @@ extension UTF16 {
   ///   `false`.
   @_inlineable // FIXME(sil-serialize-all)
   public static func isLeadSurrogate(_ x: CodeUnit) -> Bool {
-    return 0xD800...0xDBFF ~= x
+    return (x & 0xFC00) == 0xD800
   }
 
   /// Returns a Boolean value indicating whether the specified code unit is a
@@ -771,7 +771,7 @@ extension UTF16 {
   ///   `false`.
   @_inlineable // FIXME(sil-serialize-all)
   public static func isTrailSurrogate(_ x: CodeUnit) -> Bool {
-    return 0xDC00...0xDFFF ~= x
+    return (x & 0xFC00) == 0xDC00
   }
 
   @_inlineable // FIXME(sil-serialize-all)
@@ -871,7 +871,7 @@ extension UTF16 {
       else if let _ = s._error {
         guard _fastPath(repairingIllFormedSequences) else { return nil }
         utf16Count += 1
-        utf16BitUnion |= 0xFFFD
+        utf16BitUnion |= UTF16._replacementCodeUnit
       }
       else {
         return (utf16Count, utf16BitUnion < 0x80)
@@ -924,5 +924,6 @@ public func transcode<Input, InputEncoding, OutputEncoding>(
 }
 
 /// A namespace for Unicode utilities.
+@_fixed_layout // FIXME(sil-serialize-all)
 public enum Unicode {}
 

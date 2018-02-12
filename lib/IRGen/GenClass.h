@@ -172,13 +172,12 @@ namespace irgen {
   bool doesClassMetadataRequireDynamicInitialization(IRGenModule &IGM,
                                                      ClassDecl *theClass);
     
-  /// Returns true if a conformance of the \p conformingType references the
-  /// nominal type descriptor of the type.
-  ///
-  /// Otherwise the conformance references the foreign metadata of the
-  /// \p conformingType.
-  bool doesConformanceReferenceNominalTypeDescriptor(IRGenModule &IGM,
-                                                     CanType conformingType);
+  /// If the superclass came from another module, we may have dropped
+  /// stored properties due to the Swift language version availability of
+  /// their types. In these cases we can't precisely lay out the ivars in
+  /// the class object at compile time so we need to do runtime layout.
+  bool classHasIncompleteLayout(IRGenModule &IGM,
+                                ClassDecl *theClass);
 } // end namespace irgen
 } // end namespace swift
 

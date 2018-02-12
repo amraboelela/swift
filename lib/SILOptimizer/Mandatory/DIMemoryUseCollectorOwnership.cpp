@@ -117,6 +117,12 @@ DIMemoryObjectInfo::DIMemoryObjectInfo(SingleValueInstruction *MI)
   // If this is a derived class init method, track an extra element to determine
   // whether super.init has been called at each program point.
   NumElements += unsigned(isDerivedClassSelf());
+
+  // Make sure we track /something/ in a cross-module struct initializer.
+  if (NumElements == 0 && isCrossModuleStructInitSelf()) {
+    NumElements = 1;
+    HasDummyElement = true;
+  }
 }
 
 SILInstruction *DIMemoryObjectInfo::getFunctionEntryPoint() const {
@@ -1122,8 +1128,14 @@ void ElementUseCollector::collectClassSelfUses() {
         }
 
         // A store of a load from the box is ignored.
-        // FIXME: SILGen should not emit these.
-        if (auto *LI = dyn_cast<LoadInst>(SI->getSrc()))
+        // SILGen emits these if delegation to another initializer was
+        // interrupted before the initializer was called.
+        SILValue src = SI->getSrc();
+        // Look through conversions.
+        while (auto conversion = dyn_cast<ConversionInst>(src))
+          src = conversion->getConverted();
+        
+        if (auto *LI = dyn_cast<LoadInst>(src))
           if (LI->getOperand() == MUI)
             continue;
 
@@ -1497,7 +1509,7 @@ void DelegatingInitElementUseCollector::collectClassInitSelfUses() {
     // Stores to self.
     if (auto *SI = dyn_cast<StoreInst>(User)) {
       if (Op->getOperandNumber() == 1) {
-        // The initial store of 'self' into the box at the start of the
+        // A store of 'self' into the box at the start of the
         // function. Ignore it.
         if (auto *Arg = dyn_cast<SILArgument>(SI->getSrc())) {
           if (Arg->getParent() == MUI->getParent()) {
@@ -1507,8 +1519,14 @@ void DelegatingInitElementUseCollector::collectClassInitSelfUses() {
         }
 
         // A store of a load from the box is ignored.
-        // FIXME: SILGen should not emit these.
-        if (auto *LI = dyn_cast<LoadInst>(SI->getSrc()))
+        // SILGen emits these if delegation to another initializer was
+        // interrupted before the initializer was called.
+        SILValue src = SI->getSrc();
+        // Look through conversions.
+        while (auto conversion = dyn_cast<ConversionInst>(src))
+          src = conversion->getConverted();
+        
+        if (auto *LI = dyn_cast<LoadInst>(src))
           if (LI->getOperand() == MUI)
             continue;
 

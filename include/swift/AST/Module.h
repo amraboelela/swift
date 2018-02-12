@@ -81,9 +81,6 @@ namespace swift {
   
 namespace syntax {
   class SourceFileSyntax;
-  class SyntaxParsingContext;
-  class SyntaxParsingContextRoot;
-  struct RawSyntaxInfo;
 }
 
 /// Discriminator for file-units.
@@ -128,7 +125,7 @@ enum class ResilienceStrategy : unsigned {
 /// output binary and logical module (such as a single library or executable).
 ///
 /// \sa FileUnit
-class ModuleDecl : public TypeDecl, public DeclContext {
+class ModuleDecl : public DeclContext, public TypeDecl {
 public:
   typedef ArrayRef<std::pair<Identifier, SourceLoc>> AccessPathTy;
   typedef std::pair<ModuleDecl::AccessPathTy, ModuleDecl*> ImportedModule;
@@ -1083,21 +1080,15 @@ public:
   bool shouldKeepSyntaxInfo() const;
 
   syntax::SourceFileSyntax getSyntaxRoot() const;
+  void setSyntaxRoot(syntax::SourceFileSyntax &&Root);
+  bool hasSyntaxRoot() const;
 
 private:
-  friend class syntax::SyntaxParsingContext;
-  friend class syntax::SyntaxParsingContextRoot;
 
   /// If not None, the underlying vector should contain tokens of this source file.
   Optional<std::vector<Token>> AllCorrectedTokens;
 
-  /// All of the raw token syntax nodes in the underlying source.
-  std::vector<syntax::RawSyntaxInfo> AllRawTokenSyntax;
-
   SourceFileSyntaxInfo &SyntaxInfo;
-
-  void setSyntaxRoot(syntax::SourceFileSyntax &&Root);
-  bool hasSyntaxRoot() const;
 };
 
 

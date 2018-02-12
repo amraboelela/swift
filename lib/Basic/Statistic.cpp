@@ -10,7 +10,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/AST/Decl.h"
+#include "clang/Basic/SourceLocation.h"
+#include "clang/Basic/SourceManager.h"
 #include "swift/Basic/Statistic.h"
+#include "swift/AST/Decl.h"
+#include "swift/AST/Expr.h"
+#include "swift/SIL/SILFunction.h"
 #include "swift/Driver/DependencyGraph.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/FileSystem.h"
@@ -49,8 +55,10 @@ makeFileName(StringRef Prefix,
   std::string tmp;
   raw_string_ostream stream(tmp);
   auto now = std::chrono::system_clock::now();
+  auto dur = now.time_since_epoch();
+  auto usec = std::chrono::duration_cast<std::chrono::microseconds>(dur);
   stream << Prefix
-         << "-" << now.time_since_epoch().count()
+         << "-" << usec.count()
          << "-" << ProgramName
          << "-" << AuxName
          << "-" << Process::GetRandomNumber()
@@ -126,6 +134,7 @@ UnifiedStatsReporter::UnifiedStatsReporter(StringRef ProgramName,
                                            StringRef OptType,
                                            StringRef Directory,
                                            SourceManager *SM,
+                                           clang::SourceManager *CSM,
                                            bool TraceEvents)
   : UnifiedStatsReporter(ProgramName,
                          auxName(ModuleName,
@@ -134,7 +143,7 @@ UnifiedStatsReporter::UnifiedStatsReporter(StringRef ProgramName,
                                  OutputType,
                                  OptType),
                          Directory,
-                         SM, TraceEvents)
+                         SM, CSM, TraceEvents)
 {
 }
 
@@ -142,6 +151,7 @@ UnifiedStatsReporter::UnifiedStatsReporter(StringRef ProgramName,
                                            StringRef AuxName,
                                            StringRef Directory,
                                            SourceManager *SM,
+                                           clang::SourceManager *CSM,
                                            bool TraceEvents)
   : currentProcessExitStatusSet(false),
     currentProcessExitStatus(EXIT_FAILURE),
@@ -151,7 +161,8 @@ UnifiedStatsReporter::UnifiedStatsReporter(StringRef ProgramName,
     Timer(make_unique<NamedRegionTimer>(AuxName,
                                         "Building Target",
                                         ProgramName, "Running Program")),
-    SourceMgr(SM)
+    SourceMgr(SM),
+    ClangSourceMgr(CSM)
 {
   path::append(StatsFilename, makeStatsFileName(ProgramName, AuxName));
   path::append(TraceFilename, makeTraceFileName(ProgramName, AuxName));
@@ -248,20 +259,24 @@ UnifiedStatsReporter::printAlwaysOnStatsAndTimers(raw_ostream &OS) {
 }
 
 UnifiedStatsReporter::FrontendStatsTracer::FrontendStatsTracer(
-    StringRef Name,
-    SourceRange const &Range,
+    StringRef EventName,
+    const void *Entity,
+    const TraceFormatter *Formatter,
     UnifiedStatsReporter *Reporter)
   : Reporter(Reporter),
     SavedTime(llvm::TimeRecord::getCurrentTime()),
-    Name(Name),
-    Range(Range)
+    EventName(EventName),
+    Entity(Entity),
+    Formatter(Formatter)
 {
   if (Reporter)
     Reporter->saveAnyFrontendStatsEvents(*this, true);
 }
 
 UnifiedStatsReporter::FrontendStatsTracer::FrontendStatsTracer()
-  : Reporter(nullptr)
+  : Reporter(nullptr),
+    Entity(nullptr),
+    Formatter(nullptr)
 {
 }
 
@@ -271,8 +286,9 @@ UnifiedStatsReporter::FrontendStatsTracer::operator=(
 {
   Reporter = other.Reporter;
   SavedTime = other.SavedTime;
-  Name = other.Name;
-  Range = other.Range;
+  EventName = other.EventName;
+  Entity = other.Entity;
+  Formatter = other.Formatter;
   other.Reporter = nullptr;
   return *this;
 }
@@ -281,8 +297,9 @@ UnifiedStatsReporter::FrontendStatsTracer::FrontendStatsTracer(
     FrontendStatsTracer&& other)
   : Reporter(other.Reporter),
     SavedTime(other.SavedTime),
-    Name(other.Name),
-    Range(other.Range)
+    EventName(other.EventName),
+    Entity(other.Entity),
+    Formatter(other.Formatter)
 {
   other.Reporter = nullptr;
 }
@@ -291,18 +308,6 @@ UnifiedStatsReporter::FrontendStatsTracer::~FrontendStatsTracer()
 {
   if (Reporter)
     Reporter->saveAnyFrontendStatsEvents(*this, false);
-}
-
-UnifiedStatsReporter::FrontendStatsTracer
-UnifiedStatsReporter::getStatsTracer(StringRef N,
-                                     SourceRange const &R)
-{
-  if (LastTracedFrontendCounters)
-    // Return live tracer object.
-    return FrontendStatsTracer(N, R, this);
-  else
-    // Return inert tracer object.
-    return FrontendStatsTracer();
 }
 
 void
@@ -319,13 +324,14 @@ UnifiedStatsReporter::saveAnyFrontendStatsEvents(
   auto &C = getFrontendCounters();
 #define FRONTEND_STATISTIC(TY, NAME)                          \
   do {                                                        \
+    auto total = C.NAME;                                      \
     auto delta = C.NAME - LastTracedFrontendCounters->NAME;   \
     static char const *name = #TY "." #NAME;                  \
     if (delta != 0) {                                         \
       LastTracedFrontendCounters->NAME = C.NAME;              \
       FrontendStatsEvents.emplace_back(FrontendStatsEvent {   \
-          NowUS, LiveUS, IsEntry, T.Name, name,               \
-            delta, C.NAME, T.Range});                         \
+          NowUS, LiveUS, IsEntry, T.EventName, name,          \
+            delta, total, T.Entity, T.Formatter});            \
     }                                                         \
   } while (0);
 #include "swift/Basic/Statistics.def"
@@ -340,6 +346,8 @@ UnifiedStatsReporter::AlwaysOnFrontendRecursiveSharedTimers::
 #undef FRONTEND_RECURSIVE_SHARED_TIMER
       dummyInstanceVariableToGetConstructorToParse(0) {
 }
+
+UnifiedStatsReporter::TraceFormatter::~TraceFormatter() {}
 
 UnifiedStatsReporter::~UnifiedStatsReporter()
 {
@@ -417,7 +425,7 @@ UnifiedStatsReporter::~UnifiedStatsReporter()
       return;
     }
     tstream << "Time,Live,IsEntry,EventName,CounterName,"
-            << "CounterDelta,CounterValue,SourceRange\n";
+            << "CounterDelta,CounterValue,EntityName,EntityRange\n";
     for (auto const &E : FrontendStatsEvents) {
       tstream << E.TimeUSec << ','
               << E.LiveUSec << ','
@@ -427,7 +435,12 @@ UnifiedStatsReporter::~UnifiedStatsReporter()
               << E.CounterDelta << ','
               << E.CounterValue << ',';
       tstream << '"';
-      E.SourceRange.print(tstream, *SourceMgr, false);
+      if (E.Formatter)
+        E.Formatter->traceName(E.Entity, tstream);
+      tstream << '"' << ',';
+      tstream << '"';
+      if (E.Formatter)
+        E.Formatter->traceLoc(E.Entity, SourceMgr, ClangSourceMgr, tstream);
       tstream << '"' << '\n';
     }
   }

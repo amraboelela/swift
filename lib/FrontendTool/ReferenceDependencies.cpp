@@ -69,6 +69,7 @@ static bool declIsPrivate(const Decl *member) {
     case DeclKind::EnumCase:
     case DeclKind::TopLevelCode:
     case DeclKind::IfConfig:
+    case DeclKind::PoundDiagnostic:
       return true;
 
     case DeclKind::Extension:
@@ -126,25 +127,27 @@ bool swift::emitReferenceDependencies(DiagnosticEngine &diags,
                                       SourceFile *SF,
                                       DependencyTracker &depTracker,
                                       const FrontendOptions &opts) {
-  if (!SF) {
-    diags.diagnose(SourceLoc(),
-                   diag::emit_reference_dependencies_without_primary_file);
-    return true;
-  }
+  assert(SF && "Cannot emit reference dependencies without a SourceFile");
 
   // Before writing to the dependencies file path, preserve any previous file
   // that may have been there. No error handling -- this is just a nicety, it
   // doesn't matter if it fails.
-  llvm::sys::fs::rename(opts.ReferenceDependenciesFilePath,
-                        opts.ReferenceDependenciesFilePath + "~");
+  llvm::sys::fs::rename(opts.InputsAndOutputs.supplementaryOutputs()
+                            .ReferenceDependenciesFilePath,
+                        opts.InputsAndOutputs.supplementaryOutputs()
+                                .ReferenceDependenciesFilePath +
+                            "~");
 
   std::error_code EC;
-  llvm::raw_fd_ostream out(opts.ReferenceDependenciesFilePath, EC,
-                           llvm::sys::fs::F_None);
+  llvm::raw_fd_ostream out(opts.InputsAndOutputs.supplementaryOutputs()
+                               .ReferenceDependenciesFilePath,
+                           EC, llvm::sys::fs::F_None);
 
   if (out.has_error() || EC) {
     diags.diagnose(SourceLoc(), diag::error_opening_output,
-                   opts.ReferenceDependenciesFilePath, EC.message());
+                   opts.InputsAndOutputs.supplementaryOutputs()
+                       .ReferenceDependenciesFilePath,
+                   EC.message());
     out.clear_error();
     return true;
   }
@@ -228,7 +231,8 @@ bool swift::emitReferenceDependencies(DiagnosticEngine &diags,
 
     case DeclKind::TypeAlias:
     case DeclKind::Var:
-    case DeclKind::Func: {
+    case DeclKind::Func:
+    case DeclKind::Accessor: {
       auto *VD = cast<ValueDecl>(D);
       if (!VD->hasName())
         break;
@@ -243,6 +247,7 @@ bool swift::emitReferenceDependencies(DiagnosticEngine &diags,
     case DeclKind::PatternBinding:
     case DeclKind::TopLevelCode:
     case DeclKind::IfConfig:
+    case DeclKind::PoundDiagnostic:
       // No action necessary.
       break;
 

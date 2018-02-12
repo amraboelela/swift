@@ -110,6 +110,7 @@ public:
   IGNORED_ATTR(StaticInitializeObjCMetadata)
   IGNORED_ATTR(DowngradeExhaustivityCheck)
   IGNORED_ATTR(ImplicitlyUnwrappedOptional)
+  IGNORED_ATTR(ClangImporterSynthesizedType)
 #undef IGNORED_ATTR
 
   // @noreturn has been replaced with a 'Never' return type.
@@ -271,8 +272,7 @@ void AttributeEarlyChecker::visitTransparentAttr(TransparentAttr *attr) {
     // @transparent is always ok on implicitly generated accessors: they can
     // be dispatched (even in classes) when the references are within the
     // class themself.
-    if (!(isa<FuncDecl>(D) && cast<FuncDecl>(D)->isAccessor() &&
-        D->isImplicit()))
+    if (!(isa<AccessorDecl>(D) && D->isImplicit()))
       return diagnoseAndRemoveAttr(attr,
                                    diag::transparent_in_classes_not_supported);
   }
@@ -477,7 +477,7 @@ void AttributeEarlyChecker::visitIBOutletAttr(IBOutletAttr *attr) {
   // Look through ownership types, and optionals.
   type = type->getReferenceStorageReferent();
   bool wasOptional = false;
-  if (Type underlying = type->getAnyOptionalObjectType()) {
+  if (Type underlying = type->getOptionalObjectType()) {
     type = underlying;
     wasOptional = true;
   }
@@ -497,9 +497,8 @@ void AttributeEarlyChecker::visitIBOutletAttr(IBOutletAttr *attr) {
     TC.diagnose(symbolLoc, diag::note_make_optional,
                 OptionalType::get(type))
       .fixItInsert(symbolLoc, "?");
-    TC.diagnose(symbolLoc, diag::note_make_implicitly_unwrapped_optional,
-                ImplicitlyUnwrappedOptionalType::get(type))
-      .fixItInsert(symbolLoc, "!");
+    TC.diagnose(symbolLoc, diag::note_make_implicitly_unwrapped_optional)
+        .fixItInsert(symbolLoc, "!");
   }
 }
 
@@ -659,6 +658,7 @@ bool AttributeEarlyChecker::visitAbstractAccessControlAttr(
   // Or within protocols.
   if (isa<ProtocolDecl>(D->getDeclContext())) {
     diagnoseAndRemoveAttr(attr, diag::access_control_in_protocol, attr);
+    TC.diagnose(attr->getLocation(), diag::access_control_in_protocol_detail);
     return true;
   }
 
@@ -831,6 +831,7 @@ public:
     IGNORED_ATTR(StaticInitializeObjCMetadata)
     IGNORED_ATTR(DowngradeExhaustivityCheck)
     IGNORED_ATTR(ImplicitlyUnwrappedOptional)
+    IGNORED_ATTR(ClangImporterSynthesizedType)
 #undef IGNORED_ATTR
 
   void visitAvailableAttr(AvailableAttr *attr);
@@ -880,7 +881,7 @@ public:
 static bool checkObjectOrOptionalObjectType(TypeChecker &TC, Decl *D,
                                             ParamDecl *param) {
   Type ty = param->getType();
-  if (auto unwrapped = ty->getAnyOptionalObjectType())
+  if (auto unwrapped = ty->getOptionalObjectType())
     ty = unwrapped;
 
   if (auto classDecl = ty->getClassOrBoundGenericClass()) {
@@ -947,7 +948,7 @@ void AttributeChecker::visitIBActionAttr(IBActionAttr *attr) {
       Type ty = paramList->get(0)->getType();
       if (auto nominal = ty->getAnyNominal())
         if (isa<StructDecl>(nominal) || isa<EnumDecl>(nominal))
-          if (nominal->classifyAsOptionalType() == OTK_None)
+          if (!nominal->isOptionalDecl())
             if (ty->isTriviallyRepresentableIn(ForeignLanguage::ObjectiveC,
                                                cast<FuncDecl>(D)))
               break;  // Looks ok.
@@ -989,10 +990,8 @@ void AttributeChecker::visitIBActionAttr(IBActionAttr *attr) {
 static Decl *getEnclosingDeclForDecl(Decl *D) {
   // If the declaration is an accessor, treat its storage declaration
   // as the enclosing declaration.
-  if (auto *FD = dyn_cast<FuncDecl>(D)) {
-    if (FD->isAccessor()) {
-      return FD->getAccessorStorageDecl();
-    }
+  if (auto *accessor = dyn_cast<AccessorDecl>(D)) {
+    return accessor->getStorage();
   }
 
   return D->getDeclContext()->getInnermostDeclarationDeclContext();
@@ -1107,10 +1106,10 @@ void AttributeChecker::visitFinalAttr(FinalAttr *attr) {
     return;
   }
 
-  if (auto *FD = dyn_cast<FuncDecl>(D)) {
-    if (FD->isAccessor() && !attr->isImplicit()) {
+  if (auto *accessor = dyn_cast<AccessorDecl>(D)) {
+    if (!attr->isImplicit()) {
       unsigned Kind = 2;
-      if (auto *VD = dyn_cast<VarDecl>(FD->getAccessorStorageDecl()))
+      if (auto *VD = dyn_cast<VarDecl>(accessor->getStorage()))
         Kind = VD->isLet() ? 1 : 0;
       TC.diagnose(attr->getLocation(), diag::final_not_on_accessors, Kind)
         .fixItRemove(attr->getRange());
@@ -1398,7 +1397,7 @@ void AttributeChecker::visitRethrowsAttr(RethrowsAttr *attr) {
   for (auto paramList : fn->getParameterLists()) {
     for (auto param : *paramList)
       if (hasThrowingFunctionParameter(param->getType()
-              ->lookThroughAllAnyOptionalTypes()
+              ->lookThroughAllOptionalTypes()
               ->getCanonicalType()))
         return;
   }
@@ -1979,8 +1978,7 @@ void AttributeChecker::visitDiscardableResultAttr(DiscardableResultAttr *attr) {
 
 void AttributeChecker::visitImplementsAttr(ImplementsAttr *attr) {
   TypeLoc &ProtoTypeLoc = attr->getProtocolType();
-  TypeResolutionOptions options;
-  options |= TR_AllowUnboundGenerics;
+  auto options = TypeResolutionFlags::AllowUnboundGenerics;
 
   DeclContext *DC = D->getDeclContext();
   Type T = TC.resolveType(ProtoTypeLoc.getTypeRepr(),
@@ -2068,7 +2066,7 @@ void TypeChecker::checkOwnershipAttr(VarDecl *var, OwnershipAttr *attr) {
       attr->setInvalid();
     }
 
-    if (Type objType = type->getAnyOptionalObjectType()) {
+    if (Type objType = type->getOptionalObjectType()) {
       underlyingType = objType;
     } else {
       // @IBOutlet must be optional, but not necessarily weak. Let it diagnose.

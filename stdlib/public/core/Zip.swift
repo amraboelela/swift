@@ -48,20 +48,72 @@ public func zip<Sequence1, Sequence2>(
   return Zip2Sequence(_sequence1: sequence1, _sequence2: sequence2)
 }
 
-/// An iterator for `Zip2Sequence`.
+/// A sequence of pairs built out of two underlying sequences.
+///
+/// In a `Zip2Sequence` instance, the elements of the *i*th pair are the *i*th
+/// elements of each underlying sequence. To create a `Zip2Sequence` instance,
+/// use the `zip(_:_:)` function.
+///
+/// The following example uses the `zip(_:_:)` function to iterate over an
+/// array of strings and a countable range at the same time:
+///
+///     let words = ["one", "two", "three", "four"]
+///     let numbers = 1...4
+///
+///     for (word, number) in zip(words, numbers) {
+///         print("\(word): \(number)")
+///     }
+///     // Prints "one: 1"
+///     // Prints "two: 2
+///     // Prints "three: 3"
+///     // Prints "four: 4"
 @_fixed_layout // FIXME(sil-serialize-all)
-public struct Zip2Iterator<
-  Iterator1 : IteratorProtocol, Iterator2 : IteratorProtocol
-> : IteratorProtocol {
-  /// The type of element returned by `next()`.
-  public typealias Element = (Iterator1.Element, Iterator2.Element)
-
-  /// Creates an instance around a pair of underlying iterators.
-  @_inlineable // FIXME(sil-serialize-all)
+public struct Zip2Sequence<Sequence1 : Sequence, Sequence2 : Sequence> {
   @_versioned // FIXME(sil-serialize-all)
-  internal init(_ iterator1: Iterator1, _ iterator2: Iterator2) {
-    (_baseStream1, _baseStream2) = (iterator1, iterator2)
+  internal let _sequence1: Sequence1
+  @_versioned // FIXME(sil-serialize-all)
+  internal let _sequence2: Sequence2
+
+  @available(*, deprecated, renamed: "Sequence1.Iterator")
+  public typealias Stream1 = Sequence1.Iterator
+  @available(*, deprecated, renamed: "Sequence2.Iterator")
+  public typealias Stream2 = Sequence2.Iterator
+
+  /// Creates an instance that makes pairs of elements from `sequence1` and
+  /// `sequence2`.
+  @_inlineable // FIXME(sil-serialize-all)
+  public // @testable
+  init(_sequence1 sequence1: Sequence1, _sequence2 sequence2: Sequence2) {
+    (_sequence1, _sequence2) = (sequence1, sequence2)
   }
+}
+
+extension Zip2Sequence {
+  /// An iterator for `Zip2Sequence`.
+  @_fixed_layout // FIXME(sil-serialize-all)
+  public struct Iterator {
+    @_versioned // FIXME(sil-serialize-all)
+    internal var _baseStream1: Sequence1.Iterator
+    @_versioned // FIXME(sil-serialize-all)
+    internal var _baseStream2: Sequence2.Iterator
+    @_versioned // FIXME(sil-serialize-all)
+    internal var _reachedEnd: Bool = false
+
+    /// Creates an instance around a pair of underlying iterators.
+    @_inlineable // FIXME(sil-serialize-all)
+    @_versioned // FIXME(sil-serialize-all)
+    internal init(
+    _ iterator1: Sequence1.Iterator, 
+    _ iterator2: Sequence2.Iterator
+    ) {
+      (_baseStream1, _baseStream2) = (iterator1, iterator2)
+    }
+  }
+}
+
+extension Zip2Sequence.Iterator: IteratorProtocol {
+  /// The type of element returned by `next()`.
+  public typealias Element = (Sequence1.Element, Sequence2.Element)
 
   /// Advances to the next element and returns it, or `nil` if no next element
   /// exists.
@@ -87,55 +139,10 @@ public struct Zip2Iterator<
 
     return (element1, element2)
   }
-
-  @_versioned // FIXME(sil-serialize-all)
-  internal var _baseStream1: Iterator1
-  @_versioned // FIXME(sil-serialize-all)
-  internal var _baseStream2: Iterator2
-  @_versioned // FIXME(sil-serialize-all)
-  internal var _reachedEnd: Bool = false
 }
 
-/// A sequence of pairs built out of two underlying sequences.
-///
-/// In a `Zip2Sequence` instance, the elements of the *i*th pair are the *i*th
-/// elements of each underlying sequence. To create a `Zip2Sequence` instance,
-/// use the `zip(_:_:)` function.
-///
-/// The following example uses the `zip(_:_:)` function to iterate over an
-/// array of strings and a countable range at the same time:
-///
-///     let words = ["one", "two", "three", "four"]
-///     let numbers = 1...4
-///
-///     for (word, number) in zip(words, numbers) {
-///         print("\(word): \(number)")
-///     }
-///     // Prints "one: 1"
-///     // Prints "two: 2
-///     // Prints "three: 3"
-///     // Prints "four: 4"
-@_fixed_layout // FIXME(sil-serialize-all)
-public struct Zip2Sequence<Sequence1 : Sequence, Sequence2 : Sequence>
-  : Sequence {
-
-    
-  @available(*, deprecated, renamed: "Sequence1.Iterator")
-  public typealias Stream1 = Sequence1.Iterator
-  @available(*, deprecated, renamed: "Sequence2.Iterator")
-  public typealias Stream2 = Sequence2.Iterator
-
-  /// A type whose instances can produce the elements of this
-  /// sequence, in order.
-  public typealias Iterator = Zip2Iterator<Sequence1.Iterator, Sequence2.Iterator>
-
-  /// Creates an instance that makes pairs of elements from `sequence1` and
-  /// `sequence2`.
-  @_inlineable // FIXME(sil-serialize-all)
-  public // @testable
-  init(_sequence1 sequence1: Sequence1, _sequence2 sequence2: Sequence2) {
-    (_sequence1, _sequence2) = (sequence1, sequence2)
-  }
+extension Zip2Sequence: Sequence {
+  public typealias Element = (Sequence1.Element, Sequence2.Element)
 
   /// Returns an iterator over the elements of this sequence.
   @_inlineable // FIXME(sil-serialize-all)
@@ -144,9 +151,7 @@ public struct Zip2Sequence<Sequence1 : Sequence, Sequence2 : Sequence>
       _sequence1.makeIterator(),
       _sequence2.makeIterator())
   }
-
-  @_versioned // FIXME(sil-serialize-all)
-  internal let _sequence1: Sequence1
-  @_versioned // FIXME(sil-serialize-all)
-  internal let _sequence2: Sequence2
 }
+
+// @available(*, deprecated, renamed: "Zip2Sequence.Iterator")
+public typealias Zip2Iterator<T, U> = Zip2Sequence<T, U>.Iterator where T: Sequence, U: Sequence

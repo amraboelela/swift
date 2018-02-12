@@ -19,7 +19,7 @@ import SwiftShims
 /// by the Objective-C runtime.
 @_fixed_layout
 @_versioned
-@objc_non_lazy_realization
+@_objc_non_lazy_realization
 internal final class _EmptyArrayStorage
   : _ContiguousArrayStorageBase {
 
@@ -215,7 +215,7 @@ internal struct _ContiguousArrayBuffer<Element> : _ArrayBufferProtocol {
          realMinimumCapacity._builtinWordValue, Element.self)
 
       let storageAddr = UnsafeMutableRawPointer(Builtin.bridgeToRawPointer(_storage))
-      let endAddr = storageAddr + _swift_stdlib_malloc_size(storageAddr)
+      let endAddr = storageAddr + _stdlib_malloc_size(storageAddr)
       let realCapacity = endAddr.assumingMemoryBound(to: Element.self) - firstElementAddress
 
       _initStorageHeader(
@@ -618,7 +618,7 @@ extension _ContiguousArrayBuffer : RandomAccessCollection {
     return count
   }
 
-  internal typealias Indices = CountableRange<Int>
+  internal typealias Indices = Range<Int>
 }
 
 extension Sequence {

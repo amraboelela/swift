@@ -75,15 +75,6 @@ Type TypeChecker::getOptionalType(SourceLoc loc, Type elementType) {
   return OptionalType::get(elementType);
 }
 
-Type TypeChecker::getImplicitlyUnwrappedOptionalType(SourceLoc loc, Type elementType) {
-  if (!Context.getImplicitlyUnwrappedOptionalDecl()) {
-    diagnose(loc, diag::sugar_type_not_found, 2);
-    return Type();
-  }
-
-  return ImplicitlyUnwrappedOptionalType::get(elementType);
-}
-
 static Type getPointerType(TypeChecker &tc, SourceLoc loc, Type pointeeType,
                            PointerTypeKind kind) {
   auto pointerDecl = [&] {
@@ -223,8 +214,7 @@ TypeChecker::getDynamicBridgedThroughObjCClass(DeclContext *dc,
                                                Type dynamicType,
                                                Type valueType) {
   // We can only bridge from class or Objective-C existential types.
-  if (!dynamicType->isObjCExistentialType() &&
-      !dynamicType->mayHaveSuperclass())
+  if (!dynamicType->satisfiesClassConstraint())
     return Type();
 
   // If the value type cannot be bridged, we're done.
@@ -232,14 +222,6 @@ TypeChecker::getDynamicBridgedThroughObjCClass(DeclContext *dc,
     return Type();
 
   return Context.getBridgedToObjC(dc, valueType);
-}
-
-void TypeChecker::forceExternalDeclMembers(NominalTypeDecl *nominalDecl) {
-  // Force any delayed members added to the nominal type declaration.
-  if (nominalDecl->hasDelayedMembers()) {
-    this->handleExternalDecl(nominalDecl);
-    nominalDecl->setHasDelayedMembers(false);
-  }
 }
 
 Type TypeChecker::resolveTypeInContext(
@@ -265,7 +247,6 @@ Type TypeChecker::resolveTypeInContext(
   if (auto nominalType = dyn_cast<NominalTypeDecl>(typeDecl)) {
     if (!isa<ProtocolDecl>(nominalType) &&
         (!nominalType->getGenericParams() || !isSpecialized)) {
-      forceExternalDeclMembers(nominalType);
       for (auto parentDC = fromDC;
            !parentDC->isModuleScopeContext();
            parentDC = parentDC->getParent()) {
@@ -441,9 +422,9 @@ Type TypeChecker::applyGenericArguments(Type type, TypeDecl *decl,
   }
 
   // In SIL mode, Optional<T> interprets T as a SIL type.
-  if (options.contains(TR_SILType)) {
+  if (options.contains(TypeResolutionFlags::SILType)) {
     if (auto nominal = dyn_cast<NominalTypeDecl>(decl)) {
-      if (nominal->classifyAsOptionalType()) {
+      if (nominal->isOptionalDecl()) {
         // Validate the generic argument.
         TypeLoc arg = genericArgs[0];
         if (validateType(arg, dc, withoutContext(options, true), resolver))
@@ -459,7 +440,7 @@ Type TypeChecker::applyGenericArguments(Type type, TypeDecl *decl,
   }
 
   // Cannot extend a bound generic type.
-  if (options.contains(TR_ExtensionBinding)) {
+  if (options.contains(TypeResolutionFlags::ExtensionBinding)) {
     diagnose(loc, diag::extension_specialization,
              genericDecl->getName())
       .highlight(generic->getSourceRange());
@@ -504,12 +485,12 @@ Type TypeChecker::applyUnboundGenericArguments(
     GenericTypeResolver *resolver,
     UnsatisfiedDependency *unsatisfiedDependency) {
 
-  options -= TR_SILType;
-  options -= TR_ImmediateFunctionInput;
-  options -= TR_FunctionInput;
-  options -= TR_TypeAliasUnderlyingType;
-  options -= TR_AllowUnavailableProtocol;
-  options -= TR_AllowIUO;
+  options -= TypeResolutionFlags::SILType;
+  options -= TypeResolutionFlags::ImmediateFunctionInput;
+  options -= TypeResolutionFlags::FunctionInput;
+  options -= TypeResolutionFlags::TypeAliasUnderlyingType;
+  options -= TypeResolutionFlags::AllowUnavailableProtocol;
+  options -= TypeResolutionFlags::AllowIUO;
 
   assert(genericArgs.size() == decl->getGenericParams()->size() &&
          "invalid arguments, use applyGenericArguments for diagnostic emitting");
@@ -599,7 +580,9 @@ Type TypeChecker::applyUnboundGenericArguments(
   // generic signature.
   if (!hasTypeParameterOrVariable) {
     auto result =
-      checkGenericArguments(dc, loc, noteLoc, unboundType, genericSig,
+      checkGenericArguments(dc, loc, noteLoc, unboundType,
+                            genericSig->getGenericParams(),
+                            genericSig->getRequirements(),
                             QueryTypeSubstitutionMap{subs},
                             LookUpConformance(*this, dc),
                             unsatisfiedDependency);
@@ -685,7 +668,7 @@ static Type resolveTypeDecl(TypeChecker &TC, TypeDecl *typeDecl, SourceLoc loc,
   assert(fromDC && "No declaration context for type resolution?");
 
   // Don't validate nominal type declarations during extension binding.
-  if (!options.contains(TR_ExtensionBinding) ||
+  if (!options.contains(TypeResolutionFlags::ExtensionBinding) ||
       !isa<NominalTypeDecl>(typeDecl)) {
     // If we have a callback to report dependencies, do so.
     if (unsatisfiedDependency) {
@@ -713,9 +696,9 @@ static Type resolveTypeDecl(TypeChecker &TC, TypeDecl *typeDecl, SourceLoc loc,
                             generic, resolver);
 
   if (type->is<UnboundGenericType>() && !generic &&
-      !options.contains(TR_AllowUnboundGenerics) &&
-      !options.contains(TR_TypeAliasUnderlyingType) &&
-      !options.contains(TR_ResolveStructure)) {
+      !options.contains(TypeResolutionFlags::AllowUnboundGenerics) &&
+      !options.contains(TypeResolutionFlags::TypeAliasUnderlyingType) &&
+      !options.contains(TypeResolutionFlags::ResolveStructure)) {
     diagnoseUnboundGenericType(TC, type, loc);
     return ErrorType::get(TC.Context);
   }
@@ -726,7 +709,7 @@ static Type resolveTypeDecl(TypeChecker &TC, TypeDecl *typeDecl, SourceLoc loc,
                                    loc, cast<AssociatedTypeDecl>(typeDecl));
   }
 
-  if (generic && !options.contains(TR_ResolveStructure)) {
+  if (generic && !options.contains(TypeResolutionFlags::ResolveStructure)) {
     // Apply the generic arguments to the type.
     type = TC.applyGenericArguments(type, typeDecl, loc, fromDC, generic,
                                     options, resolver, unsatisfiedDependency);
@@ -824,7 +807,7 @@ static Type diagnoseUnknownType(TypeChecker &tc, DeclContext *dc,
 
     // Try ignoring access control.
     DeclContext *lookupDC = dc;
-    if (options.contains(TR_GenericSignature))
+    if (options.contains(TypeResolutionFlags::GenericSignature))
       lookupDC = dc->getParentForLookup();
 
     NameLookupOptions relookupOptions = lookupOptions;
@@ -1022,7 +1005,8 @@ resolveGenericSignatureComponent(TypeChecker &TC, DeclContext *DC,
   }
 
   // If the lookup occurs from within a trailing 'where' clause of
-  // a constrained extension, also look for associated types.
+  // a constrained extension, also look for associated types and typealiases
+  // in the protocol.
   if (genericParams->hasTrailingWhereClause() &&
       comp->getIdLoc().isValid() &&
       TC.Context.SourceMgr.rangeContainsTokenLoc(
@@ -1045,12 +1029,15 @@ resolveGenericSignatureComponent(TypeChecker &TC, DeclContext *DC,
                             decls)) {
       for (const auto decl : decls) {
         // FIXME: Better ambiguity handling.
-        if (auto assocType = dyn_cast<AssociatedTypeDecl>(decl)) {
-          comp->setValue(assocType, DC);
-          return resolveTopLevelIdentTypeComponent(TC, DC, comp, options,
-                                                   diagnoseErrors, resolver,
-                                                   unsatisfiedDependency);
-        }
+        auto typeDecl = dyn_cast<TypeDecl>(decl);
+        if (!typeDecl) continue;
+
+        if (!isa<ProtocolDecl>(typeDecl->getDeclContext())) continue;
+
+        comp->setValue(typeDecl, DC);
+        return resolveTopLevelIdentTypeComponent(TC, DC, comp, options,
+                                                 diagnoseErrors, resolver,
+                                                 unsatisfiedDependency);
       }
     }
   }
@@ -1088,7 +1075,7 @@ resolveTopLevelIdentTypeComponent(TypeChecker &TC, DeclContext *DC,
   DeclContext *lookupDC = DC;
 
   // Dynamic 'Self' in the result type of a function body.
-  if (options.contains(TR_DynamicSelfResult) &&
+  if (options.contains(TypeResolutionFlags::DynamicSelfResult) &&
       comp->getIdentifier() == TC.Context.Id_Self) {
     auto func = cast<FuncDecl>(DC);
     assert(func->hasDynamicSelf() && "Not marked as having dynamic Self?");
@@ -1104,7 +1091,7 @@ resolveTopLevelIdentTypeComponent(TypeChecker &TC, DeclContext *DC,
 
   // For lookups within the generic signature, look at the generic
   // parameters (only), then move up to the enclosing context.
-  if (options.contains(TR_GenericSignature)) {
+  if (options.contains(TypeResolutionFlags::GenericSignature)) {
     Type type = resolveGenericSignatureComponent(
       TC, DC, comp, options, diagnoseErrors, resolver,
       unsatisfiedDependency);
@@ -1112,7 +1099,7 @@ resolveTopLevelIdentTypeComponent(TypeChecker &TC, DeclContext *DC,
       return type;
 
     if (!DC->isCascadingContextForLookup(/*excludeFunctions*/false))
-      options |= TR_KnownNonCascadingDependency;
+      options |= TypeResolutionFlags::KnownNonCascadingDependency;
 
     lookupDC = DC->getParentForLookup();
   }
@@ -1126,11 +1113,13 @@ resolveTopLevelIdentTypeComponent(TypeChecker &TC, DeclContext *DC,
                                                 comp->getIdLoc() })))
     return Type();
 
+  auto id = comp->getIdentifier();
+
   NameLookupOptions lookupOptions = defaultUnqualifiedLookupOptions;
-  if (options.contains(TR_KnownNonCascadingDependency))
+  if (options.contains(TypeResolutionFlags::KnownNonCascadingDependency))
     lookupOptions |= NameLookupFlags::KnownPrivate;
   auto globals = TC.lookupUnqualifiedType(lookupDC,
-                                          comp->getIdentifier(),
+                                          id,
                                           comp->getIdLoc(),
                                           lookupOptions);
 
@@ -1142,11 +1131,6 @@ resolveTopLevelIdentTypeComponent(TypeChecker &TC, DeclContext *DC,
   for (const auto entry : globals) {
     auto *foundDC = entry.getDeclContext();
     auto *typeDecl = cast<TypeDecl>(entry.getValueDecl());
-
-    // If necessary, add delayed members to the declaration.
-    if (auto nomDecl = dyn_cast<NominalTypeDecl>(typeDecl)) {
-      TC.forceExternalDeclMembers(nomDecl);
-    }
 
     Type type = resolveTypeDecl(TC, typeDecl, comp->getIdLoc(),
                                 foundDC, DC,
@@ -1191,63 +1175,6 @@ resolveTopLevelIdentTypeComponent(TypeChecker &TC, DeclContext *DC,
 
     comp->setInvalid();
     return ErrorType::get(TC.Context);
-  }
-
-  // Emit a warning about directly spelling
-  // ImplicitlyUnwrappedOptional rather than using a trailing '!'.
-  auto *IUODecl = TC.Context.getImplicitlyUnwrappedOptionalDecl();
-  if (currentDecl == IUODecl) {
-    if (options.contains(TR_AllowIUO)) {
-      if (isa<GenericIdentTypeRepr>(comp)) {
-        auto *genericTyR = cast<GenericIdentTypeRepr>(comp);
-        assert(genericTyR->getGenericArgs().size() == 1);
-        auto *genericArgTyR = genericTyR->getGenericArgs()[0];
-
-        Diagnostic diag = diag::implicitly_unwrapped_optional_spelling_deprecated_with_fixit;
-
-        // For Swift 5 and later, spelling the full name is an error.
-        if (TC.Context.isSwiftVersionAtLeast(5))
-          diag = diag::implicitly_unwrapped_optional_spelling_error_with_fixit;
-
-        TC.diagnose(comp->getStartLoc(), diag)
-          .fixItRemoveChars(
-              genericTyR->getStartLoc(),
-              genericTyR->getAngleBrackets().Start.getAdvancedLoc(1))
-          .fixItInsertAfter(genericArgTyR->getEndLoc(), "!")
-          .fixItRemoveChars(
-              genericTyR->getAngleBrackets().End,
-              genericTyR->getAngleBrackets().End.getAdvancedLoc(1));
-      } else {
-        Diagnostic diag = diag::implicitly_unwrapped_optional_spelling_deprecated;
-
-        // For Swift 5 and later, spelling the full name is an error.
-        if (TC.Context.isSwiftVersionAtLeast(5))
-          diag = diag::implicitly_unwrapped_optional_spelling_error;
-
-        TC.diagnose(comp->getStartLoc(), diag);
-      }
-    } else if (TC.Context.isSwiftVersionAtLeast(5)) {
-      if (isa<GenericIdentTypeRepr>(comp)) {
-        auto *genericTyR = cast<GenericIdentTypeRepr>(comp);
-        assert(genericTyR->getGenericArgs().size() == 1);
-        auto *genericArgTyR = genericTyR->getGenericArgs()[0];
-
-        TC.diagnose(comp->getStartLoc(), diag::iuo_in_illegal_position)
-          .fixItRemoveChars(
-              genericTyR->getStartLoc(),
-              genericTyR->getAngleBrackets().Start.getAdvancedLoc(1))
-          .fixItInsertAfter(genericArgTyR->getEndLoc(), "?")
-          .fixItRemoveChars(
-              genericTyR->getAngleBrackets().End,
-              genericTyR->getAngleBrackets().End.getAdvancedLoc(1));
-      } else {
-        TC.diagnose(comp->getStartLoc(), diag::iuo_in_illegal_position);
-      }
-    } else {
-      // Pre-Swift-5 warning for spelling ImplicitlyUnwrappedOptional
-      // in places we shouldn't even allow it.
-      TC.diagnose(comp->getStartLoc(), diag::implicitly_unwrapped_optional_spelling_deprecated);
-    }
   }
 
   // If we found nothing, complain and give ourselves a chance to recover.
@@ -1299,7 +1226,7 @@ static Type resolveNestedIdentTypeComponent(
 
     // Only the last component of the underlying type of a type alias may
     // be an unbound generic.
-    if (options & TR_TypeAliasUnderlyingType) {
+    if (options & TypeResolutionFlags::TypeAliasUnderlyingType) {
       if (parentTy->is<UnboundGenericType>()) {
         if (diagnoseErrors)
           diagnoseUnboundGenericType(TC, parentTy, parentRange.End);
@@ -1331,9 +1258,9 @@ static Type resolveNestedIdentTypeComponent(
     }
 
     if (memberType->is<UnboundGenericType>() &&
-        !options.contains(TR_AllowUnboundGenerics) &&
-        !options.contains(TR_TypeAliasUnderlyingType) &&
-        !options.contains(TR_ResolveStructure)) {
+        !options.contains(TypeResolutionFlags::AllowUnboundGenerics) &&
+        !options.contains(TypeResolutionFlags::TypeAliasUnderlyingType) &&
+        !options.contains(TypeResolutionFlags::ResolveStructure)) {
       diagnoseUnboundGenericType(TC, memberType, comp->getLoc());
       return ErrorType::get(TC.Context);
     }
@@ -1363,8 +1290,8 @@ static Type resolveNestedIdentTypeComponent(
   // Phase 1: Find and bind the component decl.
 
   // Look for member types with the given name.
-  bool isKnownNonCascading = options.contains(TR_KnownNonCascadingDependency);
-  if (!isKnownNonCascading && options.contains(TR_InExpression)) {
+  bool isKnownNonCascading = options.contains(TypeResolutionFlags::KnownNonCascadingDependency);
+  if (!isKnownNonCascading && options.contains(TypeResolutionFlags::InExpression)) {
     // Expressions cannot affect a function's signature.
     isKnownNonCascading = isa<AbstractFunctionDecl>(DC);
   }
@@ -1389,9 +1316,9 @@ static Type resolveNestedIdentTypeComponent(
   NameLookupOptions lookupOptions = defaultMemberLookupOptions;
   if (isKnownNonCascading)
     lookupOptions |= NameLookupFlags::KnownPrivate;
-  // FIXME: Lift the restriction for TR_InheritanceClause
-  if (options.contains(TR_ExtensionBinding) ||
-      options.contains(TR_InheritanceClause))
+  // FIXME: Lift the restriction for TypeResolutionFlags::InheritanceClause
+  if (options.contains(TypeResolutionFlags::ExtensionBinding) ||
+      options.contains(TypeResolutionFlags::InheritanceClause))
     lookupOptions -= NameLookupFlags::ProtocolMembers;
   LookupTypeResult memberTypes;
   if (parentTy->mayHaveMembers())
@@ -1499,8 +1426,8 @@ static Type applyNonEscapingFromContext(DeclContext *DC,
                                         TypeResolutionOptions options) {
   // Remember whether this is a function parameter.
   bool isFunctionParam =
-    options.contains(TR_FunctionInput) ||
-    options.contains(TR_ImmediateFunctionInput);
+    options.contains(TypeResolutionFlags::FunctionInput) ||
+    options.contains(TypeResolutionFlags::ImmediateFunctionInput);
 
   bool defaultNoEscape = isFunctionParam;
 
@@ -1567,73 +1494,14 @@ Type TypeChecker::resolveIdentifierType(
   // To support this, inside inheritance clauses we allow references to
   // protocols that are unavailable in the current type refinement context.
 
-  if (!(options & TR_AllowUnavailable) &&
+  if (!(options & TypeResolutionFlags::AllowUnavailable) &&
       diagnoseAvailability(IdType, DC, *this,
-                           options.contains(TR_AllowUnavailableProtocol))) {
+             options.contains(TypeResolutionFlags::AllowUnavailableProtocol))) {
     Components.back()->setInvalid();
     return ErrorType::get(Context);
   }
   
   return result;
-}
-
-/// Returns true if any illegal IUOs were found. If inference of IUO type is
-/// disabled, IUOs may only be specified in the following positions:
-///  * outermost type
-///  * function param
-///  * function return type
-static bool checkForIllegalIUOs(TypeChecker &TC, TypeRepr *Repr,
-                                TypeResolutionOptions Options) {
-  class IllegalIUOWalker : public ASTWalker {
-    TypeChecker &TC;
-    SmallVector<bool, 4> IUOsAllowed;
-    bool FoundIllegalIUO = false;
-
-  public:
-    IllegalIUOWalker(TypeChecker &TC, bool IsGenericParameter)
-      : TC(TC)
-      , IUOsAllowed{!IsGenericParameter} {}
-
-    bool walkToTypeReprPre(TypeRepr *T) override {
-      bool iuoAllowedHere = IUOsAllowed.back();
-
-      // Raise a diagnostic if we run into a prohibited IUO.
-      if (!iuoAllowedHere) {
-        if (auto *iuoTypeRepr =
-            dyn_cast<ImplicitlyUnwrappedOptionalTypeRepr>(T)) {
-          TC.diagnose(iuoTypeRepr->getStartLoc(), diag::iuo_in_illegal_position)
-            .fixItReplace(iuoTypeRepr->getExclamationLoc(), "?");
-          FoundIllegalIUO = true;
-        }
-      }
-
-      bool childIUOsAllowed = false;
-      if (iuoAllowedHere) {
-        if (auto *tupleTypeRepr = dyn_cast<TupleTypeRepr>(T)) {
-          if (tupleTypeRepr->isParenType()) {
-            childIUOsAllowed = true;
-          }
-        } else if (isa<FunctionTypeRepr>(T)) {
-          childIUOsAllowed = true;
-        } else if (isa<AttributedTypeRepr>(T) || isa<InOutTypeRepr>(T)) {
-          childIUOsAllowed = true;
-        }
-      }
-      IUOsAllowed.push_back(childIUOsAllowed);
-      return true;
-    }
-
-    bool walkToTypeReprPost(TypeRepr *T) override {
-      IUOsAllowed.pop_back();
-      return true;
-    }
-
-    bool getFoundIllegalIUO() const { return FoundIllegalIUO; }
-  };
-
-  IllegalIUOWalker Walker(TC, Options.contains(TR_GenericSignature));
-  Repr->walk(Walker);
-  return Walker.getFoundIllegalIUO();
 }
 
 bool TypeChecker::validateType(TypeLoc &Loc, DeclContext *DC,
@@ -1652,13 +1520,6 @@ bool TypeChecker::validateType(TypeLoc &Loc, DeclContext *DC,
     Context.Stats->getFrontendCounters().NumTypesValidated++;
 
   if (Loc.getType().isNull()) {
-    // Swift version < 5? Use the old "illegal IUO" check for
-    // backwards compatibiliy.
-    if (!Context.isSwiftVersionAtLeast(5)) {
-      // Raise error if we parse an IUO type in an illegal position.
-      checkForIllegalIUOs(*this, Loc.getTypeRepr(), options);
-    }
-
     auto type = resolveType(Loc.getTypeRepr(), DC, options, resolver,
                             unsatisfiedDependency);
     if (!type) {
@@ -1668,7 +1529,8 @@ bool TypeChecker::validateType(TypeLoc &Loc, DeclContext *DC,
       type = ErrorType::get(Context);
 
       // Diagnose types that are illegal in SIL.
-    } else if (options.contains(TR_SILType) && !type->isLegalSILType()) {
+    } else if (options.contains(TypeResolutionFlags::SILType)
+               && !type->isLegalSILType()) {
       diagnose(Loc.getLoc(), diag::illegal_sil_type, type);
       Loc.setType(ErrorType::get(Context), true);
       return true;
@@ -1801,13 +1663,13 @@ Type TypeResolver::resolveType(TypeRepr *repr, TypeResolutionOptions options) {
       !isa<AttributedTypeRepr>(repr) &&
       !isa<FunctionTypeRepr>(repr) &&
       !isa<IdentTypeRepr>(repr)) {
-    options -= TR_ImmediateFunctionInput;
-    options -= TR_FunctionInput;
-    options -= TR_TypeAliasUnderlyingType;
+    options -= TypeResolutionFlags::ImmediateFunctionInput;
+    options -= TypeResolutionFlags::FunctionInput;
+    options -= TypeResolutionFlags::TypeAliasUnderlyingType;
   }
 
   if (Context.LangOpts.DisableAvailabilityChecking)
-    options |= TR_AllowUnavailable;
+    options |= TypeResolutionFlags::AllowUnavailable;
 
   switch (repr->getKind()) {
   case TypeReprKind::Error:
@@ -1827,7 +1689,7 @@ Type TypeResolver::resolveType(TypeRepr *repr, TypeResolutionOptions options) {
                                     UnsatisfiedDependency);
 
   case TypeReprKind::Function: {
-    if (!(options & TR_SILType)) {
+    if (!(options & TypeResolutionFlags::SILType)) {
       // Default non-escaping for closure parameters
       auto result =
           resolveASTFunctionType(cast<FunctionTypeRepr>(repr), options);
@@ -1838,7 +1700,7 @@ Type TypeResolver::resolveType(TypeRepr *repr, TypeResolutionOptions options) {
     return resolveSILFunctionType(cast<FunctionTypeRepr>(repr), options);
   }
   case TypeReprKind::SILBox:
-    assert((options & TR_SILType) && "SILBox repr in non-SIL type context?!");
+    assert((options & TypeResolutionFlags::SILType) && "SILBox repr in non-SIL type context?!");
     return resolveSILBoxType(cast<SILBoxTypeRepr>(repr), options);
 
   case TypeReprKind::Array:
@@ -1874,14 +1736,12 @@ Type TypeResolver::resolveType(TypeRepr *repr, TypeResolutionOptions options) {
 }
 
 static Type rebuildWithDynamicSelf(ASTContext &Context, Type ty) {
-  OptionalTypeKind OTK;
   if (auto metatypeTy = ty->getAs<MetatypeType>()) {
     return MetatypeType::get(
         rebuildWithDynamicSelf(Context, metatypeTy->getInstanceType()),
         metatypeTy->getRepresentation());
-  } else if (auto optionalTy = ty->getAnyOptionalObjectType(OTK)) {
-    return OptionalType::get(
-        OTK, rebuildWithDynamicSelf(Context, optionalTy));
+  } else if (auto optionalTy = ty->getOptionalObjectType()) {
+    return OptionalType::get(rebuildWithDynamicSelf(Context, optionalTy));
   } else {
     return DynamicSelfType::get(ty, Context);
   }
@@ -1909,10 +1769,10 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
 
   // Remember whether this is a function parameter.
   bool isFunctionParam =
-    options.contains(TR_FunctionInput) ||
-    options.contains(TR_ImmediateFunctionInput);
+    options.contains(TypeResolutionFlags::FunctionInput) ||
+    options.contains(TypeResolutionFlags::ImmediateFunctionInput);
   bool isVariadicFunctionParam =
-    options.contains(TR_VariadicFunctionInput);
+    options.contains(TypeResolutionFlags::VariadicFunctionInput);
 
   // The type we're working with, in case we want to build it differently
   // based on the attributes we see.
@@ -1937,10 +1797,10 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
           Optional<MetatypeRepresentation> storedRepr;
           // The instance type is not a SIL type.
           auto instanceOptions = options;
-          instanceOptions -= TR_SILType;
-          instanceOptions -= TR_ImmediateFunctionInput;
-          instanceOptions -= TR_FunctionInput;
-          instanceOptions -= TR_TypeAliasUnderlyingType;
+          instanceOptions -= TypeResolutionFlags::SILType;
+          instanceOptions -= TypeResolutionFlags::ImmediateFunctionInput;
+          instanceOptions -= TypeResolutionFlags::FunctionInput;
+          instanceOptions -= TypeResolutionFlags::TypeAliasUnderlyingType;
 
           auto instanceTy = resolveType(base, instanceOptions);
           if (!instanceTy || instanceTy->hasError())
@@ -2002,7 +1862,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
   
   // Some function representation attributes are not supported at source level;
   // only SIL knows how to handle them.  Reject them unless this is a SIL input.
-  if (!(options & TR_SILType)) {
+  if (!(options & TypeResolutionFlags::SILType)) {
     for (auto silOnlyAttr : {TAK_callee_owned, TAK_callee_guaranteed}) {
       checkUnsupportedAttr(silOnlyAttr);
     }
@@ -2034,7 +1894,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
       attrs.clearAttribute(TAK_autoclosure);
     }
     // Fall through to diagnose below.
-  } else if (hasFunctionAttr && (options & TR_SILType)) {
+  } else if (hasFunctionAttr && (options & TypeResolutionFlags::SILType)) {
     SILFunctionType::Representation rep;
     TypeRepr *witnessMethodProtocol = nullptr;
 
@@ -2155,9 +2015,9 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
   }
 
   auto instanceOptions = options;
-  instanceOptions -= TR_ImmediateFunctionInput;
-  instanceOptions -= TR_FunctionInput;
-  instanceOptions -= TR_TypeAliasUnderlyingType;
+  instanceOptions -= TypeResolutionFlags::ImmediateFunctionInput;
+  instanceOptions -= TypeResolutionFlags::FunctionInput;
+  instanceOptions -= TypeResolutionFlags::TypeAliasUnderlyingType;
 
   // If we didn't build the type differently above, we might have
   // a typealias pointing at a function type with the @escaping
@@ -2183,7 +2043,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
             .fixItRemove(attrRange);
 
         // Try to find a helpful note based on how the type is being used
-        if (options.contains(TR_ImmediateOptionalTypeArgument)) {
+        if (options.contains(TypeResolutionFlags::ImmediateOptionalTypeArgument)) {
           TC.diagnose(repr->getLoc(), diag::escaping_optional_type_argument);
         }
       }
@@ -2244,7 +2104,7 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
     if (auto SF = DC->getParentSourceFile()) {
       if (SF->Kind == SourceFileKind::SIL) {
         if (((attrs.has(TAK_sil_weak) || attrs.has(TAK_sil_unmanaged)) &&
-             ty->getAnyOptionalObjectType()) ||
+             ty->getOptionalObjectType()) ||
             (!attrs.has(TAK_sil_weak) && ty->hasReferenceSemantics())) {
           ty = ReferenceStorageType::get(ty, attrs.getOwnership(), Context);
           attrs.clearOwnership();
@@ -2254,19 +2114,19 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
   }
   
   // In SIL *only*, allow @block_storage to specify a block storage type.
-  if ((options & TR_SILType) && attrs.has(TAK_block_storage)) {
+  if ((options & TypeResolutionFlags::SILType) && attrs.has(TAK_block_storage)) {
     ty = SILBlockStorageType::get(ty->getCanonicalType());
     attrs.clearAttribute(TAK_block_storage);
   }
   
   // In SIL *only*, allow @box to specify a box type.
-  if ((options & TR_SILType) && attrs.has(TAK_box)) {
+  if ((options & TypeResolutionFlags::SILType) && attrs.has(TAK_box)) {
     ty = SILBoxType::get(ty->getCanonicalType());
     attrs.clearAttribute(TAK_box);
   }
 
   // In SIL *only*, allow @dynamic_self to specify a dynamic Self type.
-  if ((options & TR_SILMode) && attrs.has(TAK_dynamic_self)) {
+  if ((options & TypeResolutionFlags::SILMode) && attrs.has(TAK_dynamic_self)) {
     ty = rebuildWithDynamicSelf(TC.Context, ty);
     attrs.clearAttribute(TAK_dynamic_self);
   }
@@ -2282,17 +2142,17 @@ Type TypeResolver::resolveAttributedType(TypeAttributes &attrs,
 Type TypeResolver::resolveASTFunctionType(FunctionTypeRepr *repr,
                                           TypeResolutionOptions options,
                                           FunctionType::ExtInfo extInfo) {
-  options -= TR_ImmediateFunctionInput;
-  options -= TR_FunctionInput;
-  options -= TR_TypeAliasUnderlyingType;
+  options -= TypeResolutionFlags::ImmediateFunctionInput;
+  options -= TypeResolutionFlags::FunctionInput;
+  options -= TypeResolutionFlags::TypeAliasUnderlyingType;
   // FIXME: Until we remove the IUO type from the type system, we
   // need to continue to parse IUOs in SIL tests so that we can
   // match the types we generate from the importer.
-  if (!options.contains(TR_SILMode))
-    options -= TR_AllowIUO;
+  if (!options.contains(TypeResolutionFlags::SILMode))
+    options -= TypeResolutionFlags::AllowIUO;
 
   Type inputTy = resolveType(repr->getArgsTypeRepr(),
-                             options | TR_ImmediateFunctionInput);
+                         options | TypeResolutionFlags::ImmediateFunctionInput);
   if (!inputTy || inputTy->hasError()) return inputTy;
 
   Type outputTy = resolveType(repr->getResultTypeRepr(), options);
@@ -2416,9 +2276,8 @@ Type TypeResolver::resolveSILBoxType(SILBoxTypeRepr *repr,
   SmallVector<Substitution, 4> genericArgs;
   if (genericSig) {
     TypeSubstitutionMap genericArgMap;
-    ArrayRef<GenericTypeParamType *> params;
 
-    params = genericSig->getGenericParams();
+    auto params = genericSig->getGenericParams();
     if (repr->getGenericArguments().size()
           != genericSig->getSubstitutionListSize()) {
       TC.diagnose(repr->getLoc(), diag::sil_box_arg_mismatch);
@@ -2461,9 +2320,9 @@ Type TypeResolver::resolveSILFunctionType(FunctionTypeRepr *repr,
                                           SILFunctionType::ExtInfo extInfo,
                                           ParameterConvention callee,
                                           TypeRepr *witnessMethodProtocol) {
-  options -= TR_ImmediateFunctionInput;
-  options -= TR_FunctionInput;
-  options -= TR_TypeAliasUnderlyingType;
+  options -= TypeResolutionFlags::ImmediateFunctionInput;
+  options -= TypeResolutionFlags::FunctionInput;
+  options -= TypeResolutionFlags::TypeAliasUnderlyingType;
 
   bool hasError = false;
 
@@ -2500,7 +2359,7 @@ Type TypeResolver::resolveSILFunctionType(FunctionTypeRepr *repr,
 
       for (auto elt : tuple->getElements()) {
         auto param = resolveSILParameter(elt.Type,
-                                         options | TR_ImmediateFunctionInput);
+                         options | TypeResolutionFlags::ImmediateFunctionInput);
         params.push_back(param);
         if (!param.getType()) return nullptr;
 
@@ -2509,7 +2368,7 @@ Type TypeResolver::resolveSILFunctionType(FunctionTypeRepr *repr,
       }
     } else {
       SILParameterInfo param = resolveSILParameter(repr->getArgsTypeRepr(),
-                                           options | TR_ImmediateFunctionInput);
+                         options | TypeResolutionFlags::ImmediateFunctionInput);
       params.push_back(param);
       if (!param.getType()) return nullptr;
 
@@ -2613,14 +2472,16 @@ SILYieldInfo TypeResolver::resolveSILYield(TypeAttributes &attrs,
                                            TypeResolutionOptions options) {
   AttributedTypeRepr attrRepr(attrs, repr);
   SILParameterInfo paramInfo =
-    resolveSILParameter(&attrRepr, options | TR_ImmediateFunctionInput);
+    resolveSILParameter(&attrRepr, options |
+                                   TypeResolutionFlags::ImmediateFunctionInput);
   return SILYieldInfo(paramInfo.getType(), paramInfo.getConvention());
 }
 
 SILParameterInfo TypeResolver::resolveSILParameter(
                                  TypeRepr *repr,
                                  TypeResolutionOptions options) {
-  assert((options & TR_FunctionInput) | (options & TR_ImmediateFunctionInput) &&
+  assert((options & TypeResolutionFlags::FunctionInput)
+         | (options & TypeResolutionFlags::ImmediateFunctionInput) &&
          "Parameters should be marked as inputs");
   auto convention = DefaultParameterConvention;
   Type type;
@@ -2786,13 +2647,13 @@ bool TypeResolver::resolveSILResults(TypeRepr *repr,
 Type TypeResolver::resolveSpecifierTypeRepr(SpecifierTypeRepr *repr,
                                             TypeResolutionOptions options) {
   // inout is only valid for (non-subscript) function parameters.
-  if ((options & TR_SubscriptParameters) ||
-        (!(options & TR_FunctionInput) &&
-         !(options & TR_ImmediateFunctionInput))) {
+  if ((options & TypeResolutionFlags::SubscriptParameters) ||
+        (!(options & TypeResolutionFlags::FunctionInput) &&
+         !(options & TypeResolutionFlags::ImmediateFunctionInput))) {
     decltype(diag::attr_only_on_parameters) diagID;
-    if (options & TR_SubscriptParameters) {
+    if (options & TypeResolutionFlags::SubscriptParameters) {
       diagID = diag::attr_not_on_subscript_parameters;
-    } else if (options & TR_VariadicFunctionInput) {
+    } else if (options & TypeResolutionFlags::VariadicFunctionInput) {
       diagID = diag::attr_not_on_variadic_parameters;
     } else {
       diagID = diag::attr_only_on_parameters;
@@ -2806,9 +2667,9 @@ Type TypeResolver::resolveSpecifierTypeRepr(SpecifierTypeRepr *repr,
   }
 
   // Anything within the inout isn't a parameter anymore.
-  options -= TR_ImmediateFunctionInput;
-  options -= TR_FunctionInput;
-  options -= TR_TypeAliasUnderlyingType;
+  options -= TypeResolutionFlags::ImmediateFunctionInput;
+  options -= TypeResolutionFlags::FunctionInput;
+  options -= TypeResolutionFlags::TypeAliasUnderlyingType;
 
   Type ty = resolveType(repr->getBase(), options);
   if (!ty || ty->hasError()) return ty;
@@ -2872,7 +2733,7 @@ Type TypeResolver::resolveDictionaryType(DictionaryTypeRepr *repr,
 Type TypeResolver::resolveOptionalType(OptionalTypeRepr *repr,
                                        TypeResolutionOptions options) {
   auto elementOptions = withoutContext(options, true);
-  elementOptions |= TR_ImmediateOptionalTypeArgument;
+  elementOptions |= TypeResolutionFlags::ImmediateOptionalTypeArgument;
 
   // The T in T? is a generic type argument and therefore always an AST type.
   // FIXME: diagnose non-materializability of element type!
@@ -2888,25 +2749,28 @@ Type TypeResolver::resolveOptionalType(OptionalTypeRepr *repr,
 Type TypeResolver::resolveImplicitlyUnwrappedOptionalType(
        ImplicitlyUnwrappedOptionalTypeRepr *repr,
        TypeResolutionOptions options) {
+  if (!options.contains(TypeResolutionFlags::AllowIUO)) {
+    Diagnostic diag = diag::
+        implicitly_unwrapped_optional_in_illegal_position_interpreted_as_optional;
 
-  // Swift version >= 5? Use the newer check for IUOs appearing in
-  // illegal positions.
-  if (TC.Context.isSwiftVersionAtLeast(5) && !options.contains(TR_AllowIUO)) {
-    TC.diagnose(repr->getStartLoc(), diag::iuo_in_illegal_position)
-      .fixItReplace(repr->getExclamationLoc(), "?");
-    return ErrorType::get(Context);
+    if (TC.Context.isSwiftVersionAtLeast(5))
+      diag = diag::implicitly_unwrapped_optional_in_illegal_position;
+
+    TC.diagnose(repr->getStartLoc(), diag)
+        .fixItReplace(repr->getExclamationLoc(), "?");
   }
 
   auto elementOptions = withoutContext(options, true);
-  elementOptions |= TR_ImmediateOptionalTypeArgument;
+  elementOptions |= TypeResolutionFlags::ImmediateOptionalTypeArgument;
 
   // The T in T! is a generic type argument and therefore always an AST type.
   // FIXME: diagnose non-materializability of element type!
   Type baseTy = resolveType(repr->getBase(), elementOptions);
   if (!baseTy || baseTy->hasError()) return baseTy;
 
-  auto uncheckedOptionalTy =
-    TC.getImplicitlyUnwrappedOptionalType(repr->getExclamationLoc(), baseTy);
+  Type uncheckedOptionalTy;
+  uncheckedOptionalTy = TC.getOptionalType(repr->getExclamationLoc(), baseTy);
+
   if (!uncheckedOptionalTy)
     return ErrorType::get(Context);
 
@@ -2915,7 +2779,8 @@ Type TypeResolver::resolveImplicitlyUnwrappedOptionalType(
 
 Type TypeResolver::resolveTupleType(TupleTypeRepr *repr,
                                     TypeResolutionOptions options) {
-  bool isImmediateFunctionInput = options.contains(TR_ImmediateFunctionInput);
+  bool isImmediateFunctionInput = options.contains(
+                                   TypeResolutionFlags::ImmediateFunctionInput);
   SmallVector<TupleTypeElt, 8> elements;
   elements.reserve(repr->getNumElements());
   
@@ -2924,7 +2789,11 @@ Type TypeResolver::resolveTupleType(TupleTypeRepr *repr,
   auto elementOptions = options;
   if (repr->isParenType()) {
     // We also want to disallow IUO within even a paren.
-    elementOptions -= TR_AllowIUO;
+    // FIXME: Until we remove the IUO type from the type system, we
+    // need to continue to parse IUOs in SIL tests so that we can
+    // match the types we generate from the importer.
+    if (!options.contains(TypeResolutionFlags::SILMode))
+      elementOptions -= TypeResolutionFlags::AllowIUO;
 
     // If we have a single ParenType, don't clear the context bits; we
     // still want to parse the type contained therein as if it were in
@@ -2933,13 +2802,13 @@ Type TypeResolver::resolveTupleType(TupleTypeRepr *repr,
     // `FunctionInput` so that e.g. ((foo: Int)) -> Int is considered a
     // tuple argument rather than a labeled Int argument.
     if (isImmediateFunctionInput) {
-      elementOptions -= TR_ImmediateFunctionInput;
-      elementOptions |= TR_FunctionInput;
+      elementOptions -= TypeResolutionFlags::ImmediateFunctionInput;
+      elementOptions |= TypeResolutionFlags::FunctionInput;
     }
   } else {
     elementOptions = withoutContext(elementOptions, true);
     if (isImmediateFunctionInput)
-      elementOptions |= TR_FunctionInput;
+      elementOptions |= TypeResolutionFlags::FunctionInput;
   }
 
   bool complained = false;
@@ -2971,7 +2840,7 @@ Type TypeResolver::resolveTupleType(TupleTypeRepr *repr,
     if (repr->hasEllipsis() &&
         elements.size() == repr->getEllipsisIndex()) {
       thisElementOptions = withoutContext(elementOptions);
-      thisElementOptions |= TR_VariadicFunctionInput;
+      thisElementOptions |= TypeResolutionFlags::VariadicFunctionInput;
       variadic = true;
     }
 
@@ -2997,8 +2866,8 @@ Type TypeResolver::resolveTupleType(TupleTypeRepr *repr,
   // or SIL, either.
   if (!isImmediateFunctionInput) {
     if (elements.size() == 1 && elements[0].hasName()
-        && !(options & TR_SILType)
-        && !(options & TR_EnumCase)) {
+        && !(options & TypeResolutionFlags::SILType)
+        && !(options & TypeResolutionFlags::EnumCase)) {
       if (!complained) {
         TC.diagnose(repr->getElementNameLoc(0),
                     diag::tuple_single_element)
@@ -3192,7 +3061,7 @@ Type TypeResolver::resolveMetatypeType(MetatypeTypeRepr *repr,
   // In SIL mode, a metatype must have a @thin, @thick, or
   // @objc_metatype attribute, so metatypes should have been lowered
   // in resolveAttributedType.
-  if (options & TR_SILType) {
+  if (options & TypeResolutionFlags::SILType) {
     TC.diagnose(repr->getStartLoc(), diag::sil_metatype_without_repr);
     storedRepr = MetatypeRepresentation::Thick;
   }
@@ -3223,7 +3092,7 @@ Type TypeResolver::resolveProtocolType(ProtocolTypeRepr *repr,
   // In SIL mode, a metatype must have a @thin, @thick, or
   // @objc_metatype attribute, so metatypes should have been lowered
   // in resolveAttributedType.
-  if (options & TR_SILType) {
+  if (options & TypeResolutionFlags::SILType) {
     TC.diagnose(repr->getStartLoc(), diag::sil_metatype_without_repr);
     storedRepr = MetatypeRepresentation::Thick;
   }
@@ -3578,61 +3447,59 @@ bool TypeChecker::isRepresentableInObjC(
     return false;
   }
 
-  if (auto *FD = dyn_cast<FuncDecl>(AFD)) {
-    if (FD->isAccessor()) {
-      // Accessors can only be @objc if the storage declaration is.
-      // Global computed properties may however @_cdecl their accessors.
-      auto storage = FD->getAccessorStorageDecl();
-      validateDecl(storage);
-      if (!storage->isObjC() && Reason != ObjCReason::ExplicitlyCDecl &&
-          Reason != ObjCReason::WitnessToObjC) {
-        if (Diagnose) {
-          auto error = FD->isGetter()
-                    ? (isa<VarDecl>(storage) 
-                         ? diag::objc_getter_for_nonobjc_property
-                         : diag::objc_getter_for_nonobjc_subscript)
-                    : (isa<VarDecl>(storage)
-                         ? diag::objc_setter_for_nonobjc_property
-                         : diag::objc_setter_for_nonobjc_subscript);
+  if (auto accessor = dyn_cast<AccessorDecl>(AFD)) {
+    // Accessors can only be @objc if the storage declaration is.
+    // Global computed properties may however @_cdecl their accessors.
+    auto storage = accessor->getStorage();
+    validateDecl(storage);
+    if (!storage->isObjC() && Reason != ObjCReason::ExplicitlyCDecl &&
+        Reason != ObjCReason::WitnessToObjC) {
+      if (Diagnose) {
+        auto error = accessor->isGetter()
+                  ? (isa<VarDecl>(storage) 
+                       ? diag::objc_getter_for_nonobjc_property
+                       : diag::objc_getter_for_nonobjc_subscript)
+                  : (isa<VarDecl>(storage)
+                       ? diag::objc_setter_for_nonobjc_property
+                       : diag::objc_setter_for_nonobjc_subscript);
 
-          diagnose(FD->getLoc(), error);
-          describeObjCReason(*this, AFD, Reason);
-        }
-        return false;
+        diagnose(accessor->getLoc(), error);
+        describeObjCReason(*this, accessor, Reason);
       }
-
-      switch (FD->getAccessorKind()) {
-      case AccessorKind::NotAccessor:
-        llvm_unreachable("already checking for accessor-ness");
-
-      case AccessorKind::IsDidSet:
-      case AccessorKind::IsWillSet:
-          // willSet/didSet implementations are never exposed to objc, they are
-          // always directly dispatched from the synthesized setter.
-        if (Diagnose) {
-          diagnose(AFD->getLoc(), diag::objc_observing_accessor);
-          describeObjCReason(*this, AFD, Reason);
-        }
-        return false;
-
-      case AccessorKind::IsGetter:
-      case AccessorKind::IsSetter:
-        return true;
-
-      case AccessorKind::IsMaterializeForSet:
-        // materializeForSet is synthesized, so never complain about it
-        return false;
-
-      case AccessorKind::IsAddressor:
-      case AccessorKind::IsMutableAddressor:
-        if (Diagnose) {
-          diagnose(AFD->getLoc(), diag::objc_addressor);
-          describeObjCReason(*this, AFD, Reason);
-        }
-        return false;
-      }
+      return false;
     }
 
+    switch (accessor->getAccessorKind()) {
+    case AccessorKind::IsDidSet:
+    case AccessorKind::IsWillSet:
+        // willSet/didSet implementations are never exposed to objc, they are
+        // always directly dispatched from the synthesized setter.
+      if (Diagnose) {
+        diagnose(accessor->getLoc(), diag::objc_observing_accessor);
+        describeObjCReason(*this, accessor, Reason);
+      }
+      return false;
+
+    case AccessorKind::IsGetter:
+    case AccessorKind::IsSetter:
+      return true;
+
+    case AccessorKind::IsMaterializeForSet:
+      // materializeForSet is synthesized, so never complain about it
+      return false;
+
+    case AccessorKind::IsAddressor:
+    case AccessorKind::IsMutableAddressor:
+      if (Diagnose) {
+        diagnose(accessor->getLoc(), diag::objc_addressor);
+        describeObjCReason(*this, accessor, Reason);
+      }
+      return false;
+    }
+    llvm_unreachable("bad kind");
+  }
+
+  if (auto *FD = dyn_cast<FuncDecl>(AFD)) {
     unsigned ExpectedParamPatterns = 1;
     if (FD->getImplicitSelfDecl())
       ExpectedParamPatterns++;
@@ -3739,12 +3606,12 @@ bool TypeChecker::isRepresentableInObjC(
       }
 
       errorResultType = boolDecl->getDeclaredType()->getCanonicalType();
-    } else if (!resultType->getAnyOptionalObjectType() &&
+    } else if (!resultType->getOptionalObjectType() &&
                isBridgedToObjectiveCClass(dc, resultType)) {
       // Functions that return a (non-optional) type bridged to Objective-C
       // can be throwing; they indicate failure with a nil result.
       kind = ForeignErrorConvention::NilResult;
-    } else if ((optOptionalType = resultType->getAnyOptionalObjectType()) &&
+    } else if ((optOptionalType = resultType->getOptionalObjectType()) &&
                isBridgedToObjectiveCClass(dc, optOptionalType)) {
       // Cannot return an optional bridged type, because 'nil' is reserved
       // to indicate failure. Call this out in a separate diagnostic.
@@ -3836,7 +3703,7 @@ bool TypeChecker::isRepresentableInObjC(
         type = type->getRValueType();
         
         // Look through one level of optionality.
-        if (auto objectType = type->getAnyOptionalObjectType())
+        if (auto objectType = type->getOptionalObjectType())
           type = objectType;
         
         // Is it a function type?
@@ -3995,6 +3862,26 @@ bool TypeChecker::isRepresentableInObjC(const SubscriptDecl *SD,
   describeObjCReason(*this, SD, Reason);
 
   return Result;
+}
+
+bool TypeChecker::canBeRepresentedInObjC(const ValueDecl *decl) {
+  if (!Context.LangOpts.EnableObjCInterop)
+    return false;
+
+  if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
+    Optional<ForeignErrorConvention> errorConvention;
+    return isRepresentableInObjC(func, ObjCReason::MemberOfObjCMembersClass,
+                                 errorConvention);
+  }
+
+  if (auto var = dyn_cast<VarDecl>(decl))
+    return isRepresentableInObjC(var, ObjCReason::MemberOfObjCMembersClass);
+
+  if (auto subscript = dyn_cast<SubscriptDecl>(decl))
+    return isRepresentableInObjC(subscript,
+                                 ObjCReason::MemberOfObjCMembersClass);
+
+  return false;
 }
 
 void TypeChecker::diagnoseTypeNotRepresentableInObjC(const DeclContext *DC,

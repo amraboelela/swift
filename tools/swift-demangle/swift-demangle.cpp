@@ -49,6 +49,10 @@ RemangleMode("test-remangle",
            llvm::cl::desc("Remangle test mode (show the remangled string)"));
 
 static llvm::cl::opt<bool>
+RemangleRtMode("remangle-objc-rt",
+           llvm::cl::desc("Remangle to the ObjC runtime name mangling scheme"));
+
+static llvm::cl::opt<bool>
 RemangleNew("remangle-new",
            llvm::cl::desc("Remangle the symbol with new mangling scheme"));
 
@@ -102,12 +106,12 @@ static void demangle(llvm::raw_ostream &os, llvm::StringRef name,
       remangled = name;
     } else {
       remangled = swift::Demangle::mangleNode(pointer);
-      unsigned prefixLen = swift::Demangle::getManglingPrefixLength(remangled.data());
+      unsigned prefixLen = swift::Demangle::getManglingPrefixLength(remangled);
       assert(prefixLen > 0);
       // Replace the prefix if we remangled with a different prefix.
       if (!name.startswith(remangled.substr(0, prefixLen))) {
         unsigned namePrefixLen =
-          swift::Demangle::getManglingPrefixLength(name.data());
+          swift::Demangle::getManglingPrefixLength(name);
         assert(namePrefixLen > 0);
         remangled = name.take_front(namePrefixLen).str() +
                       remangled.substr(prefixLen);
@@ -121,6 +125,12 @@ static void demangle(llvm::raw_ostream &os, llvm::StringRef name,
     if (hadLeadingUnderscore) llvm::outs() << '_';
     llvm::outs() << remangled;
     return;
+  } else if (RemangleRtMode) {
+    std::string remangled = name;
+    if (pointer) {
+      remangled = swift::Demangle::mangleNodeOld(pointer);
+    }
+    llvm::outs() << remangled;
   }
   if (!TreeOnly) {
     if (RemangleNew) {
@@ -138,8 +148,7 @@ static void demangle(llvm::raw_ostream &os, llvm::StringRef name,
 
     if (Classify) {
       std::string Classifications;
-      std::string cName = name.str();
-      if (!swift::Demangle::isSwiftSymbol(cName.c_str()))
+      if (!swift::Demangle::isSwiftSymbol(name))
         Classifications += 'N';
       if (DCtx.isThunkSymbol(name)) {
         if (!Classifications.empty())

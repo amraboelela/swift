@@ -477,11 +477,18 @@ SILInstruction *SILCombiner::visitLoadInst(LoadInst *LI) {
   // Given a load with multiple struct_extracts/tuple_extracts and no other
   // uses, canonicalize the load into several (struct_element_addr (load))
   // pairs.
-  using ProjInstPairTy = std::pair<Projection, SingleValueInstruction *>;
+
+  struct ProjInstPair {
+    Projection P;
+    SingleValueInstruction *I;
+
+    // When sorting, just look at the projection and ignore the instruction.
+    bool operator<(const ProjInstPair &RHS) const { return P < RHS.P; }
+  };
 
   // Go through the loads uses and add any users that are projections to the
   // projection list.
-  llvm::SmallVector<ProjInstPairTy, 8> Projections;
+  llvm::SmallVector<ProjInstPair, 8> Projections;
   for (auto *UI : getNonDebugUses(LI)) {
     auto *User = UI->getUser();
 
@@ -503,8 +510,8 @@ SILInstruction *SILCombiner::visitLoadInst(LoadInst *LI) {
   Projection *LastProj = nullptr;
   LoadInst *LastNewLoad = nullptr;
   for (auto &Pair : Projections) {
-    auto &Proj = Pair.first;
-    auto *Inst = Pair.second;
+    auto &Proj = Pair.P;
+    auto *Inst = Pair.I;
 
     // If this projection is the same as the last projection we processed, just
     // replace all uses of the projection with the load we created previously.
@@ -1134,6 +1141,15 @@ SILInstruction *SILCombiner::visitStrongReleaseInst(StrongReleaseInst *SRI) {
       isa<ObjCMetatypeToObjectInst>(SRI->getOperand()))
     return eraseInstFromFunction(*SRI);
 
+  // Release of a classbound existential converted from a class is just a
+  // release of the class, squish the conversion.
+  if (auto ier = dyn_cast<InitExistentialRefInst>(SRI->getOperand()))
+    if (ier->hasOneUse()) {
+      SRI->setOperand(ier->getOperand());
+      eraseInstFromFunction(*ier);
+      return SRI;
+    }
+  
   return nullptr;
 }
 
@@ -1403,6 +1419,61 @@ visitAllocRefDynamicInst(AllocRefDynamicInst *ARDI) {
 }
 
 SILInstruction *SILCombiner::visitEnumInst(EnumInst *EI) {
+  return nullptr;
+}
+
+SILInstruction *SILCombiner::visitMarkDependenceInst(MarkDependenceInst *MDI) {
+  // Simplify the base operand of a MarkDependenceInst to eliminate unnecessary
+  // instructions that aren't adding value.
+  //
+  // Conversions to Optional.Some(x) often happen here, this isn't important
+  // for us, we can just depend on 'x' directly.
+  if (auto eiBase = dyn_cast<EnumInst>(MDI->getBase())) {
+    if (eiBase->hasOperand() && eiBase->hasOneUse()) {
+      MDI->setBase(eiBase->getOperand());
+      eraseInstFromFunction(*eiBase);
+      return MDI;
+    }
+  }
+  
+  // Conversions from a class to AnyObject also happen a lot, we can just depend
+  // on the class reference.
+  if (auto ier = dyn_cast<InitExistentialRefInst>(MDI->getBase())) {
+    MDI->setBase(ier->getOperand());
+    if (ier->use_empty())
+      eraseInstFromFunction(*ier);
+    return MDI;
+  }
+
+  // Conversions from a class to AnyObject also happen a lot, we can just depend
+  // on the class reference.
+  if (auto oeri = dyn_cast<OpenExistentialRefInst>(MDI->getBase())) {
+    MDI->setBase(oeri->getOperand());
+    if (oeri->use_empty())
+      eraseInstFromFunction(*oeri);
+    return MDI;
+  }
+
+  return nullptr;
+}
+
+
+SILInstruction *SILCombiner::
+visitClassifyBridgeObjectInst(ClassifyBridgeObjectInst *CBOI) {
+  auto *URC = dyn_cast<UncheckedRefCastInst>(CBOI->getOperand());
+  if (!URC)
+    return nullptr;
+
+  auto type = URC->getOperand()->getType().getSwiftRValueType();
+  if (ClassDecl *cd = type->getClassOrBoundGenericClass()) {
+    if (!cd->isObjC()) {
+      auto int1Ty = SILType::getBuiltinIntegerType(1, Builder.getASTContext());
+      SILValue zero = Builder.createIntegerLiteral(CBOI->getLoc(),
+                                                   int1Ty, 0);
+      return Builder.createTuple(CBOI->getLoc(), { zero, zero });
+    }
+  }
+
   return nullptr;
 }
 

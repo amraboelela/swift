@@ -26,6 +26,8 @@ def primary_file : Separate<["-"], "primary-file">,
 
 def filelist : Separate<["-"], "filelist">,
   HelpText<"Specify source inputs in a file rather than on the command line">;
+def primary_filelist : Separate<["-"], "primary-filelist">,
+  HelpText<"Specify primary inputs in a file rather than on the command line">;
 def output_filelist : Separate<["-"], "output-filelist">,
   HelpText<"Specify outputs in a file rather than on the command line">;
 
@@ -155,8 +157,8 @@ def propagate_constraints : Flag<["-"], "propagate-constraints">,
 def iterative_type_checker : Flag<["-"], "iterative-type-checker">,
   HelpText<"Enable the iterative type checker">;
 
-def enable_named_lazy_member_loading : Flag<["-"], "enable-named-lazy-member-loading">,
-  HelpText<"Enable per-name lazy member loading">;
+def disable_named_lazy_member_loading : Flag<["-"], "disable-named-lazy-member-loading">,
+  HelpText<"Disable per-name lazy member loading">;
 
 def debug_generic_signatures : Flag<["-"], "debug-generic-signatures">,
   HelpText<"Debug generic signatures">;
@@ -187,9 +189,6 @@ def debugger_support : Flag<["-"], "debugger-support">,
 def disable_arc_opts : Flag<["-"], "disable-arc-opts">,
   HelpText<"Don't run SIL ARC optimization passes.">;
 
-def enable_guaranteed_closure_contexts : Flag<["-"], "enable-guaranteed-closure-contexts">,
-  HelpText<"Use @guaranteed convention for closure context">;
-
 def disable_sil_partial_apply : Flag<["-"], "disable-sil-partial-apply">,
   HelpText<"Disable use of partial_apply in SIL generation">;
 
@@ -200,6 +199,8 @@ def enable_access_control : Flag<["-"], "enable-access-control">,
 
 def code_complete_inits_in_postfix_expr : Flag<["-"], "code-complete-inits-in-postfix-expr">,
   HelpText<"Include initializers when completing a postfix expression">;
+def code_complete_call_pattern_heuristics : Flag<["-"], "code-complete-call-pattern-heuristics">,
+  HelpText<"Use heuristics to guess whether we want call pattern completions">;
 
 def disable_autolink_framework : Separate<["-"],"disable-autolink-framework">,
   HelpText<"Disable autolinking against the provided framework">;
@@ -262,6 +263,9 @@ def pch_disable_validation : Flag<["-"], "pch-disable-validation">,
 
 def enable_sil_ownership : Flag<["-"], "enable-sil-ownership">,
   HelpText<"Enable the SIL Ownership Model">;
+
+def enable_guaranteed_normal_arguments : Flag<["-"], "enable-guaranteed-normal-arguments">,
+  HelpText<"If set to true, all normal parameters (except to inits/setters) will be passed at +0">;
 
 def disable_mandatory_semantic_arc_opts : Flag<["-"], "disable-mandatory-semantic-arc-opts">,
   HelpText<"Disable the mandatory semantic arc optimizer">;
@@ -438,10 +442,6 @@ def enable_resilience : Flag<["-"], "enable-resilience">,
    HelpText<"Compile the module to export resilient interfaces for all "
             "public declarations by default">;
 
-def enable_class_resilience : Flag<["-"], "enable-class-resilience">,
-   HelpText<"Compile the module to export resilient interfaces for all "
-            "public classes by default (doesn't work yet)">;
-
 def group_info_path : Separate<["-"], "group-info-path">,
   HelpText<"The path to collect the group information of the compiled module">;
 
@@ -456,5 +456,8 @@ def validate_tbd_against_ir_EQ: Joined<["-"], "validate-tbd-against-ir=">,
 // This is used to guard preemptive testing for the fix-it.
 def fix_string_substring_conversion: Flag<["-"], "fix-string-substring-conversion">,
     HelpText<"Emit a fix-it to append '[]' to String expressions when converting to Substring.">;
+    
+def bypass_batch_mode_checks: Flag<["-"], "bypass-batch-mode-checks">,
+    HelpText<"Bypass checks for batch-mode errors.">;
 
 } // end let Flags = [FrontendOption, NoDriverOption, HelpHidden]

@@ -52,15 +52,20 @@ namespace irgen {
   /// Set an LLVM value name for the given protocol witness table.
   void setProtocolWitnessTableName(IRGenModule &IGM, llvm::Value *value,
                                    CanType type, ProtocolDecl *protocol);
-  
+
+  /// Extract the method pointer from the given witness table
+  /// as a function value.
+  FunctionPointer emitWitnessMethodValue(IRGenFunction &IGF,
+                                         llvm::Value *wtable,
+                                         SILDeclRef member);
+
   /// Extract the method pointer from an archetype's witness table
   /// as a function value.
   FunctionPointer emitWitnessMethodValue(IRGenFunction &IGF,
                                          CanType baseTy,
                                          llvm::Value **baseMetadataCache,
                                          SILDeclRef member,
-                                         ProtocolConformanceRef conformance,
-                                         CanSILFunctionType fnType);
+                                         ProtocolConformanceRef conformance);
 
   /// Given a type T and an associated type X of some protocol P to
   /// which T conforms, return the type metadata for T.X.
@@ -72,6 +77,12 @@ namespace irgen {
                                              llvm::Value *parentMetadata,
                                              llvm::Value *wtable,
                                              AssociatedType associatedType);
+
+  // Return the offset one should do on a witness table pointer to retrieve the
+  // `index`th piece of private data.
+  inline int privateWitnessTableIndexToTableOffset(unsigned index) {
+    return -1 - (int)index;
+  }
 
   /// Add the witness parameters necessary for calling a function with
   /// the given generics clause.

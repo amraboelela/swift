@@ -192,8 +192,16 @@ static bool isNominallySuperclassOf(Type type1, Type type2) {
 /// Determine the relationship between the self types of the given declaration
 /// contexts..
 static std::pair<SelfTypeRelationship, Optional<ProtocolConformanceRef>>
-computeSelfTypeRelationship(TypeChecker &tc, DeclContext *dc, DeclContext *dc1,
-                            DeclContext *dc2) {
+computeSelfTypeRelationship(TypeChecker &tc, DeclContext *dc, ValueDecl *decl1,
+                            ValueDecl *decl2) {
+  // If both declarations are operators, even through they
+  // might have Self such types are unrelated.
+  if (decl1->isOperator() && decl2->isOperator())
+    return {SelfTypeRelationship::Unrelated, None};
+
+  auto *dc1 = decl1->getDeclContext();
+  auto *dc2 = decl2->getDeclContext();
+
   // If at least one of the contexts is a non-type context, the two are
   // unrelated.
   if (!dc1->isTypeContext() || !dc2->isTypeContext())
@@ -232,8 +240,10 @@ computeSelfTypeRelationship(TypeChecker &tc, DeclContext *dc, DeclContext *dc1,
 
   // If the model type does not conform to the protocol, the bases are
   // unrelated.
-  auto conformance = tc.conformsToProtocol(modelTy, proto, dc,
-                                           ConformanceCheckFlags::InExpression);
+  auto conformance = tc.conformsToProtocol(
+                         modelTy, proto, dc,
+                         (ConformanceCheckFlags::InExpression|
+                          ConformanceCheckFlags::SkipConditionalRequirements));
   if (!conformance)
     return {SelfTypeRelationship::Unrelated, None};
 
@@ -360,6 +370,17 @@ static bool isProtocolExtensionAsSpecializedAs(TypeChecker &tc,
   // Solve the system. If the first extension is at least as specialized as the
   // second, we're done.
   return cs.solveSingle().hasValue();
+}
+
+/// Retrieve the adjusted parameter type for overloading purposes.
+static Type getAdjustedParamType(const AnyFunctionType::Param &param) {
+  if (auto funcTy = param.getType()->getAs<FunctionType>()) {
+    if (funcTy->isAutoClosure()) {
+      return funcTy->getResult();
+    }
+  }
+
+  return param.getType();
 }
 
 /// \brief Determine whether the first declaration is as "specialized" as
@@ -528,7 +549,7 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
       // appropriate constraints. The constraints themselves never fail, but
       // they help deduce type variables that were opened.
       auto selfTypeRelationship =
-          computeSelfTypeRelationship(tc, dc, outerDC1, outerDC2);
+          computeSelfTypeRelationship(tc, dc, decl1, decl2);
       auto relationshipKind = selfTypeRelationship.first;
       auto conformance = selfTypeRelationship.second;
       switch (relationshipKind) {
@@ -613,29 +634,52 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
             fewerEffectiveParameters = true;
           }
 
+          Type paramType1 = getAdjustedParamType(param1);
+          Type paramType2 = getAdjustedParamType(param2);
+
           // Check whether the first parameter is a subtype of the second.
           cs.addConstraint(ConstraintKind::Subtype,
-                           param1.getType(), param2.getType(), locator);
+                           paramType1, paramType2, locator);
           return true;
         };
 
-        for (unsigned i = 0; i != numParams2; ++i) {
-          // If there is no corresponding argument in the first
-          // parameter list...
-          if (i >= numParams1) {
-            // We need either a default argument or a variadic
-            // argument for the first declaration to be more
-            // specialized.
-            if (!defaultMapType2[i] &&
-                !params2[i].isVariadic())
+        for (unsigned param1 = 0, param2 = 0; param2 != numParams2; ++param2) {
+          // If there is a default for parameter in the second function
+          // while there are still some parameters left unclaimed in first,
+          // it could only mean that default parameters are intermixed e.g.
+          //
+          // ```swift
+          // func foo(a: Int) {}
+          // func foo(q: String = "", a: Int) {}
+          // ```
+          // or
+          // ```swift
+          // func foo(a: Int, c: Int) {}
+          // func foo(a: Int, b: Int = 0, c: Int) {}
+          // ```
+          // and we shouldn't claim parameter from the first function.
+          if (param1 < numParams1 && numParams1 != numParams2 &&
+              defaultMapType2[param2]) {
+            fewerEffectiveParameters = true;
+            continue;
+          }
+
+          // If we've claimed all of the parameters from first
+          // function, the rest of the parameters in second should
+          // be either default or variadic.
+          if (param1 >= numParams1) {
+            if (!defaultMapType2[param2] && !params2[param2].isVariadic())
               return false;
 
             fewerEffectiveParameters = true;
             continue;
           }
 
-          if (!maybeAddSubtypeConstraint(params1[i], params2[i]))
+          if (!maybeAddSubtypeConstraint(params1[param1], params2[param2]))
             return false;
+
+          // claim the parameter as used.
+          ++param1;
         }
 
         if (compareTrailingClosureParamsSeparately)
@@ -778,8 +822,8 @@ SolutionCompareResult ConstraintSystem::compareSolutions(
       
       // A declaration found directly beats any declaration found via dynamic
       // lookup, bridging, or optional unwrapping.
-      if (choice1.getKind() == OverloadChoiceKind::Decl &&
-          (choice2.getKind() == OverloadChoiceKind::DeclViaDynamic || 
+      if ((choice1.getKind() == OverloadChoiceKind::Decl) &&
+          (choice2.getKind() == OverloadChoiceKind::DeclViaDynamic ||
            choice2.getKind() == OverloadChoiceKind::DeclViaBridge ||
            choice2.getKind() == OverloadChoiceKind::DeclViaUnwrappedOptional)) {
         score1 += weight;
@@ -935,7 +979,7 @@ SolutionCompareResult ConstraintSystem::compareSolutions(
         if (!VD->getModuleContext()->isStdlibModule())
           return false;
         auto fnTy = VD->getInterfaceType()->castTo<AnyFunctionType>();
-        if (!fnTy->getResult()->getAnyOptionalObjectType())
+        if (!fnTy->getResult()->getOptionalObjectType())
           return false;
 
         // Check that the standard library hasn't added another overload of
@@ -943,11 +987,11 @@ SolutionCompareResult ConstraintSystem::compareSolutions(
         auto inputTupleTy = fnTy->getInput()->castTo<TupleType>();
         auto inputTypes = inputTupleTy->getElementTypes();
         assert(inputTypes.size() == 2);
-        assert(inputTypes[0]->getAnyOptionalObjectType());
+        assert(inputTypes[0]->getOptionalObjectType());
         auto autoclosure = inputTypes[1]->castTo<AnyFunctionType>();
         assert(autoclosure->isAutoClosure());
         auto secondParamTy = autoclosure->getResult();
-        assert(secondParamTy->getAnyOptionalObjectType());
+        assert(secondParamTy->getOptionalObjectType());
         (void)secondParamTy;
 
         return true;
@@ -982,32 +1026,11 @@ SolutionCompareResult ConstraintSystem::compareSolutions(
       continue;
     }
 
-    // If one type is an implicitly unwrapped optional of the other,
-    // prefer the non-optional.    
-    bool type1Better = false;
-    bool type2Better = false;
-    if (auto type1Obj = type1->getImplicitlyUnwrappedOptionalObjectType()) {
-      if (type1Obj->isEqual(type2))
-        type2Better = true;
-    }
-    if (auto type2Obj = type2->getImplicitlyUnwrappedOptionalObjectType()) {
-      if (type2Obj->isEqual(type1))
-        type1Better = true;
-    }
-
-    if (type1Better || type2Better) {
-      if (type1Better)
-        ++score1;
-      if (type2Better)
-        ++score2;
-      continue;
-    }
-
     // If one type is a subtype of the other, but not vice-versa,
     // we prefer the system with the more-constrained type.
     // FIXME: Collapse this check into the second check.
-    type1Better = tc.isSubtypeOf(type1, type2, cs.DC);
-    type2Better = tc.isSubtypeOf(type2, type1, cs.DC);
+    auto type1Better = tc.isSubtypeOf(type1, type2, cs.DC);
+    auto type2Better = tc.isSubtypeOf(type2, type1, cs.DC);
     if (type1Better || type2Better) {
       if (type1Better)
         ++score1;
@@ -1068,12 +1091,14 @@ SolutionCompareResult ConstraintSystem::compareSolutions(
       if (auto nominalType2 = type2->getNominalOrBoundGenericNominal()) {
         if ((nominalType2->getName() ==
              cs.TC.Context.Id_OptionalNilComparisonType)) {
-          ++score1;
+          ++score2;
         }
-      } else if (auto nominalType1 = type1->getNominalOrBoundGenericNominal()) {
+      }
+
+      if (auto nominalType1 = type1->getNominalOrBoundGenericNominal()) {
         if ((nominalType1->getName() ==
              cs.TC.Context.Id_OptionalNilComparisonType)) {
-          ++score2;
+          ++score1;
         }
       }
     }

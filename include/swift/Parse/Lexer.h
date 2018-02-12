@@ -20,6 +20,7 @@
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/Basic/SourceLoc.h"
 #include "swift/Basic/SourceManager.h"
+#include "swift/Parse/LexerState.h"
 #include "swift/Parse/Token.h"
 #include "swift/Syntax/References.h"
 #include "swift/Syntax/Trivia.h"
@@ -27,11 +28,6 @@
 #include "llvm/Support/SaveAndRestore.h"
 
 namespace swift {
-
-namespace syntax {
-  struct RawTokenSyntax;
-  struct RawSyntaxInfo;
-}
 
   /// Given a pointer to the starting byte of a UTF8 character, validate it and
   /// advance the lexer past it.  This returns the encoded character or ~0U if
@@ -64,12 +60,14 @@ enum class ConflictMarkerKind {
   /// separated by 4 "="s, and terminated by 4 "<"s.
   Perforce
 };
-  
+
 class Lexer {
   const LangOptions &LangOpts;
   const SourceManager &SourceMgr;
   DiagnosticEngine *Diags;
   const unsigned BufferID;
+
+  using State = LexerState;
 
   /// Pointer to the first character of the buffer, even in a lexer that
   /// scans a subrange of the buffer.
@@ -87,6 +85,9 @@ class Lexer {
   /// If non-null, points to the '\0' character in the buffer where we should
   /// produce a code completion token.
   const char *CodeCompletionPtr = nullptr;
+
+  /// Points to BufferStart or past the end of UTF-8 BOM sequence if it exists.
+  const char *ContentStart;
 
   /// Pointer to the next not consumed character.
   const char *CurPtr;
@@ -125,42 +126,14 @@ class Lexer {
   ///
   /// This is only preserved if this Lexer was constructed with
   /// `TriviaRetentionMode::WithTrivia`.
-  syntax::TriviaList LeadingTrivia;
+  syntax::Trivia LeadingTrivia;
 
   /// The current trailing trivia for the next token.
   ///
   /// This is only preserved if this Lexer was constructed with
   /// `TriviaRetentionMode::WithTrivia`.
-  syntax::TriviaList TrailingTrivia;
+  syntax::Trivia TrailingTrivia;
   
-public:
-  /// \brief Lexer state can be saved/restored to/from objects of this class.
-  class State {
-  public:
-    State() {}
-
-    bool isValid() const {
-      return Loc.isValid();
-    }
-
-    State advance(unsigned Offset) const {
-      assert(isValid());
-      return State(Loc.getAdvancedLoc(Offset), LeadingTrivia, TrailingTrivia);
-    }
-
-  private:
-    explicit State(SourceLoc Loc,
-                   syntax::TriviaList LeadingTrivia,
-                   syntax::TriviaList TrailingTrivia)
-      : Loc(Loc), LeadingTrivia(LeadingTrivia),
-        TrailingTrivia(TrailingTrivia) {}
-    SourceLoc Loc;
-    syntax::TriviaList LeadingTrivia;
-    syntax::TriviaList TrailingTrivia;
-    friend class Lexer;
-  };
-
-private:
   Lexer(const Lexer&) = delete;
   void operator=(const Lexer&) = delete;
 
@@ -215,10 +188,8 @@ public:
     assert(Offset <= EndOffset && "invalid range");
     initSubLexer(
         *this,
-        State(getLocForStartOfBuffer().getAdvancedLoc(Offset),
-              LeadingTrivia, TrailingTrivia),
-        State(getLocForStartOfBuffer().getAdvancedLoc(EndOffset),
-              LeadingTrivia, TrailingTrivia));
+        State(getLocForStartOfBuffer().getAdvancedLoc(Offset)),
+        State(getLocForStartOfBuffer().getAdvancedLoc(EndOffset)));
   }
 
   /// \brief Create a sub-lexer that lexes from the same buffer, but scans
@@ -239,14 +210,21 @@ public:
     return CodeCompletionPtr != nullptr;
   }
 
-  void lex(Token &Result) {
+  /// Lex a token. If \c TriviaRetentionMode is \c WithTrivia, passed pointers
+  /// to trivias are populated.
+  void lex(Token &Result, syntax::Trivia &LeadingTriviaResult,
+           syntax::Trivia &TrailingTriviaResult) {
     Result = NextToken;
+    LeadingTriviaResult = {LeadingTrivia};
+    TrailingTriviaResult = {TrailingTrivia};
     if (Result.isNot(tok::eof))
       lexImpl();
   }
 
-  /// Lex a full token including leading and trailing trivia.
-  syntax::RawSyntaxInfo fullLex();
+  void lex(Token &Result) {
+    syntax::Trivia LeadingTrivia, TrailingTrivia;
+    lex(Result, LeadingTrivia, TrailingTrivia);
+  }
 
   bool isKeepingComments() const {
     return RetainComments == CommentRetentionMode::ReturnAsTokens;
@@ -266,19 +244,27 @@ public:
   /// \brief Returns the lexer state for the beginning of the given token.
   /// After restoring the state, lexer will return this token and continue from
   /// there.
-  State getStateForBeginningOfToken(const Token &Tok) const {
+  State getStateForBeginningOfToken(const Token &Tok,
+                                    const syntax::Trivia &LeadingTrivia = {}) const {
+
     // If the token has a comment attached to it, rewind to before the comment,
     // not just the start of the token.  This ensures that we will re-lex and
     // reattach the comment to the token if rewound to this state.
     SourceLoc TokStart = Tok.getCommentStart();
     if (TokStart.isInvalid())
       TokStart = Tok.getLoc();
-    return getStateForBeginningOfTokenLoc(TokStart);
+    auto S = getStateForBeginningOfTokenLoc(TokStart);
+    if (TriviaRetention == TriviaRetentionMode::WithTrivia)
+      S.LeadingTrivia = LeadingTrivia;
+    return S;
   }
 
   State getStateForEndOfTokenLoc(SourceLoc Loc) const {
-    return State(getLocForEndOfToken(SourceMgr, Loc), LeadingTrivia,
-                 TrailingTrivia);
+    return State(getLocForEndOfToken(SourceMgr, Loc));
+  }
+
+  bool isStateForCurrentBuffer(LexerState State) const {
+    return SourceMgr.findBufferContainingLoc(State.Loc) == getBufferID();
   }
 
   /// \brief Restore the lexer state to a given one, that can be located either
@@ -286,12 +272,16 @@ public:
   void restoreState(State S, bool enableDiagnostics = false) {
     assert(S.isValid());
     CurPtr = getBufferPtrForSourceLoc(S.Loc);
-    LeadingTrivia = S.LeadingTrivia;
-    TrailingTrivia = S.TrailingTrivia;
     // Don't reemit diagnostics while readvancing the lexer.
     llvm::SaveAndRestore<DiagnosticEngine*>
       D(Diags, enableDiagnostics ? Diags : nullptr);
+
     lexImpl();
+
+    // Restore Trivia.
+    if (TriviaRetention == TriviaRetentionMode::WithTrivia)
+      if (auto &LTrivia = S.LeadingTrivia)
+        LeadingTrivia = std::move(*LTrivia);
   }
 
   /// \brief Restore the lexer state to a given state that is located before
@@ -416,6 +406,7 @@ public:
     SourceLoc getEndLoc() {
       return Loc.getAdvancedLoc(Length);
     }
+
   };
   
   /// \brief Compute the bytes that the actual string literal should codegen to.
@@ -494,19 +485,18 @@ private:
   }
 
   void formToken(tok Kind, const char *TokStart, bool MultilineString = false);
+  void formEscapedIdentifierToken(const char *TokStart);
 
-  /// Advance to the end of the line but leave the current buffer pointer
-  /// at that newline character.
-  void skipUpToEndOfLine();
-
-  /// Advance past the next newline character.
-  void skipToEndOfLine();
+  /// Advance to the end of the line.
+  /// If EatNewLine is true, CurPtr will be at end of newline character.
+  /// Otherwise, CurPtr will be at newline character.
+  void skipToEndOfLine(bool EatNewline);
 
   /// Skip to the end of the line of a // comment.
-  void skipSlashSlashComment();
+  void skipSlashSlashComment(bool EatNewline);
 
   /// Skip a #! hashbang line.
-  void skipHashbang();
+  void skipHashbang(bool EatNewline);
 
   void skipSlashStarComment();
   void lexHash();
@@ -515,12 +505,7 @@ private:
   void lexOperatorIdentifier();
   void lexHexNumber();
   void lexNumber();
-  void lexTrivia(syntax::TriviaList &T, bool StopAtFirstNewline = false);
-  Optional<syntax::TriviaPiece> lexWhitespace(bool StopAtFirstNewline);
-  Optional<syntax::TriviaPiece> lexComment();
-  Optional<syntax::TriviaPiece> lexSingleLineComment(syntax::TriviaKind Kind);
-  Optional<syntax::TriviaPiece> lexBlockComment(syntax::TriviaKind Kind);
-  Optional<syntax::TriviaPiece> lexDocComment();
+  void lexTrivia(syntax::Trivia &T, bool IsForTrailingTrivia);
   static unsigned lexUnicodeEscape(const char *&CurPtr, Lexer *Diags);
 
   unsigned lexCharacter(const char *&CurPtr,
@@ -534,7 +519,7 @@ private:
 
   /// Try to lex conflict markers by checking for the presence of the start and
   /// end of the marker in diff3 or Perforce style respectively.
-  bool tryLexConflictMarker();
+  bool tryLexConflictMarker(bool EatNewline);
 };
   
 /// Given an ordered token \param Array , get the iterator pointing to the first

@@ -980,6 +980,16 @@ SILCloner<ImplClass>::visitConvertFunctionInst(ConvertFunctionInst *Inst) {
                                        getOpType(Inst->getType())));
 }
 
+template <typename ImplClass>
+void SILCloner<ImplClass>::visitConvertEscapeToNoEscapeInst(
+    ConvertEscapeToNoEscapeInst *Inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(Inst->getDebugScope()));
+  doPostProcess(Inst, getBuilder().createConvertEscapeToNoEscape(
+                          getOpLocation(Inst->getLoc()),
+                          getOpValue(Inst->getOperand()),
+                          getOpType(Inst->getType())));
+}
+
 template<typename ImplClass>
 void SILCloner<ImplClass>::visitThinFunctionToPointerInst(
                                            ThinFunctionToPointerInst *Inst) {
@@ -1640,8 +1650,7 @@ SILCloner<ImplClass>::visitWitnessMethodInst(WitnessMethodInst *Inst) {
           .createWitnessMethod(
               getOpLocation(Inst->getLoc()),
               newLookupType, conformance,
-              Inst->getMember(), Inst->getType(),
-              Inst->isVolatile()));
+              Inst->getMember(), Inst->getType()));
 }
 
 template<typename ImplClass>
@@ -1867,6 +1876,16 @@ SILCloner<ImplClass>::visitStrongRetainInst(StrongRetainInst *Inst) {
     getBuilder().createStrongRetain(getOpLocation(Inst->getLoc()),
                                     getOpValue(Inst->getOperand()),
                                     Inst->getAtomicity()));
+}
+
+template<typename ImplClass>
+void
+SILCloner<ImplClass>::visitClassifyBridgeObjectInst(
+                                            ClassifyBridgeObjectInst *Inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(Inst->getDebugScope()));
+  doPostProcess(Inst,
+    getBuilder().createClassifyBridgeObject(getOpLocation(Inst->getLoc()),
+                                            getOpValue(Inst->getOperand())));
 }
 
 template<typename ImplClass>

@@ -1,25 +1,22 @@
 // RUN: %empty-directory(%t)
+
 // RUN: %target-swift-frontend -emit-module -enable-resilience -emit-module-path=%t/resilient_struct.swiftmodule -module-name=resilient_struct %S/../../Inputs/resilient_struct.swift
 // RUN: %target-swift-frontend -emit-module -enable-resilience -emit-module-path=%t/resilient_protocol.swiftmodule -module-name=resilient_protocol %S/../../Inputs/resilient_protocol.swift
-// RUN: %target-swift-frontend -typecheck -verify -enable-resilience -I %t %s
+
+// RUN: %target-swift-frontend -typecheck -swift-version 4 -verify -I %t %s
+// RUN: %target-swift-frontend -typecheck -swift-version 4 -verify -enable-resilience -I %t %s
+
+// RUN: %target-swift-frontend -typecheck -swift-version 5 -verify -I %t %s
+// RUN: %target-swift-frontend -typecheck -swift-version 5 -verify -enable-resilience -I %t %s
 
 import resilient_struct
 import resilient_protocol
 
-// Point is @_fixed_layout -- this is OK
-extension Point {
-  init(xx: Int, yy: Int) {
-    self.x = xx
-    self.y = yy
-  }
-}
-
 // Size is not @_fixed_layout, so we cannot define a new designated initializer
 extension Size {
-  // FIXME: Produce a decent diagnostic here
   init(ww: Int, hh: Int) {
     self.w = ww
-    self.h = hh // expected-error {{cannot assign to property: 'h' is a 'let' constant}}
+    self.h = hh // expected-error {{'let' property 'h' may not be initialized directly; use "self.init(...)" or "self = ..." instead}}
   }
 
   // This is OK
@@ -35,21 +32,19 @@ extension Size {
 
 // Animal is not @_fixed_layout, so we cannot define an @_inlineable
 // designated initializer
-//
-// FIXME: Crap diagnostics
 public struct Animal {
-  public let name: String // expected-note 3{{change 'let' to 'var' to make it mutable}}
+  public let name: String // expected-note 3 {{declared here}}
 
   @_inlineable public init(name: String) {
-    self.name = name // expected-error {{cannot assign to property: 'name' is a 'let' constant}}
+    self.name = name // expected-error {{'let' property 'name' may not be initialized directly; use "self.init(...)" or "self = ..." instead}}
   }
 
   @inline(__always) public init(dog: String) {
-    self.name = dog // expected-error {{cannot assign to property: 'name' is a 'let' constant}}
+    self.name = dog // expected-error {{'let' property 'name' may not be initialized directly; use "self.init(...)" or "self = ..." instead}}
   }
 
   @_transparent public init(cat: String) {
-    self.name = cat // expected-error {{cannot assign to property: 'name' is a 'let' constant}}
+    self.name = cat // expected-error {{'let' property 'name' may not be initialized directly; use "self.init(...)" or "self = ..." instead}}
   }
 
   // This is OK
@@ -65,10 +60,30 @@ public struct Animal {
 
 public class Widget {
   public let name: String
+  
+  public init(nonInlinableName name: String) {
+    self.name = name
+  }
 
   @_inlineable public init(name: String) {
     // expected-error@-1 {{initializer for class 'Widget' is '@_inlineable' and must delegate to another initializer}}
     self.name = name
+  }
+
+  @_inlineable public convenience init(goodName name: String) {
+    // This is OK
+    self.init(nonInlinableName: name)
+  }
+}
+
+public protocol Gadget {
+  init()
+}
+
+extension Gadget {
+  @_inlineable public init(unused: Int) {
+    // This is OK
+    self.init()
   }
 }
 

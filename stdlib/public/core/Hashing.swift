@@ -23,6 +23,7 @@
 
 import SwiftShims
 
+@_fixed_layout // FIXME(sil-serialize-all)
 public // @testable
 struct _Hashing {
   // FIXME(ABI)#41 : make this an actual public API.
@@ -45,6 +46,7 @@ struct _Hashing {
   }
 }
 
+@_fixed_layout // FIXME(sil-serialize-all)
 public // @testable
 struct _HashingDetail {
 
@@ -188,13 +190,27 @@ func _squeezeHashValue(_ hashValue: Int, _ upperBound: Int) -> Int {
 
 /// Returns a new value that combines the two given hash values.
 ///
+/// Combining is performed using [a hash function][ref] described by T.C. Hoad
+/// and J. Zobel, which is also adopted in the Boost C++ libraries.
+///
 /// This function is used by synthesized implementations of `hashValue` to
 /// combine the hash values of individual `struct` fields and associated values
 /// of `enum`s. It is factored out into a standard library function so that the
 /// specific hashing logic can be refined without requiring major changes to the
 /// code that creates the synthesized AST nodes.
+///
+/// [ref]: https://pdfs.semanticscholar.org/03bf/7be88e88ba047c6ab28036d0f28510299226.pdf
 @_transparent
 public // @testable
-func _mixForSynthesizedHashValue(_ oldValue: Int, _ nextValue: Int) -> Int {
-  return 31 &* oldValue &+ nextValue
+func _combineHashValues(_ firstValue: Int, _ secondValue: Int) -> Int {
+  // Use a magic number based on the golden ratio
+  // (0x1.9e3779b97f4a7c15f39cc0605cedc8341082276bf3a27251f86c6a11d0c18e95p0).
+#if arch(i386) || arch(arm)
+  let magic = 0x9e3779b9 as UInt
+#elseif arch(x86_64) || arch(arm64) || arch(powerpc64) || arch(powerpc64le) || arch(s390x)
+  let magic = 0x9e3779b97f4a7c15 as UInt
+#endif
+  var x = UInt(bitPattern: firstValue)
+  x ^= UInt(bitPattern: secondValue) &+ magic &+ (x &<< 6) &+ (x &>> 2)
+  return Int(bitPattern: x)
 }

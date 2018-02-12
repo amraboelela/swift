@@ -16,12 +16,6 @@ extension Optional where Wrapped : TestProtocol1 {
   }
 }
 
-extension ImplicitlyUnwrappedOptional where Wrapped : TestProtocol1 {
-  var _wrappedIsTestProtocol1: Bool {
-    fatalError("not implemented")
-  }
-}
-
 OptionalTests.test("nil comparison") {
   var x: Int? = nil
   expectFalse(x != nil)
@@ -333,13 +327,11 @@ OptionalTests.test("Casting Optional") {
 
 OptionalTests.test("Casting Optional Traps") {
   let nx: C? = nil
-  expectCrashLater()
-  _blackHole(anyToAny(nx, Int.self))
+  expectCrash { _blackHole(anyToAny(nx, Int.self)) }
 }
 OptionalTests.test("Casting Optional Any Traps") {
   let nx: X? = X()
-  expectCrashLater()
-  _blackHole(anyToAny(nx as Any, Optional<Int>.self))
+  expectCrash { _blackHole(anyToAny(nx as Any, Optional<Int>.self)) }
 }
 
 class TestNoString {}

@@ -137,6 +137,11 @@ const ExtraInhabitantsValueWitnessTable
   swift::VALUE_WITNESS_SYM(FUNCTION_MANGLING) =
     ValueWitnessTableForBox<ThickFunctionBox>::table;
 
+/// The basic value-witness table for escaping function types.
+const ExtraInhabitantsValueWitnessTable
+  swift::VALUE_WITNESS_SYM(NOESCAPE_FUNCTION_MANGLING) =
+    ValueWitnessTableForBox<ThickFunctionBox>::table;
+
 /// The basic value-witness table for thin function types.
 const ExtraInhabitantsValueWitnessTable
   swift::VALUE_WITNESS_SYM(THIN_FUNCTION_MANGLING) =
@@ -156,20 +161,9 @@ const ValueWitnessTable swift::VALUE_WITNESS_SYM(EMPTY_TUPLE_MANGLING) =
     { &VALUE_WITNESS_SYM(TYPE) },                             \
     { { MetadataKind::Opaque } }                 \
   };
-OPAQUE_METADATA(Bi8_)
-OPAQUE_METADATA(Bi16_)
-OPAQUE_METADATA(Bi32_)
-OPAQUE_METADATA(Bi64_)
-OPAQUE_METADATA(Bi128_)
-OPAQUE_METADATA(Bi256_)
-OPAQUE_METADATA(Bi512_)
-OPAQUE_METADATA(Bo)
-OPAQUE_METADATA(Bb)
-OPAQUE_METADATA(Bp)
-OPAQUE_METADATA(BB)
-#if SWIFT_OBJC_INTEROP
-OPAQUE_METADATA(BO)
-#endif
+#define BUILTIN_TYPE(Symbol, Name) \
+  OPAQUE_METADATA(Symbol)
+#include "swift/Runtime/BuiltinTypes.def"
 
 /// The standard metadata for the empty tuple.
 const FullMetadata<TupleTypeMetadata> swift::

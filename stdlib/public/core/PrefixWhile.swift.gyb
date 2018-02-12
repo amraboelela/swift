@@ -103,6 +103,7 @@ extension LazySequenceProtocol {
 
 /// A position in the base collection of a `LazyPrefixWhileCollection` or the
 /// end of that collection.
+@_fixed_layout // FIXME(sil-serialize-all)
 public enum _LazyPrefixWhileIndexRepresentation<Base : Collection> {
   case index(Base.Index)
   case pastEnd
@@ -157,6 +158,17 @@ public struct LazyPrefixWhileIndex<Base : Collection> : Comparable {
       return true
     default:
       return false
+    }
+  }
+}
+
+extension LazyPrefixWhileIndex : Hashable where Base.Index : Hashable {
+  public var hashValue: Int {
+    switch _value {
+    case .index(let value):
+      return value.hashValue
+    case .pastEnd:
+      return .max
     }
   }
 }

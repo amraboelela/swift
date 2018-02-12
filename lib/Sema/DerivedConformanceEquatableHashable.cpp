@@ -618,7 +618,6 @@ deriveEquatable_eq(TypeChecker &tc, Decl *parentDecl, NominalTypeDecl *typeDecl,
                      StaticSpellingKind::KeywordStatic,
                      /*FuncLoc=*/SourceLoc(), name, /*NameLoc=*/SourceLoc(),
                      /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
-                     /*AccessorKeywordLoc=*/SourceLoc(),
                      /*GenericParams=*/nullptr,
                      params,
                      TypeLoc::withoutLoc(boolTy),
@@ -745,57 +744,34 @@ static Expr* integerLiteralExpr(ASTContext &C, int64_t value) {
   return integerExpr;
 }
 
-/// Returns a new assignment expression that mixes the hash value of an
+/// Returns a new assignment expression that combines the hash value of an
 /// expression into a variable.
 /// \p C The AST context.
-/// \p resultVar The variable into which the hash value will be mixed.
-/// \p exprToHash The expression whose hash value should be mixed in.
-/// \return The expression that mixes the hash value into the result variable.
-static Expr* mixInHashExpr_hashValue(ASTContext &C,
-                                     VarDecl* resultVar,
-                                     Expr *exprToHash) {
+/// \p resultVar The variable into which the hash value will be combined.
+/// \p exprToHash The expression whose hash value should be combined.
+/// \return The expression that combines the hash value into the variable.
+static Expr* combineHashValuesAssignmentExpr(ASTContext &C,
+                                             VarDecl* resultVar,
+                                             Expr *exprToHash) {
   // <exprToHash>.hashValue
   auto hashValueExpr = new (C) UnresolvedDotExpr(exprToHash, SourceLoc(),
                                                  C.Id_hashValue, DeclNameLoc(),
                                                  /*implicit*/ true);
 
-  // _mixForSynthesizedHashValue(result, <exprToHash>.hashValue)
-  auto mixinFunc = C.getMixForSynthesizedHashValueDecl();
-  auto mixinFuncExpr = new (C) DeclRefExpr(mixinFunc, DeclNameLoc(),
-                                           /*implicit*/ true);
+  // _combineHashValues(result, <exprToHash>.hashValue)
+  auto combineFunc = C.getCombineHashValuesDecl();
+  auto combineFuncExpr = new (C) DeclRefExpr(combineFunc, DeclNameLoc(),
+                                             /*implicit*/ true);
   auto rhsResultExpr = new (C) DeclRefExpr(resultVar, DeclNameLoc(),
                                            /*implicit*/ true);
-  auto mixinResultExpr = CallExpr::createImplicit(
-      C, mixinFuncExpr, { rhsResultExpr, hashValueExpr }, {});
+  auto combineResultExpr = CallExpr::createImplicit(
+    C, combineFuncExpr, { rhsResultExpr, hashValueExpr }, {});
 
-  // result = _mixForSynthesizedHashValue(result, <exprToHash>.hashValue)
+  // result = _combineHashValues(result, <exprToHash>.hashValue)
   auto lhsResultExpr = new (C) DeclRefExpr(resultVar, DeclNameLoc(),
                                            /*implicit*/ true);
   auto assignExpr = new (C) AssignExpr(lhsResultExpr, SourceLoc(),
-                                       mixinResultExpr, /*implicit*/ true);
-  return assignExpr;
-}
-
-/// Returns a new assignment expression that invokes _mixInt on a variable and
-/// assigns the result back to the same variable.
-/// \p C The AST context.
-/// \p resultVar The integer variable to be mixed.
-/// \return The expression that mixes the integer value.
-static Expr* mixIntAssignmentExpr(ASTContext &C, VarDecl* resultVar) {
-  auto mixinFunc = C.getMixIntDecl();
-  auto mixinFuncExpr = new (C) DeclRefExpr(mixinFunc, DeclNameLoc(),
-                                           /*implicit*/ true);
-  auto rhsResultRef = new (C) DeclRefExpr(resultVar, DeclNameLoc(),
-                                          /*implicit*/ true);
-  // _mixInt(result)
-  auto mixedResultExpr = CallExpr::createImplicit(C, mixinFuncExpr,
-                                                  { rhsResultRef }, {});
-
-  // result = _mixInt(result)
-  auto lhsResultRef = new (C) DeclRefExpr(resultVar, DeclNameLoc(),
-                                          /*implicit*/ true);
-  auto assignExpr = new (C) AssignExpr(lhsResultRef, SourceLoc(),
-                                       mixedResultExpr, /*implicit*/ true);
+                                       combineResultExpr, /*implicit*/ true);
   return assignExpr;
 }
 
@@ -839,7 +815,7 @@ deriveBodyHashable_enum_hashValue(AbstractFunctionDecl *hashValueDecl) {
   for (auto elt : enumDecl->getAllElements()) {
     // case .<elt>(let a0, let a1, ...):
     SmallVector<VarDecl*, 3> payloadVars;
-    SmallVector<ASTNode, 3> mixExpressions;
+    SmallVector<ASTNode, 3> combineExprs;
 
     auto payloadPattern = enumElementPayloadSubpattern(elt, 'a', hashValueDecl,
                                                        payloadVars);
@@ -853,9 +829,9 @@ deriveBodyHashable_enum_hashValue(AbstractFunctionDecl *hashValueDecl) {
 
     // If the enum has no associated values, we use the ordinal alone as the
     // hash value, because that is sufficient for a good distribution. If any
-    // case do have associated values, then the ordinal is used as the first
-    // term mixed into _mixForSynthesizedHashValue, and the final result after
-    // mixing in the payload is passed to _mixInt to improve the distribution.
+    // case does have associated values, then the ordinal is used as the first
+    // term combined into _combineHashValues, and the final result after
+    // combining the payload is passed to _mixInt to improve the distribution.
 
     // result = <ordinal>
     {
@@ -864,27 +840,24 @@ deriveBodyHashable_enum_hashValue(AbstractFunctionDecl *hashValueDecl) {
                                            /*implicit*/ true);
       auto assignExpr = new (C) AssignExpr(resultRef, SourceLoc(),
                                            ordinalExpr, /*implicit*/ true);
-      mixExpressions.emplace_back(ASTNode(assignExpr));
+      combineExprs.emplace_back(ASTNode(assignExpr));
     }
 
     if (!hasNoAssociatedValues) {
-      // Generate a sequence of expressions that mix the payload's hash values
-      // into result.
+      // Generate a sequence of expressions that combine the payload's hash
+      // values into result.
       for (auto payloadVar : payloadVars) {
         auto payloadVarRef = new (C) DeclRefExpr(payloadVar, DeclNameLoc(),
                                                  /*implicit*/ true);
-        // result = _mixForSynthesizedHashValue(result, <payloadVar>.hashValue)
-        auto mixExpr = mixInHashExpr_hashValue(C, resultVar, payloadVarRef);
-        mixExpressions.emplace_back(ASTNode(mixExpr));
+        // result = _combineHashValues(result, <payloadVar>.hashValue)
+        auto combineExpr = combineHashValuesAssignmentExpr(C, resultVar,
+                                                           payloadVarRef);
+        combineExprs.emplace_back(ASTNode(combineExpr));
       }
-
-      // result = _mixInt(result)
-      auto assignExpr = mixIntAssignmentExpr(C, resultVar);
-      mixExpressions.emplace_back(ASTNode(assignExpr));
     }
 
     auto hasBoundDecls = !payloadVars.empty();
-    auto body = BraceStmt::create(C, SourceLoc(), mixExpressions, SourceLoc());
+    auto body = BraceStmt::create(C, SourceLoc(), combineExprs, SourceLoc());
     cases.push_back(CaseStmt::create(C, SourceLoc(), labelItem, hasBoundDecls,
                                      SourceLoc(), body));
   }
@@ -953,7 +926,7 @@ deriveBodyHashable_struct_hashValue(AbstractFunctionDecl *hashValueDecl) {
   auto storedProperties =
     structDecl->getStoredProperties(/*skipInaccessible=*/true);
 
-  // For each stored property, generate a statement that mixes its hash value
+  // For each stored property, generate a statement that combines its hash value
   // into the result.
   for (auto propertyDecl : storedProperties) {
     auto propertyRef = new (C) DeclRefExpr(propertyDecl, DeclNameLoc(),
@@ -962,16 +935,13 @@ deriveBodyHashable_struct_hashValue(AbstractFunctionDecl *hashValueDecl) {
                                        /*implicit*/ true);
     auto selfPropertyExpr = new (C) DotSyntaxCallExpr(propertyRef, SourceLoc(),
                                                       selfRef);
-    // result = _mixForSynthesizedHashValue(result, <property>.hashValue)
-    auto mixExpr = mixInHashExpr_hashValue(C, resultVar, selfPropertyExpr);
-    statements.emplace_back(ASTNode(mixExpr));
+    // result = _combineHashValues(result, <property>.hashValue)
+    auto combineExpr = combineHashValuesAssignmentExpr(C, resultVar,
+                                                       selfPropertyExpr);
+    statements.emplace_back(ASTNode(combineExpr));
   }
 
   {
-    // result = _mixInt(result)
-    auto assignExpr = mixIntAssignmentExpr(C, resultVar);
-    statements.push_back(assignExpr);
-
     // return result
     auto resultRef = new (C) DeclRefExpr(resultVar, DeclNameLoc(),
                                          /*implicit*/ true,
@@ -1013,14 +983,13 @@ deriveHashable_hashValue(TypeChecker &tc, Decl *parentDecl,
   //     case A:
   //       result = 0
   //     case B(let a0):
-  //       result = _mixForSynthesizedHashValue(result, 1)
-  //       result = _mixForSynthesizedHashValue(result, a0.hashValue)
+  //       result = 1
+  //       result = _combineHashValues(result, a0.hashValue)
   //     case C(let a0, let a1):
-  //       result = _mixForSynthesizedHashValue(result, 2)
-  //       result = _mixForSynthesizedHashValue(result, a0.hashValue)
-  //       result = _mixForSynthesizedHashValue(result, a1.hashValue)
+  //       result = 2
+  //       result = _combineHashValues(result, a0.hashValue)
+  //       result = _combineHashValues(result, a1.hashValue)
   //     }
-  //     result = _mixInt(result)
   //     return result
   //   }
   // }
@@ -1029,10 +998,9 @@ deriveHashable_hashValue(TypeChecker &tc, Decl *parentDecl,
   //   var x: Int
   //   var y: String
   //   @derived var hashValue: Int {
-  //     var result: Int = 0
-  //     result = _mixForSynthesizedHashValue(result, x.hashValue)
-  //     result = _mixForSynthesizedHashValue(result, y.hashValue)
-  //     result = _mixInt(result)
+  //     var result = 0
+  //     result = _combineHashValues(result, x.hashValue)
+  //     result = _combineHashValues(result, y.hashValue)
   //     return result
   //   }
   // }
@@ -1057,6 +1025,11 @@ deriveHashable_hashValue(TypeChecker &tc, Decl *parentDecl,
     return nullptr;
   }
 
+  VarDecl *hashValueDecl =
+    new (C) VarDecl(/*IsStatic*/false, VarDecl::Specifier::Var,
+                    /*IsCaptureList*/false, SourceLoc(),
+                    C.Id_hashValue, intType, parentDC);
+
   auto selfDecl = ParamDecl::createSelf(SourceLoc(), parentDC);
 
   ParameterList *params[] = {
@@ -1064,14 +1037,13 @@ deriveHashable_hashValue(TypeChecker &tc, Decl *parentDecl,
     ParameterList::createEmpty(C)
   };
 
-  FuncDecl *getterDecl =
-      FuncDecl::create(C, /*StaticLoc=*/SourceLoc(), StaticSpellingKind::None,
-                       /*FuncLoc=*/SourceLoc(),
-                       Identifier(), /*NameLoc=*/SourceLoc(),
-                       /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
-                       /*AccessorKeywordLoc=*/SourceLoc(),
-                       /*GenericParams=*/nullptr, params,
-                       TypeLoc::withoutLoc(intType), parentDC);
+  AccessorDecl *getterDecl = AccessorDecl::create(C,
+      /*FuncLoc=*/SourceLoc(), /*AccessorKeywordLoc=*/SourceLoc(),
+      AccessorKind::IsGetter, AddressorKind::NotAddressor, hashValueDecl,
+      /*StaticLoc=*/SourceLoc(), StaticSpellingKind::None,
+      /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
+      /*GenericParams=*/nullptr, params,
+      TypeLoc::withoutLoc(intType), parentDC);
   getterDecl->setImplicit();
   getterDecl->setBodySynthesizer(bodySynthesizer);
 
@@ -1098,10 +1070,7 @@ deriveHashable_hashValue(TypeChecker &tc, Decl *parentDecl,
   if (typeDecl->hasClangNode())
     tc.Context.addExternalDecl(getterDecl);
 
-  // Create the property.
-  VarDecl *hashValueDecl = new (C) VarDecl(/*IsStatic*/false, VarDecl::Specifier::Var,
-                                           /*IsCaptureList*/false, SourceLoc(),
-                                           C.Id_hashValue, intType, parentDC);
+  // Finish creating the property.
   hashValueDecl->setImplicit();
   hashValueDecl->setInterfaceType(intType);
   hashValueDecl->makeComputed(SourceLoc(), getterDecl,

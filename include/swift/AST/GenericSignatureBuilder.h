@@ -251,18 +251,20 @@ public:
     /// Retrieve the "anchor" type that canonically describes this equivalence
     /// class, for use in the canonical type.
     Type getAnchor(GenericSignatureBuilder &builder,
-                   ArrayRef<GenericTypeParamType *> genericParams);
+                   TypeArrayView<GenericTypeParamType> genericParams);
 
     /// \brief Retrieve (or build) the contextual type corresponding to
     /// this equivalence class within the given generic environment.
     Type getTypeInContext(GenericSignatureBuilder &builder,
                           GenericEnvironment *genericEnv);
 
-    /// Dump a debugging representation of this equivalence class.
-    void dump(llvm::raw_ostream &out) const;
+    /// Dump a debugging representation of this equivalence class,
+    void dump(llvm::raw_ostream &out,
+              GenericSignatureBuilder *builder = nullptr) const;
 
-    LLVM_ATTRIBUTE_DEPRECATED(void dump() const,
-                              "only for use in the debugger");
+    LLVM_ATTRIBUTE_DEPRECATED(
+                  void dump(GenericSignatureBuilder *builder = nullptr) const,
+                  "only for use in the debugger");
 
     /// Caches.
 
@@ -271,9 +273,8 @@ public:
       /// The cached anchor itself.
       Type anchor;
 
-      /// The number of members of the equivalence class when the archetype
-      /// anchor was cached.
-      unsigned numMembers;
+      /// The generation at which the anchor was last computed.
+      unsigned lastGeneration;
     } archetypeAnchorCache;
 
     /// Describes a cached nested type.
@@ -444,6 +445,11 @@ private:
   /// Note that we have added the nested type nestedPA
   void addedNestedType(PotentialArchetype *nestedPA);
 
+  /// Add a rewrite rule for a same-type constraint between the given
+  /// types.
+  void addSameTypeRewriteRule(PotentialArchetype *type1,
+                              PotentialArchetype *type2);
+
   /// \brief Add a new conformance requirement specifying that the given
   /// potential archetypes are equivalent.
   ConstraintResult addSameTypeRequirementBetweenArchetypes(
@@ -538,7 +544,7 @@ public:
   /// \param f A function object that will be passed each requirement
   /// and requirement source.
   void enumerateRequirements(
-                    ArrayRef<GenericTypeParamType *> genericParams,
+                    TypeArrayView<GenericTypeParamType> genericParams,
                     llvm::function_ref<
                       void (RequirementKind kind,
                             Type type,
@@ -547,7 +553,7 @@ public:
 
   /// Retrieve the generic parameters used to describe the generic
   /// signature being built.
-  ArrayRef<GenericTypeParamType *> getGenericParams() const;
+  TypeArrayView<GenericTypeParamType> getGenericParams() const;
 
   /// \brief Add a new generic parameter for which there may be requirements.
   void addGenericParameter(GenericTypeParamDecl *GenericParam);
@@ -650,7 +656,7 @@ private:
   /// \param allowConcreteGenericParams If true, allow generic parameters to
   /// be made concrete.
   void finalize(SourceLoc loc,
-                ArrayRef<GenericTypeParamType *> genericParams,
+                TypeArrayView<GenericTypeParamType> genericParams,
                 bool allowConcreteGenericParams=false);
 
 public:
@@ -686,7 +692,7 @@ private:
   /// \returns the representative constraint.
   template<typename T>
   Constraint<T> checkConstraintList(
-                           ArrayRef<GenericTypeParamType *> genericParams,
+                           TypeArrayView<GenericTypeParamType> genericParams,
                            std::vector<Constraint<T>> &constraints,
                            llvm::function_ref<bool(const Constraint<T> &)>
                              isSuitableRepresentative,
@@ -711,7 +717,7 @@ private:
   /// \returns the representative constraint.
   template<typename T, typename DiagT>
   Constraint<T> checkConstraintList(
-                           ArrayRef<GenericTypeParamType *> genericParams,
+                           TypeArrayView<GenericTypeParamType> genericParams,
                            std::vector<Constraint<T>> &constraints,
                            llvm::function_ref<bool(const Constraint<T> &)>
                              isSuitableRepresentative,
@@ -728,30 +734,30 @@ private:
   /// Check the concrete type constraints within the equivalence
   /// class of the given potential archetype.
   void checkConcreteTypeConstraints(
-                            ArrayRef<GenericTypeParamType *> genericParams,
+                            TypeArrayView<GenericTypeParamType> genericParams,
                             EquivalenceClass *equivClass);
 
   /// Check the superclass constraints within the equivalence
   /// class of the given potential archetype.
   void checkSuperclassConstraints(
-                            ArrayRef<GenericTypeParamType *> genericParams,
+                            TypeArrayView<GenericTypeParamType> genericParams,
                             EquivalenceClass *equivClass);
 
   /// Check conformance constraints within the equivalence class of the
   /// given potential archetype.
   void checkConformanceConstraints(
-                            ArrayRef<GenericTypeParamType *> genericParams,
+                            TypeArrayView<GenericTypeParamType> genericParams,
                             EquivalenceClass *equivClass);
 
   /// Check layout constraints within the equivalence class of the given
   /// potential archetype.
-  void checkLayoutConstraints(ArrayRef<GenericTypeParamType *> genericParams,
+  void checkLayoutConstraints(TypeArrayView<GenericTypeParamType> genericParams,
                               EquivalenceClass *equivClass);
 
   /// Check same-type constraints within the equivalence class of the
   /// given potential archetype.
   void checkSameTypeConstraints(
-                            ArrayRef<GenericTypeParamType *> genericParams,
+                            TypeArrayView<GenericTypeParamType> genericParams,
                             EquivalenceClass *equivClass);
 
   /// Realize a potential archetype for the given type.
@@ -801,6 +807,12 @@ public:
 
   /// Determine whether the two given types are in the same equivalence class.
   bool areInSameEquivalenceClass(Type type1, Type type2);
+
+  /// Simplify the given dependent type down to its canonical representation.
+  ///
+  /// \returns null if the type involved dependent member types that
+  /// don't have associated types.
+  Type getCanonicalTypeParameter(Type type);
 
   /// Verify the correctness of the given generic signature.
   ///
@@ -936,9 +948,11 @@ private:
   /// Whether there is a trailing written requirement location.
   const bool hasTrailingWrittenRequirementLoc;
 
+public:
   /// Whether a protocol requirement came from the requirement signature.
   const bool usesRequirementSignature;
 
+private:
   /// The actual storage, described by \c storageKind.
   union {
     /// The type to which a requirement applies.
@@ -1474,7 +1488,7 @@ struct GenericSignatureBuilder::Constraint {
 
   /// Retrieve the dependent type describing the subject of the constraint.
   Type getSubjectDependentType(
-                       ArrayRef<GenericTypeParamType *> genericParams) const;
+                       TypeArrayView<GenericTypeParamType> genericParams) const;
 
   /// Determine whether the subject is equivalence to the given potential
   /// archetype.
@@ -1690,7 +1704,7 @@ public:
   ///
   /// \param genericParams The set of generic parameters to use in the resulting
   /// dependent type.
-  Type getDependentType(ArrayRef<GenericTypeParamType *> genericParams) const;
+  Type getDependentType(TypeArrayView<GenericTypeParamType> genericParams)const;
 
   /// True if the potential archetype has been bound by a concrete type
   /// constraint.

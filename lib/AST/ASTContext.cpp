@@ -37,6 +37,7 @@
 #include "swift/Basic/Statistic.h"
 #include "swift/Basic/StringExtras.h"
 #include "swift/Parse/Lexer.h" // bad dependency
+#include "swift/Syntax/SyntaxArena.h"
 #include "swift/Strings.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclObjC.h"
@@ -58,6 +59,8 @@ STATISTIC(NumRegisteredGenericSignatureBuilders,
           "# of generic signature builders successfully registered");
 STATISTIC(NumRegisteredGenericSignatureBuildersAlready,
           "# of generic signature builders already registered");
+STATISTIC(NumCollapsedSpecializedProtocolConformances,
+          "# of specialized protocol conformances collapsed");
 
 /// Define this to 1 to enable expensive assertions of the
 /// GenericSignatureBuilder.
@@ -149,12 +152,6 @@ struct ASTContext::Implementation {
   /// The declaration of Swift.Optional<T>.None.
   EnumElementDecl *OptionalNoneDecl = nullptr;
 
-  /// The declaration of Swift.ImplicitlyUnwrappedOptional<T>.Some.
-  EnumElementDecl *ImplicitlyUnwrappedOptionalSomeDecl = nullptr;
-
-  /// The declaration of Swift.ImplicitlyUnwrappedOptional<T>.None.
-  EnumElementDecl *ImplicitlyUnwrappedOptionalNoneDecl = nullptr;
-  
   /// The declaration of Swift.UnsafeMutableRawPointer.memory.
   VarDecl *UnsafeMutableRawPointerMemoryDecl = nullptr;
 
@@ -192,8 +189,8 @@ FOR_KNOWN_FOUNDATION_TYPES(CACHE_FOUNDATION_DECL)
   /// func ==(Int, Int) -> Bool
   FuncDecl *EqualIntDecl = nullptr;
 
-  /// func _mixForSynthesizedHashValue(Int, Int) -> Int
-  FuncDecl *MixForSynthesizedHashValueDecl = nullptr;
+  /// func _combineHashValues(Int, Int) -> Int
+  FuncDecl *CombineHashValuesDecl = nullptr;
 
   /// func _mixInt(Int) -> Int
   FuncDecl *MixIntDecl = nullptr;
@@ -290,7 +287,6 @@ FOR_KNOWN_FOUNDATION_TYPES(CACHE_FOUNDATION_DECL)
     llvm::DenseMap<Type, ArraySliceType*> ArraySliceTypes;
     llvm::DenseMap<std::pair<Type, Type>, DictionaryType *> DictionaryTypes;
     llvm::DenseMap<Type, OptionalType*> OptionalTypes;
-    llvm::DenseMap<Type, ImplicitlyUnwrappedOptionalType*> ImplicitlyUnwrappedOptionalTypes;
     llvm::DenseMap<std::pair<Type, unsigned>, ParenType*> ParenTypes;
     llvm::DenseMap<uintptr_t, ReferenceStorageType*> ReferenceStorageTypes;
     llvm::DenseMap<Type, LValueType*> LValueTypes;
@@ -404,6 +400,8 @@ FOR_KNOWN_FOUNDATION_TYPES(CACHE_FOUNDATION_DECL)
   }
   
   llvm::FoldingSet<SILLayout> SILLayouts;
+
+  syntax::SyntaxArena TheSyntaxArena;
 };
 
 ASTContext::Implementation::Implementation()
@@ -501,6 +499,10 @@ llvm::BumpPtrAllocator &ASTContext::getAllocator(AllocationArena arena) const {
     return Impl.CurrentConstraintSolverArena->Allocator;
   }
   llvm_unreachable("bad AllocationArena");
+}
+
+syntax::SyntaxArena &ASTContext::getSyntaxArena() const {
+  return Impl.TheSyntaxArena;
 }
 
 LazyResolver *ASTContext::getLazyResolver() const {
@@ -636,75 +638,16 @@ ProtocolDecl *ASTContext::getErrorDecl() const {
   return getProtocol(KnownProtocolKind::Error);
 }
 
-EnumDecl *ASTContext::getOptionalDecl(OptionalTypeKind kind) const {
-  switch (kind) {
-  case OTK_None:
-    llvm_unreachable("not optional");
-  case OTK_ImplicitlyUnwrappedOptional:
-    return getImplicitlyUnwrappedOptionalDecl();
-  case OTK_Optional:
-    return getOptionalDecl();
-  }
-
-  llvm_unreachable("Unhandled OptionalTypeKind in switch.");
-}
-
-static EnumElementDecl *findEnumElement(EnumDecl *e, Identifier name) {
-  for (auto elt : e->getAllElements()) {
-    if (elt->getName() == name)
-      return elt;
-  }
-  return nullptr;
-}
-
-EnumElementDecl *ASTContext::getOptionalSomeDecl(OptionalTypeKind kind) const {
-  switch (kind) {
-  case OTK_Optional:
-    return getOptionalSomeDecl();
-  case OTK_ImplicitlyUnwrappedOptional:
-    return getImplicitlyUnwrappedOptionalSomeDecl();
-  case OTK_None:
-    llvm_unreachable("getting Some decl for non-optional type?");
-  }
-  llvm_unreachable("bad OTK");
-}
-
-EnumElementDecl *ASTContext::getOptionalNoneDecl(OptionalTypeKind kind) const {
-  switch (kind) {
-  case OTK_Optional:
-    return getOptionalNoneDecl();
-  case OTK_ImplicitlyUnwrappedOptional:
-    return getImplicitlyUnwrappedOptionalNoneDecl();
-  case OTK_None:
-    llvm_unreachable("getting None decl for non-optional type?");
-  }
-  llvm_unreachable("bad OTK");
-}
-
 EnumElementDecl *ASTContext::getOptionalSomeDecl() const {
   if (!Impl.OptionalSomeDecl)
-    Impl.OptionalSomeDecl = findEnumElement(getOptionalDecl(), Id_some);
+    Impl.OptionalSomeDecl = getOptionalDecl()->getUniqueElement(/*hasVal*/true);
   return Impl.OptionalSomeDecl;
 }
 
 EnumElementDecl *ASTContext::getOptionalNoneDecl() const {
   if (!Impl.OptionalNoneDecl)
-    Impl.OptionalNoneDecl = findEnumElement(getOptionalDecl(), Id_none);
+    Impl.OptionalNoneDecl =getOptionalDecl()->getUniqueElement(/*hasVal*/false);
   return Impl.OptionalNoneDecl;
-}
-
-EnumElementDecl *ASTContext::getImplicitlyUnwrappedOptionalSomeDecl() const {
-  if (!Impl.ImplicitlyUnwrappedOptionalSomeDecl)
-    Impl.ImplicitlyUnwrappedOptionalSomeDecl =
-      findEnumElement(getImplicitlyUnwrappedOptionalDecl(), Id_some);
-  return Impl.ImplicitlyUnwrappedOptionalSomeDecl;
-}
-
-EnumElementDecl *ASTContext::getImplicitlyUnwrappedOptionalNoneDecl() const {
-  if (!Impl.ImplicitlyUnwrappedOptionalNoneDecl)
-    Impl.ImplicitlyUnwrappedOptionalNoneDecl =
-      findEnumElement(getImplicitlyUnwrappedOptionalDecl(), Id_none);
-  return Impl.ImplicitlyUnwrappedOptionalNoneDecl;
 }
 
 static VarDecl *getPointeeProperty(VarDecl *&cache,
@@ -1046,9 +989,9 @@ FuncDecl *ASTContext::getGetBoolDecl(LazyResolver *resolver) const {
   return decl;
 }
 
-FuncDecl *ASTContext::getMixForSynthesizedHashValueDecl() const {
-  if (Impl.MixForSynthesizedHashValueDecl)
-    return Impl.MixForSynthesizedHashValueDecl;
+FuncDecl *ASTContext::getCombineHashValuesDecl() const {
+  if (Impl.CombineHashValuesDecl)
+    return Impl.CombineHashValuesDecl;
 
   auto resolver = getLazyResolver();
   auto intType = getIntDecl()->getDeclaredType();
@@ -1064,8 +1007,8 @@ FuncDecl *ASTContext::getMixForSynthesizedHashValueDecl() const {
   };
 
   auto decl = lookupLibraryIntrinsicFunc(
-      *this, "_mixForSynthesizedHashValue", resolver, callback);
-  Impl.MixForSynthesizedHashValueDecl = decl;
+      *this, "_combineHashValues", resolver, callback);
+  Impl.CombineHashValuesDecl = decl;
   return decl;
 }
 
@@ -1665,9 +1608,9 @@ static int compareSimilarAssociatedTypes(AssociatedTypeDecl *const *lhs,
 
 ArrayRef<AssociatedTypeDecl *> AssociatedTypeDecl::getOverriddenDecls() const {
   // If we already computed the set of overridden associated types, return it.
-  if (AssociatedTypeDeclBits.ComputedOverridden) {
+  if (Bits.AssociatedTypeDecl.ComputedOverridden) {
     // We didn't override any associated types, so return the empty set.
-    if (!AssociatedTypeDeclBits.HasOverridden)
+    if (!Bits.AssociatedTypeDecl.HasOverridden)
       return { };
 
     // Look up the overrides.
@@ -1678,8 +1621,8 @@ ArrayRef<AssociatedTypeDecl *> AssociatedTypeDecl::getOverriddenDecls() const {
 
   // While we are computing overridden declarations, pretend there are none.
   auto mutableThis = const_cast<AssociatedTypeDecl *>(this);
-  mutableThis->AssociatedTypeDeclBits.ComputedOverridden = true;
-  mutableThis->AssociatedTypeDeclBits.HasOverridden = false;
+  mutableThis->Bits.AssociatedTypeDecl.ComputedOverridden = true;
+  mutableThis->Bits.AssociatedTypeDecl.HasOverridden = false;
 
   // Find associated types with the given name in all of the inherited
   // protocols.
@@ -1715,25 +1658,25 @@ ArrayRef<AssociatedTypeDecl *> AssociatedTypeDecl::getOverriddenDecls() const {
                        inheritedAssociatedTypes.end(),
                        compareSimilarAssociatedTypes);
 
-  mutableThis->AssociatedTypeDeclBits.ComputedOverridden = false;
+  mutableThis->Bits.AssociatedTypeDecl.ComputedOverridden = false;
   return mutableThis->setOverriddenDecls(inheritedAssociatedTypes);
 }
 
 ArrayRef<AssociatedTypeDecl *> AssociatedTypeDecl::setOverriddenDecls(
                                   ArrayRef<AssociatedTypeDecl *> overridden) {
-  assert(!AssociatedTypeDeclBits.ComputedOverridden &&
+  assert(!Bits.AssociatedTypeDecl.ComputedOverridden &&
          "Overridden decls already computed");
-  AssociatedTypeDeclBits.ComputedOverridden = true;
+  Bits.AssociatedTypeDecl.ComputedOverridden = true;
 
   // If the set of overridden declarations is empty, note that.
   if (overridden.empty()) {
-    AssociatedTypeDeclBits.HasOverridden = false;
+    Bits.AssociatedTypeDecl.HasOverridden = false;
     return { };
   }
 
   // Record the overrides in the context.
   auto &ctx = getASTContext();
-  AssociatedTypeDeclBits.HasOverridden = true;
+  Bits.AssociatedTypeDecl.HasOverridden = true;
   auto overriddenCopy = ctx.AllocateCopy(overridden);
   auto inserted =
     ctx.Impl.AssociatedTypeOverrides.insert({this, overriddenCopy}).second;
@@ -1897,10 +1840,48 @@ ASTContext::getConformance(Type conformingType,
   return result;
 }
 
-SpecializedProtocolConformance *
+/// If one of the ancestor conformances already has a matching type, use
+/// that instead.
+static ProtocolConformance *collapseSpecializedConformance(
+                                             Type type,
+                                             ProtocolConformance *conformance) {
+  while (true) {
+    // If the conformance matches, return it.
+    if (conformance->getType()->isEqual(type))
+      return conformance;
+
+    switch (conformance->getKind()) {
+    case ProtocolConformanceKind::Inherited:
+      conformance = cast<InheritedProtocolConformance>(conformance)
+                      ->getInheritedConformance();
+      break;
+
+    case ProtocolConformanceKind::Specialized:
+      conformance = cast<SpecializedProtocolConformance>(conformance)
+                      ->getGenericConformance();
+      break;
+
+    case ProtocolConformanceKind::Normal:
+      return nullptr;
+    }
+  }
+}
+
+ProtocolConformance *
 ASTContext::getSpecializedConformance(Type type,
                                       ProtocolConformance *generic,
-                                      SubstitutionList substitutions) {
+                                      SubstitutionList substitutions,
+                                      bool alreadyCheckedCollapsed) {
+  // If we are performing a substitution that would get us back to the
+  // a prior conformance (e.g., mapping into and then out of a conformance),
+  // return the existing conformance.
+  if (!alreadyCheckedCollapsed) {
+    if (auto existing = collapseSpecializedConformance(type, generic)) {
+      ++NumCollapsedSpecializedProtocolConformances;
+      return existing;
+    }
+  }
+
   llvm::FoldingSetNodeID id;
   SpecializedProtocolConformance::Profile(id, type, generic, substitutions);
 
@@ -1922,15 +1903,24 @@ ASTContext::getSpecializedConformance(Type type,
   return result;
 }
 
-SpecializedProtocolConformance *
+ProtocolConformance *
 ASTContext::getSpecializedConformance(Type type,
                                       ProtocolConformance *generic,
                                       const SubstitutionMap &subMap) {
+  // If we are performing a substitution that would get us back to the
+  // a prior conformance (e.g., mapping into and then out of a conformance),
+  // return the existing conformance.
+  if (auto existing = collapseSpecializedConformance(type, generic)) {
+    ++NumCollapsedSpecializedProtocolConformances;
+    return existing;
+  }
+
   SmallVector<Substitution, 4> subs;
   if (auto *genericSig = generic->getGenericSignature())
     genericSig->getSubstitutions(subMap, subs);
 
-  return getSpecializedConformance(type, generic, subs);
+  return getSpecializedConformance(type, generic, subs,
+                                   /*alreadyCheckedCollapsed=*/true);
 }
 
 InheritedProtocolConformance *
@@ -2086,7 +2076,6 @@ size_t ASTContext::Implementation::Arena::getTotalMemory() const {
     llvm::capacity_in_bytes(ArraySliceTypes) +
     llvm::capacity_in_bytes(DictionaryTypes) +
     llvm::capacity_in_bytes(OptionalTypes) +
-    llvm::capacity_in_bytes(ImplicitlyUnwrappedOptionalTypes) +
     llvm::capacity_in_bytes(ParenTypes) +
     llvm::capacity_in_bytes(ReferenceStorageTypes) +
     llvm::capacity_in_bytes(LValueTypes) +
@@ -2185,32 +2174,33 @@ std::pair<unsigned, DeclName> swift::getObjCMethodDiagInfo(
   if (isa<DestructorDecl>(member))
     return { 2 + member->isImplicit(), member->getFullName() };
 
-  auto func = cast<FuncDecl>(member);
-  switch (func->getAccessorKind()) {
-  case AccessorKind::IsAddressor:
-  case AccessorKind::IsDidSet:
-  case AccessorKind::IsMaterializeForSet:
-  case AccessorKind::IsMutableAddressor:
-  case AccessorKind::IsWillSet:
-    llvm_unreachable("Not an Objective-C entry point");
+  if (auto accessor = dyn_cast<AccessorDecl>(member)) {
+    switch (accessor->getAccessorKind()) {
+    case AccessorKind::IsAddressor:
+    case AccessorKind::IsDidSet:
+    case AccessorKind::IsMaterializeForSet:
+    case AccessorKind::IsMutableAddressor:
+    case AccessorKind::IsWillSet:
+      llvm_unreachable("Not an Objective-C entry point");
 
-  case AccessorKind::IsGetter:
-    if (auto var = dyn_cast<VarDecl>(func->getAccessorStorageDecl()))
-      return { 5, var->getFullName() };
+    case AccessorKind::IsGetter:
+      if (auto var = dyn_cast<VarDecl>(accessor->getStorage()))
+        return { 5, var->getFullName() };
 
-    return { 6, Identifier() };
+      return { 6, Identifier() };
 
-  case AccessorKind::IsSetter:
-    if (auto var = dyn_cast<VarDecl>(func->getAccessorStorageDecl()))
-      return { 7, var->getFullName() };
-    return { 8, Identifier() };
+    case AccessorKind::IsSetter:
+      if (auto var = dyn_cast<VarDecl>(accessor->getStorage()))
+        return { 7, var->getFullName() };
+      return { 8, Identifier() };
+    }
 
-  case AccessorKind::NotAccessor:
-    // Normal method.
-    return { 4, func->getFullName() };
+    llvm_unreachable("Unhandled AccessorKind in switch.");
   }
 
-  llvm_unreachable("Unhandled AccessorKind in switch.");
+  // Normal method.
+  auto func = cast<FuncDecl>(member);
+  return { 4, func->getFullName() };
 }
 
 bool swift::fixDeclarationName(InFlightDiagnostic &diag, ValueDecl *decl,
@@ -2554,9 +2544,8 @@ bool ASTContext::diagnoseUnintendedObjCMethodOverrides(SourceFile &sf) {
                      ->getDeclaredInterfaceType());
     const ValueDecl *overriddenDecl = overriddenMethod;
     if (overriddenMethod->isImplicit())
-      if (auto func = dyn_cast<FuncDecl>(overriddenMethod))
-        if (auto storage = func->getAccessorStorageDecl())
-          overriddenDecl = storage;
+      if (auto accessor = dyn_cast<AccessorDecl>(overriddenMethod))
+        overriddenDecl = accessor->getStorage();
     Diags.diagnose(overriddenDecl, diag::objc_declared_here,
                    overriddenDiagInfo.first, overriddenDiagInfo.second);
 
@@ -2597,13 +2586,8 @@ static void removeValidObjCConflictingMethods(
                                  if (method->isInvalid())
                                    return true;
 
-                                 if (auto func = dyn_cast<FuncDecl>(method)) {
-                                   if (func->isAccessor()) {
-                                     return func->getAccessorStorageDecl()
-                                             ->isInvalid();
-                                   }
-
-                                   return false;
+                                 if (auto ad = dyn_cast<AccessorDecl>(method)) {
+                                   return ad->getStorage()->isInvalid();
                                  } 
                                  
                                  if (auto ctor 
@@ -2721,9 +2705,8 @@ bool ASTContext::diagnoseObjCMethodConflicts(SourceFile &sf) {
 
       const ValueDecl *originalDecl = originalMethod;
       if (originalMethod->isImplicit())
-        if (auto func = dyn_cast<FuncDecl>(originalMethod))
-          if (auto storage = func->getAccessorStorageDecl())
-            originalDecl = storage;
+        if (auto accessor = dyn_cast<AccessorDecl>(originalMethod))
+          originalDecl = accessor->getStorage();
 
       if (diagInfo == origDiagInfo) {
         Diags.diagnose(conflictingDecl, diag::objc_redecl_same,
@@ -2823,28 +2806,19 @@ bool ASTContext::diagnoseObjCUnsatisfiedOptReqConflicts(SourceFile &sf) {
                    selector,
                    protocolName);
 
-    /// Local function to determine if the given declaration is an accessor.
-    auto isAccessor = [](ValueDecl *decl) -> bool {
-      if (auto func = dyn_cast<FuncDecl>(decl))
-        return func->isAccessor();
-
-      return false;
-    };
-
     // Fix the name of the witness, if we can.
     if (req->getFullName() != conflicts[0]->getFullName() &&
         req->getKind() == conflicts[0]->getKind() &&
-        isAccessor(req) == isAccessor(conflicts[0])) {
+        isa<AccessorDecl>(req) == isa<AccessorDecl>(conflicts[0])) {
       // They're of the same kind: fix the name.
       unsigned kind;
       if (isa<ConstructorDecl>(req))
         kind = 1;
-      else if (auto func = dyn_cast<FuncDecl>(req)) {
-        if (func->isAccessor())
-          kind = isa<SubscriptDecl>(func->getAccessorStorageDecl()) ? 3 : 2;
-        else
-          kind = 0;
-      } else {
+      else if (auto accessor = dyn_cast<AccessorDecl>(req))
+        kind = isa<SubscriptDecl>(accessor->getStorage()) ? 3 : 2;
+      else if (isa<FuncDecl>(req))
+        kind = 0;
+      else {
         llvm_unreachable("unhandled @objc declaration kind");
       }
 
@@ -3028,10 +3002,6 @@ Type TupleType::get(ArrayRef<TupleTypeElt> Fields, const ASTContext &C) {
         = C.Impl.getArena(arena).TupleTypes.FindNodeOrInsertPos(ID,InsertPos))
     return TT;
 
-  // Make a copy of the fields list into ASTContext owned memory.
-  TupleTypeElt *FieldsCopy =
-    C.AllocateCopy<TupleTypeElt>(Fields.begin(), Fields.end(), arena);
-
   bool IsCanonical = true;   // All canonical elts means this is canonical.
   for (const TupleTypeElt &Elt : Fields) {
     if (Elt.getType().isNull() || !Elt.getType()->isCanonical()) {
@@ -3040,11 +3010,12 @@ Type TupleType::get(ArrayRef<TupleTypeElt> Fields, const ASTContext &C) {
     }
   }
 
-  Fields = ArrayRef<TupleTypeElt>(FieldsCopy, Fields.size());
-
-  TupleType *New =
-      new (C, arena) TupleType(Fields, IsCanonical ? &C : nullptr,
-                               properties, hasInOut);
+  // TupleType will copy the fields list into ASTContext owned memory.
+  void *mem = C.Allocate(sizeof(TupleType) +
+                         sizeof(TupleTypeElt) * Fields.size(),
+                         alignof(TupleType), arena);
+  auto New = new (mem) TupleType(Fields, IsCanonical ? &C : nullptr, properties,
+                                 hasInOut);
   C.Impl.getArena(arena).TupleTypes.InsertNode(New, InsertPos);
   return New;
 }
@@ -3197,9 +3168,12 @@ BoundGenericType::BoundGenericType(TypeKind theKind,
                                    ArrayRef<Type> genericArgs,
                                    const ASTContext *context,
                                    RecursiveTypeProperties properties)
-  : TypeBase(theKind, context, properties),
-    TheDecl(theDecl), Parent(parent), GenericArgs(genericArgs)
-{
+    : NominalOrBoundGenericNominalType(theDecl, parent, theKind, context,
+                                       properties) {
+  Bits.BoundGenericType.GenericArgCount = genericArgs.size();
+  // Subtypes are required to provide storage for the generic arguments
+  std::uninitialized_copy(genericArgs.begin(), genericArgs.end(),
+                          getTrailingObjectsPointer());
 }
 
 BoundGenericType *BoundGenericType::get(NominalTypeDecl *TheDecl,
@@ -3228,7 +3202,6 @@ BoundGenericType *BoundGenericType::get(NominalTypeDecl *TheDecl,
                                                                      InsertPos))
     return BGT;
 
-  ArrayRef<Type> ArgsCopy = C.AllocateCopy(GenericArgs, arena);
   bool IsCanonical = !Parent || Parent->isCanonical();
   if (IsCanonical) {
     for (Type Arg : GenericArgs) {
@@ -3241,15 +3214,22 @@ BoundGenericType *BoundGenericType::get(NominalTypeDecl *TheDecl,
 
   BoundGenericType *newType;
   if (auto theClass = dyn_cast<ClassDecl>(TheDecl)) {
-    newType = new (C, arena) BoundGenericClassType(
-        theClass, Parent, ArgsCopy, IsCanonical ? &C : nullptr, properties);
+    auto sz = BoundGenericClassType::totalSizeToAlloc<Type>(GenericArgs.size());
+    auto mem = C.Allocate(sz, alignof(BoundGenericClassType), arena);
+    newType = new (mem) BoundGenericClassType(
+        theClass, Parent, GenericArgs, IsCanonical ? &C : nullptr, properties);
   } else if (auto theStruct = dyn_cast<StructDecl>(TheDecl)) {
-    newType = new (C, arena) BoundGenericStructType(
-        theStruct, Parent, ArgsCopy, IsCanonical ? &C : nullptr, properties);
+    auto sz =BoundGenericStructType::totalSizeToAlloc<Type>(GenericArgs.size());
+    auto mem = C.Allocate(sz, alignof(BoundGenericStructType), arena);
+    newType = new (mem) BoundGenericStructType(
+        theStruct, Parent, GenericArgs, IsCanonical ? &C : nullptr, properties);
+  } else if (auto theEnum = dyn_cast<EnumDecl>(TheDecl)) {
+    auto sz = BoundGenericEnumType::totalSizeToAlloc<Type>(GenericArgs.size());
+    auto mem = C.Allocate(sz, alignof(BoundGenericEnumType), arena);
+    newType = new (mem) BoundGenericEnumType(
+        theEnum, Parent, GenericArgs, IsCanonical ? &C : nullptr, properties);
   } else {
-    auto theEnum = cast<EnumDecl>(TheDecl);
-    newType = new (C, arena) BoundGenericEnumType(
-        theEnum, Parent, ArgsCopy, IsCanonical ? &C : nullptr, properties);
+    llvm_unreachable("Unhandled NominalTypeDecl");
   }
   C.Impl.getArena(arena).BoundGenericTypes.InsertNode(newType, InsertPos);
 
@@ -3385,14 +3365,14 @@ ProtocolCompositionType::build(const ASTContext &C, ArrayRef<Type> Members,
           .FindNodeOrInsertPos(ID, InsertPos))
     return compTy;
 
-  auto compTy
-    = new (C, arena)
-        ProtocolCompositionType(isCanonical ? &C : nullptr,
-                                C.AllocateCopy(Members),
-                                HasExplicitAnyObject,
-                                properties);
-  C.Impl.getArena(arena).ProtocolCompositionTypes
-    .InsertNode(compTy, InsertPos);
+  // Use trailing objects for member type storage
+  auto size = totalSizeToAlloc<Type>(Members.size());
+  auto mem = C.Allocate(size, alignof(ProtocolCompositionType), arena);
+  auto compTy = new (mem) ProtocolCompositionType(isCanonical ? &C : nullptr,
+                                                  Members,
+                                                  HasExplicitAnyObject,
+                                                  properties);
+  C.Impl.getArena(arena).ProtocolCompositionTypes.InsertNode(compTy, InsertPos);
   return compTy;
 }
 
@@ -3415,7 +3395,7 @@ ReferenceStorageType *ReferenceStorageType::get(Type T, Ownership ownership,
     return entry = new (C, arena) UnownedStorageType(
                T, T->isCanonical() ? &C : nullptr, properties);
   case Ownership::Weak:
-    assert(T->getAnyOptionalObjectType() &&
+    assert(T->getOptionalObjectType() &&
            "object of weak storage type is not optional");
     return entry = new (C, arena)
                WeakStorageType(T, T->isCanonical() ? &C : nullptr, properties);
@@ -3432,9 +3412,9 @@ AnyMetatypeType::AnyMetatypeType(TypeKind kind, const ASTContext *C,
                                  Optional<MetatypeRepresentation> repr)
     : TypeBase(kind, C, properties), InstanceType(instanceType) {
   if (repr) {
-    AnyMetatypeTypeBits.Representation = static_cast<char>(*repr) + 1;
+    Bits.AnyMetatypeType.Representation = static_cast<char>(*repr) + 1;
   } else {
-    AnyMetatypeTypeBits.Representation = 0;
+    Bits.AnyMetatypeType.Representation = 0;
   }
 }
 
@@ -3547,17 +3527,6 @@ getGenericFunctionRecursiveProperties(Type Input, Type Result) {
   if (Result->getRecursiveProperties().hasError())
     properties |= RecursiveTypeProperties::HasError;
   return properties;
-}
-
-ArrayRef<AnyFunctionType::Param> AnyFunctionType::getParams() const {
-  switch (getKind()) {
-  case TypeKind::Function:
-    return cast<FunctionType>(this)->getParams();
-  case TypeKind::GenericFunction:
-    return cast<GenericFunctionType>(this)->getParams();
-  default:
-    llvm_unreachable("Undefined function type");
-  }
 }
 
 AnyFunctionType *AnyFunctionType::withExtInfo(ExtInfo info) const {
@@ -3767,7 +3736,8 @@ GenericTypeParamType *GenericTypeParamType::get(unsigned depth, unsigned index,
   return result;
 }
 
-ArrayRef<GenericTypeParamType *> GenericFunctionType::getGenericParams() const{
+TypeArrayView<GenericTypeParamType>
+GenericFunctionType::getGenericParams() const {
   return Signature->getGenericParams();
 }
 
@@ -3818,9 +3788,13 @@ SILFunctionType::SILFunctionType(GenericSignature *genericSig, ExtInfo ext,
       GenericSig(genericSig),
       WitnessMethodConformance(witnessMethodConformance) {
 
-  SILFunctionTypeBits.HasErrorResult = errorResult.hasValue();
-  SILFunctionTypeBits.ExtInfo = ext.Bits;
-  SILFunctionTypeBits.CoroutineKind = unsigned(coroutineKind);
+  Bits.SILFunctionType.HasErrorResult = errorResult.hasValue();
+  Bits.SILFunctionType.ExtInfo = ext.Bits;
+  // The use of both assert() and static_assert() below is intentional.
+  assert(Bits.SILFunctionType.ExtInfo == ext.Bits && "Bits were dropped!");
+  static_assert(ExtInfo::NumMaskBits == NumSILExtInfoBits,
+                "ExtInfo and SILFunctionTypeBitfields must agree on bit size");
+  Bits.SILFunctionType.CoroutineKind = unsigned(coroutineKind);
   NumParameters = params.size();
   if (coroutineKind == SILCoroutineKind::None) {
     assert(yields.empty());
@@ -3841,7 +3815,7 @@ SILFunctionType::SILFunctionType(GenericSignature *genericSig, ExtInfo ext,
   }
 
   assert(!isIndirectFormalParameter(calleeConvention));
-  SILFunctionTypeBits.CalleeConvention = unsigned(calleeConvention);
+  Bits.SILFunctionType.CalleeConvention = unsigned(calleeConvention);
 
   memcpy(getMutableParameters().data(), params.data(),
          params.size() * sizeof(SILParameterInfo));
@@ -3893,6 +3867,13 @@ SILFunctionType::SILFunctionType(GenericSignature *genericSig, ExtInfo ext,
              && "interface type of result should not contain error types");
       assert(!getErrorResult().getType()->hasArchetype()
              && "interface type of result should not contain context archetypes");
+    }
+  }
+  for (auto result : getResults()) {
+    (void)result;
+    if (auto *FnType = result.getType()->getAs<SILFunctionType>()) {
+      assert(!FnType->isNoEscape() &&
+             "Cannot return an @noescape function type");
     }
   }
 #endif
@@ -4001,17 +3982,6 @@ DictionaryType *DictionaryType::get(Type keyType, Type valueType) {
                                                properties);
 }
 
-Type OptionalType::get(OptionalTypeKind which, Type valueType) {
-  switch (which) {
-  // It wouldn't be unreasonable for this method to just ignore
-  // OTK_None if we made code more convenient to write.
-  case OTK_None: llvm_unreachable("building a non-optional type!");
-  case OTK_Optional: return OptionalType::get(valueType);
-  case OTK_ImplicitlyUnwrappedOptional: return ImplicitlyUnwrappedOptionalType::get(valueType);
-  }
-  llvm_unreachable("bad optional type kind");
-}
-
 OptionalType *OptionalType::get(Type base) {
   auto properties = base->getRecursiveProperties();
   auto arena = getArena(properties);
@@ -4022,18 +3992,6 @@ OptionalType *OptionalType::get(Type base) {
   if (entry) return entry;
 
   return entry = new (C, arena) OptionalType(C, base, properties);
-}
-
-ImplicitlyUnwrappedOptionalType *ImplicitlyUnwrappedOptionalType::get(Type base) {
-  auto properties = base->getRecursiveProperties();
-  auto arena = getArena(properties);
-
-  const ASTContext &C = base->getASTContext();
-
-  auto *&entry = C.Impl.getArena(arena).ImplicitlyUnwrappedOptionalTypes[base];
-  if (entry) return entry;
-
-  return entry = new (C, arena) ImplicitlyUnwrappedOptionalType(C, base, properties);
 }
 
 ProtocolType *ProtocolType::get(ProtocolDecl *D, Type Parent,
@@ -4244,8 +4202,8 @@ CapturingTypeCheckerDebugConsumer::~CapturingTypeCheckerDebugConsumer() {
 }
 
 void GenericSignature::Profile(llvm::FoldingSetNodeID &ID,
-                               ArrayRef<GenericTypeParamType *> genericParams,
-                               ArrayRef<Requirement> requirements) {
+                              TypeArrayView<GenericTypeParamType> genericParams,
+                              ArrayRef<Requirement> requirements) {
   for (auto p : genericParams)
     ID.AddPointer(p);
 
@@ -4259,9 +4217,21 @@ void GenericSignature::Profile(llvm::FoldingSetNodeID &ID,
   }
 }
 
-GenericSignature *GenericSignature::get(ArrayRef<GenericTypeParamType *> params,
-                                        ArrayRef<Requirement> requirements,
-                                        bool isKnownCanonical) {
+GenericSignature *
+GenericSignature::get(ArrayRef<GenericTypeParamType *> params,
+                      ArrayRef<Requirement> requirements,
+                      bool isKnownCanonical) {
+  SmallVector<Type, 4> paramTypes;
+  for (auto param : params)
+    paramTypes.push_back(param);
+  auto paramsView = TypeArrayView<GenericTypeParamType>(paramTypes);
+  return get(paramsView, requirements, isKnownCanonical);
+}
+
+GenericSignature *
+GenericSignature::get(TypeArrayView<GenericTypeParamType> params,
+                      ArrayRef<Requirement> requirements,
+                      bool isKnownCanonical) {
   assert(!params.empty());
 
 #ifndef NDEBUG
@@ -4284,7 +4254,7 @@ GenericSignature *GenericSignature::get(ArrayRef<GenericTypeParamType *> params,
   }
 
   // Allocate and construct the new signature.
-  size_t bytes = totalSizeToAlloc<GenericTypeParamType *, Requirement>(
+  size_t bytes = totalSizeToAlloc<Type, Requirement>(
       params.size(), requirements.size());
   void *mem = ctx.Allocate(bytes, alignof(GenericSignature));
   auto newSig = new (mem) GenericSignature(params, requirements,

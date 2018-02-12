@@ -56,6 +56,10 @@ static llvm::cl::opt<bool> AbortOnFailure(
                               "verify-abort-on-failure",
                               llvm::cl::init(true));
 
+static llvm::cl::opt<bool> VerifyDIHoles(
+                              "verify-di-holes",
+                              llvm::cl::init(false));
+
 // The verifier is basically all assertions, so don't compile it with NDEBUG to
 // prevent release builds from triggering spurious unused variable warnings.
 
@@ -247,7 +251,6 @@ public:
   void requireABICompatibleFunctionTypes(CanSILFunctionType type1,
                                          CanSILFunctionType type2,
                                          const Twine &what) {
-    
     auto complain = [=](const char *msg) -> std::function<void()> {
       return [=]{
         llvm::dbgs() << "  " << msg << '\n'
@@ -261,162 +264,18 @@ public:
         llvm::dbgs() << "  " << type1 << "\n  " << type2 << '\n';
       };
     };
-    
-    // The calling convention and function representation can't be changed.
-    _require(type1->getRepresentation() == type2->getRepresentation(), what,
-             complain("Different function representations"));
 
-    // TODO: We should compare generic signatures. Class and witness methods
-    // allow variance in "self"-fulfilled parameters; other functions must
-    // match exactly.
+    // If we didn't have a failure, return.
+    auto Result = type1->isABICompatibleWith(type2);
+    if (Result.isCompatible())
+      return;
 
-    // TODO: More sophisticated param and return ABI compatibility rules could
-    // diverge.
-    std::function<bool (SILType, SILType)>
-    areABICompatibleParamsOrReturns = [&](SILType a, SILType b) -> bool {
-      // Address parameters are all ABI-compatible, though the referenced
-      // values may not be. Assume whoever's doing this knows what they're
-      // doing.
-      if (a.isAddress() && b.isAddress())
-        return true;
-      // Addresses aren't compatible with values.
-      // TODO: An exception for pointerish types?
-      else if (a.isAddress() || b.isAddress())
-        return false;
-      
-      // Tuples are ABI compatible if their elements are.
-      // TODO: Should destructure recursively.
-      SmallVector<CanType, 1> aElements, bElements;
-      if (auto tup = a.getAs<TupleType>()) {
-        auto types = tup.getElementTypes();
-        aElements.append(types.begin(), types.end());
-      } else {
-        aElements.push_back(a.getSwiftRValueType());
-      }
-      if (auto tup = b.getAs<TupleType>()) {
-        auto types = tup.getElementTypes();
-        bElements.append(types.begin(), types.end());
-      } else {
-        bElements.push_back(b.getSwiftRValueType());
-      }
-      
-      if (aElements.size() != bElements.size())
-        return false;
-
-      for (unsigned i : indices(aElements)) {
-        auto aa = SILType::getPrimitiveObjectType(aElements[i]),
-             bb = SILType::getPrimitiveObjectType(bElements[i]);
-        // Equivalent types are always ABI-compatible.
-        if (aa == bb)
-          continue;
-        
-        // FIXME: If one or both types are dependent, we can't accurately assess
-        // whether they're ABI-compatible without a generic context. We can
-        // do a better job here when dependent types are related to their
-        // generic signatures.
-        if (aa.hasTypeParameter() || bb.hasTypeParameter())
-          continue;
-        
-        // Bridgeable object types are interchangeable.
-        if (aa.isBridgeableObjectType() && bb.isBridgeableObjectType())
-          continue;
-        
-        // Optional and IUO are interchangeable if their elements are.
-        auto aObject = aa.getAnyOptionalObjectType();
-        auto bObject = bb.getAnyOptionalObjectType();
-        if (aObject && bObject
-            && areABICompatibleParamsOrReturns(aObject, bObject))
-          continue;
-        // Optional objects are ABI-interchangeable with non-optionals;
-        // None is represented by a null pointer.
-        if (aObject && aObject.isBridgeableObjectType()
-            && bb.isBridgeableObjectType())
-          continue;
-        if (bObject && bObject.isBridgeableObjectType()
-            && aa.isBridgeableObjectType())
-          continue;
-        
-        // Optional thick metatypes are ABI-interchangeable with non-optionals
-        // too.
-        if (aObject)
-          if (auto aObjMeta = aObject.getAs<MetatypeType>())
-            if (auto bMeta = bb.getAs<MetatypeType>())
-              if (aObjMeta->getRepresentation() == bMeta->getRepresentation()
-                  && bMeta->getRepresentation() != MetatypeRepresentation::Thin)
-                continue;
-        if (bObject)
-          if (auto aMeta = aa.getAs<MetatypeType>())
-            if (auto bObjMeta = bObject.getAs<MetatypeType>())
-              if (aMeta->getRepresentation() == bObjMeta->getRepresentation()
-                  && aMeta->getRepresentation() != MetatypeRepresentation::Thin)
-                continue;
-        
-        // Function types are interchangeable if they're also ABI-compatible.
-        if (auto aFunc = aa.getAs<SILFunctionType>())
-          if (auto bFunc = bb.getAs<SILFunctionType>()) {
-            // FIXME
-            requireABICompatibleFunctionTypes(aFunc, bFunc, what);
-            return true;
-          }
-        
-        // Metatypes are interchangeable with metatypes with the same
-        // representation.
-        if (auto aMeta = aa.getAs<MetatypeType>())
-          if (auto bMeta = bb.getAs<MetatypeType>())
-            if (aMeta->getRepresentation() == bMeta->getRepresentation())
-              continue;
-        
-        // Other types must match exactly.
-        return false;
-      }
-      return true;
-    };
-    
-    // Check the results.
-    _require(type1->getNumResults() == type2->getNumResults(), what,
-             complain("different number of results"));
-    for (unsigned i : indices(type1->getResults())) {
-      auto result1 = type1->getResults()[i];
-      auto result2 = type2->getResults()[i];
-
-      _require(result1.getConvention() == result2.getConvention(), what,
-               complain("Different return value conventions"));
-      _require(areABICompatibleParamsOrReturns(result1.getSILStorageType(),
-                                               result2.getSILStorageType()),
-               what, complain("ABI-incompatible return values"));
-    }
-
-    // Our error result conventions are designed to be ABI compatible
-    // with functions lacking error results.  Just make sure that the
-    // actual conventions match up.
-    if (type1->hasErrorResult() && type2->hasErrorResult()) {
-      auto error1 = type1->getErrorResult();
-      auto error2 = type2->getErrorResult();
-      _require(error1.getConvention() == error2.getConvention(), what,
-               complain("Different error result conventions"));
-      _require(areABICompatibleParamsOrReturns(error1.getSILStorageType(),
-                                               error2.getSILStorageType()),
-               what, complain("ABI-incompatible error results"));
-    }
-
-    // Check the parameters.
-    // TODO: Could allow known-empty types to be inserted or removed, but SIL
-    // doesn't know what empty types are yet.
-    
-    _require(type1->getParameters().size() == type2->getParameters().size(),
-             what, complain("different number of parameters"));
-    for (unsigned i : indices(type1->getParameters())) {
-      auto param1 = type1->getParameters()[i];
-      auto param2 = type2->getParameters()[i];
-      
-      _require(param1.getConvention() == param2.getConvention(), what,
-               complainBy([=] {
-                 llvm::dbgs() << "Different conventions for parameter " << i;
-               }));
-      _require(areABICompatibleParamsOrReturns(param1.getSILStorageType(),
-                                               param2.getSILStorageType()),
-               what, complainBy([=] {
-                 llvm::dbgs() << "ABI-incompatible types for parameter " << i;
+    if (!Result.hasPayload()) {
+      _require(false, what, complain(Result.getMessage().data()));
+    } else {
+      _require(false, what, complainBy([=] {
+                 llvm::dbgs() << " " << Result.getMessage().data()
+                              << ".\nParameter: " << Result.getPayload();
                }));
     }
   }
@@ -713,10 +572,7 @@ public:
     }
 
     // Optionals should have had their objects lowered.
-    OptionalTypeKind optKind;
-    if (auto objectType = rvalueType.getAnyOptionalObjectType(optKind)) {
-      require(optKind == OTK_Optional,
-              "ImplicitlyUnwrappedOptional is not legal in SIL values");
+    if (auto objectType = rvalueType.getOptionalObjectType()) {
       return checkLegalSILType(F, objectType, I);
     }
 
@@ -1228,21 +1084,13 @@ public:
 
     // A direct reference to a non-public or shared but not fragile function
     // from a fragile function is an error.
-    //
-    // Exception: When compiling OnoneSupport anything can reference anything,
-    // because the bodies of functions are never SIL serialized, but
-    // specializations are exposed as public symbols in the produced object
-    // files. For the same reason, KeepAsPublic functions (i.e. specializations)
-    // can refer to anything or can be referenced from any other function.
-    if (!F.getModule().isOptimizedOnoneSupportModule() &&
-        !(F.isKeepAsPublic() || RefF->isKeepAsPublic())) {
-      if (F.isSerialized()) {
-        require((SingleFunction && RefF->isExternalDeclaration()) ||
-                    RefF->hasValidLinkageForFragileRef(),
-                "function_ref inside fragile function cannot "
-                "reference a private or hidden symbol");
-      }
+    if (F.isSerialized()) {
+      require((SingleFunction && RefF->isExternalDeclaration()) ||
+              RefF->hasValidLinkageForFragileRef(),
+              "function_ref inside fragile function cannot "
+              "reference a private or hidden symbol");
     }
+
     verifySILFunctionType(fnType);
   }
 
@@ -1306,7 +1154,7 @@ public:
     case LoadOwnershipQualifier::Unqualified:
       // We should not see loads with unqualified ownership when SILOwnership is
       // enabled.
-      require(F.hasUnqualifiedOwnership(),
+      require(!F.hasQualifiedOwnership(),
               "Load with unqualified ownership in a qualified function");
       break;
     case LoadOwnershipQualifier::Copy:
@@ -1423,7 +1271,7 @@ public:
     case StoreOwnershipQualifier::Unqualified:
       // We should not see loads with unqualified ownership when SILOwnership is
       // enabled.
-      require(F.hasUnqualifiedOwnership(),
+      require(!F.hasQualifiedOwnership(),
               "Qualified store in function with unqualified ownership?!");
       break;
     case StoreOwnershipQualifier::Init:
@@ -1487,7 +1335,7 @@ public:
 
   void checkLoadWeakInst(LoadWeakInst *LWI) {
     require(LWI->getType().isObject(), "Result of load must be an object");
-    require(LWI->getType().getAnyOptionalObjectType(),
+    require(LWI->getType().getOptionalObjectType(),
             "Result of weak load must be an optional");
     auto PointerType = LWI->getOperand()->getType();
     auto PointerRVType = PointerType.getSwiftRValueType();
@@ -1502,7 +1350,7 @@ public:
   void checkStoreWeakInst(StoreWeakInst *SWI) {
     require(SWI->getSrc()->getType().isObject(),
             "Can't store from an address source");
-    require(SWI->getSrc()->getType().getAnyOptionalObjectType(),
+    require(SWI->getSrc()->getType().getOptionalObjectType(),
             "store_weak must be of an optional value");
     auto PointerType = SWI->getDest()->getType();
     auto PointerRVType = PointerType.getSwiftRValueType();
@@ -1525,8 +1373,9 @@ public:
                 Src->getType().getAs<SILBoxType>(),
             "mark_uninitialized must be an address, class, or box type");
     require(Src->getType() == MU->getType(),"operand and result type mismatch");
+    // FIXME: When the work to force MUI to be on Allocations/SILArguments
+    // complete, turn on this assertion.
 #if 0
-    // This will be turned back on in a couple of commits.
     require(isa<AllocationInst>(Src) || isa<SILArgument>(Src),
             "Mark Uninitialized should always be on the storage location");
 #endif
@@ -1593,14 +1442,14 @@ public:
   void checkRetainValueInst(RetainValueInst *I) {
     require(I->getOperand()->getType().isObject(),
             "Source value should be an object value");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "retain_value is only in functions with unqualified ownership");
   }
 
   void checkRetainValueAddrInst(RetainValueAddrInst *I) {
     require(I->getOperand()->getType().isAddress(),
             "Source value should be an address value");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "retain_value is only in functions with unqualified ownership");
   }
 
@@ -1633,14 +1482,14 @@ public:
   void checkReleaseValueInst(ReleaseValueInst *I) {
     require(I->getOperand()->getType().isObject(),
             "Source value should be an object value");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "release_value is only in functions with unqualified ownership");
   }
 
   void checkReleaseValueAddrInst(ReleaseValueAddrInst *I) {
     require(I->getOperand()->getType().isAddress(),
             "Source value should be an address value");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "release_value is only in functions with unqualified ownership");
   }
 
@@ -1777,8 +1626,10 @@ public:
               "EnumInst operand must be an object");
       SILType caseTy = UI->getType().getEnumElementType(UI->getElement(),
                                                         F.getModule());
-      require(caseTy == UI->getOperand()->getType(),
-              "EnumInst operand type does not match type of case");
+      if (UI->getModule().getStage() != SILStage::Lowered) {
+        require(caseTy == UI->getOperand()->getType(),
+                "EnumInst operand type does not match type of case");
+      }
     }
   }
 
@@ -1905,12 +1756,12 @@ public:
 
   void checkStrongRetainInst(StrongRetainInst *RI) {
     requireReferenceValue(RI->getOperand(), "Operand of strong_retain");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "strong_retain is only in functions with unqualified ownership");
   }
   void checkStrongReleaseInst(StrongReleaseInst *RI) {
     requireReferenceValue(RI->getOperand(), "Operand of release");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "strong_release is only in functions with unqualified ownership");
   }
   void checkStrongRetainUnownedInst(StrongRetainUnownedInst *RI) {
@@ -1918,16 +1769,16 @@ public:
                                          "Operand of strong_retain_unowned");
     require(unownedType->isLoadable(ResilienceExpansion::Maximal),
             "strong_retain_unowned requires unowned type to be loadable");
-    require(F.hasUnqualifiedOwnership(), "strong_retain_unowned is only in "
-                                         "functions with unqualified "
-                                         "ownership");
+    require(!F.hasQualifiedOwnership(), "strong_retain_unowned is only in "
+                                        "functions with unqualified "
+                                        "ownership");
   }
   void checkUnownedRetainInst(UnownedRetainInst *RI) {
     auto unownedType = requireObjectType(UnownedStorageType, RI->getOperand(),
                                           "Operand of unowned_retain");
     require(unownedType->isLoadable(ResilienceExpansion::Maximal),
             "unowned_retain requires unowned type to be loadable");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "unowned_retain is only in functions with unqualified ownership");
   }
   void checkUnownedReleaseInst(UnownedReleaseInst *RI) {
@@ -1935,7 +1786,7 @@ public:
                                          "Operand of unowned_release");
     require(unownedType->isLoadable(ResilienceExpansion::Maximal),
             "unowned_release requires unowned type to be loadable");
-    require(F.hasUnqualifiedOwnership(),
+    require(!F.hasQualifiedOwnership(),
             "unowned_release is only in functions with unqualified ownership");
   }
   void checkDeallocStackInst(DeallocStackInst *DI) {
@@ -2329,22 +2180,24 @@ public:
                                         "result of objc_method");
     require(!methodType->getExtInfo().hasContext(),
             "result method must be of a context-free function type");
+    require(methodType->getRepresentation()
+            == SILFunctionTypeRepresentation::ObjCMethod,
+            "wrong function type representation");
 
-    auto methodSelfType = getMethodSelfType(methodType);
     auto operandType = OMI->getOperand()->getType();
+    auto operandInstanceType = operandType.getSwiftRValueType();
+    if (auto metatypeType = dyn_cast<MetatypeType>(operandInstanceType))
+      operandInstanceType = metatypeType.getInstanceType();
 
-    if (methodSelfType.isClassOrClassMetatype()) {
+    if (operandInstanceType.getClassOrBoundGenericClass()) {
       auto overrideTy = TC.getConstantOverrideType(member);
       requireSameType(
           OMI->getType(), SILType::getPrimitiveObjectType(overrideTy),
           "result type of objc_method must match abstracted type of method");
-      require(operandType.isClassOrClassMetatype(),
-              "operand must be of a class type");
     } else {
-      require(getDynamicMethodType(operandType, OMI->getMember())
-                .getSwiftRValueType()
-                ->isBindableTo(OMI->getType().getSwiftRValueType()),
-              "result must be of the method's type");
+      require(isa<ArchetypeType>(operandInstanceType) ||
+              operandInstanceType->isObjCExistentialType(),
+              "operand type must be an archetype or self-conforming existential");
       verifyOpenedArchetype(OMI, OMI->getType().getSwiftRValueType());
     }
 
@@ -2454,9 +2307,19 @@ public:
         if (inst->isTypeDependentOperand(*use))
           continue;
         switch (inst->getKind()) {
+        case SILInstructionKind::MarkDependenceInst:
+          break;
         case SILInstructionKind::ApplyInst:
         case SILInstructionKind::TryApplyInst:
         case SILInstructionKind::PartialApplyInst:
+          // Non-Mutating set pattern that allows a inout (that can't really
+          // write back. Only SILGen generates PointerToThinkFunction
+          // instructions in the writeback code.
+          if (auto *AI = dyn_cast<ApplyInst>(inst)) {
+            if (isa<PointerToThinFunctionInst>(AI->getCallee())) {
+              break;
+            }
+          }
           if (isConsumingOrMutatingApplyUse(use))
             return true;
           else
@@ -3160,12 +3023,12 @@ public:
 
     // Upcast from Optional<B> to Optional<A> is legal as long as B is a
     // subclass of A.
-    if (ToTy.getSwiftRValueType().getAnyOptionalObjectType() &&
-        FromTy.getSwiftRValueType().getAnyOptionalObjectType()) {
+    if (ToTy.getSwiftRValueType().getOptionalObjectType() &&
+        FromTy.getSwiftRValueType().getOptionalObjectType()) {
       ToTy = SILType::getPrimitiveObjectType(
-          ToTy.getSwiftRValueType().getAnyOptionalObjectType());
+          ToTy.getSwiftRValueType().getOptionalObjectType());
       FromTy = SILType::getPrimitiveObjectType(
-          FromTy.getSwiftRValueType().getAnyOptionalObjectType());
+          FromTy.getSwiftRValueType().getOptionalObjectType());
     }
 
     auto ToClass = ToTy.getClassOrBoundGenericClass();
@@ -3302,8 +3165,24 @@ public:
                                    "convert_function result");
 
     // convert_function is required to be an ABI-compatible conversion.
-    requireABICompatibleFunctionTypes(opTI, resTI,
-                                 "convert_function cannot change function ABI");
+    requireABICompatibleFunctionTypes(
+        opTI, resTI, "convert_function cannot change function ABI");
+  }
+
+  void checkConvertEscapeToNoEscapeInst(ConvertEscapeToNoEscapeInst *ICI) {
+    auto opTI = requireObjectType(SILFunctionType, ICI->getOperand(),
+                                  "convert_escape_to_noescape operand");
+    auto resTI = ICI->getType().castTo<SILFunctionType>();
+
+    // FIXME: Not yet, to be enabled when this is true.
+    // require(resTI->isTrivial(F.getModule()),
+    //         "convert_escape_to_noescape should produce a trivial result type");
+
+    // convert_escape_to_noescape is required to be an ABI-compatible
+    // conversion once escapability is the same on both sides.
+    requireABICompatibleFunctionTypes(
+        opTI, resTI->getWithExtInfo(resTI->getExtInfo().withNoEscape(false)),
+        "convert_escape_to_noescape cannot change function ABI");
   }
 
   void checkThinFunctionToPointerInst(ThinFunctionToPointerInst *CI) {
@@ -3608,7 +3487,7 @@ public:
                     SOI->getOperand()->getType(),
                 "Switch enum default block should have one argument that is "
                 "the same as the input type");
-      } else if (F.hasUnqualifiedOwnership()) {
+      } else if (!F.hasQualifiedOwnership()) {
         require(SOI->getDefaultBB()->args_empty(),
                 "switch_enum default destination must take no arguments");
       }
@@ -3750,12 +3629,34 @@ public:
   }
   
   void checkInitBlockStorageHeaderInst(InitBlockStorageHeaderInst *IBSHI) {
-    require(IBSHI->getBlockStorage()->getType().isAddress(),
+    auto storage = IBSHI->getBlockStorage();
+    require(storage->getType().isAddress(),
             "block storage operand must be an address");
-    auto storageTy
-      = IBSHI->getBlockStorage()->getType().getAs<SILBlockStorageType>();
+
+    auto storageTy = storage->getType().getAs<SILBlockStorageType>();
     require(storageTy, "block storage operand must be a @block_storage type");
-    
+
+    auto captureTy = storageTy->getCaptureType();
+    if (auto capturedFnTy = captureTy->getAs<SILFunctionType>()) {
+      if (capturedFnTy->isNoEscape()) {
+        // If the capture is a noescape function then it must be possible to
+        // locally determine the value stored to initialize the storage for the
+        // capture. This is required to diagnose static exclusivity violations
+        // when a noescape closure is converted to a noescape block that
+        // is then passed to a function.
+        auto *storageProjection =
+           storage->getSingleUserOfType<ProjectBlockStorageInst>();
+        require(storageProjection,
+                "block storage operand with noescape capture must have "
+                "projection from block");
+
+        auto *storeInst = storageProjection->getSingleUserOfType<StoreInst>();
+        require(storeInst,
+                "block storage operand with noescape capture must have "
+                "store to projection");
+      }
+    }
+
     require(IBSHI->getInvokeFunction()->getType().isObject(),
             "invoke function operand must be a value");
     auto invokeTy
@@ -4079,20 +3980,20 @@ public:
           break;
         }
         case KeyPathPatternComponent::Kind::OptionalChain: {
-          require(baseTy->getAnyOptionalObjectType()->isEqual(componentTy),
+          require(baseTy->getOptionalObjectType()->isEqual(componentTy),
                   "chaining component should unwrap optional");
-          require(leafTy->getAnyOptionalObjectType(),
+          require(leafTy->getOptionalObjectType(),
                   "key path with chaining component should have optional "
                   "result");
           break;
         }
         case KeyPathPatternComponent::Kind::OptionalForce: {
-          require(baseTy->getAnyOptionalObjectType()->isEqual(componentTy),
+          require(baseTy->getOptionalObjectType()->isEqual(componentTy),
                   "forcing component should unwrap optional");
           break;
         }
         case KeyPathPatternComponent::Kind::OptionalWrap: {
-          require(componentTy->getAnyOptionalObjectType()->isEqual(baseTy),
+          require(componentTy->getOptionalObjectType()->isEqual(baseTy),
                   "wrapping component should wrap optional");
           break;
         }
@@ -4466,6 +4367,78 @@ public:
     }
   }
 
+  /// This pass verifies that there are no hole in debug scopes at -Onone.
+  void verifyDebugScopeHoles(SILBasicBlock *BB) {
+    if (!VerifyDIHoles)
+      return;
+
+    // This check only makes sense at -Onone. Optimizations,
+    // e.g. inlining, can move scopes around.
+    llvm::DenseSet<const SILDebugScope *> AlreadySeenScopes;
+    if (BB->getParent()->getEffectiveOptimizationMode() !=
+        OptimizationMode::NoOptimization)
+      return;
+
+    // Exit early if this BB is empty.
+    if (BB->empty())
+      return;
+
+    const SILDebugScope *LastSeenScope = nullptr;
+    for (SILInstruction &SI : *BB) {
+      if (isa<AllocStackInst>(SI))
+        continue;
+      LastSeenScope = SI.getDebugScope();
+      AlreadySeenScopes.insert(LastSeenScope);
+      break;
+    }
+    for (SILInstruction &SI : *BB) {
+      // `alloc_stack` can create false positive, so we skip it
+      // for now.
+      if (isa<AllocStackInst>(SI))
+        continue;
+
+      // If we haven't seen this debug scope yet, update the
+      // map and go on.
+      auto *DS = SI.getDebugScope();
+      assert(DS && "Each instruction should have a debug scope");
+      if (!AlreadySeenScopes.count(DS)) {
+        AlreadySeenScopes.insert(DS);
+        LastSeenScope = DS;
+        continue;
+      }
+
+      // Otherwise, we're allowed to re-enter a scope only if
+      // the scope is an ancestor of the scope we're currently leaving.
+      auto isAncestorScope = [](const SILDebugScope *Cur,
+                                const SILDebugScope *Previous) {
+        const SILDebugScope *Tmp = Previous;
+        assert(Tmp && "scope can't be null");
+        while (Tmp) {
+          PointerUnion<const SILDebugScope *, SILFunction *> Parent =
+              Tmp->Parent;
+          auto *ParentScope = Parent.dyn_cast<const SILDebugScope *>();
+          if (!ParentScope)
+            break;
+          if (ParentScope == Cur)
+            return true;
+          Tmp = ParentScope;
+        }
+        return false;
+      };
+
+      if (isAncestorScope(DS, LastSeenScope)) {
+        LastSeenScope = DS;
+        continue;
+      }
+      if (DS != LastSeenScope) {
+        DEBUG(llvm::dbgs() << "Broken instruction!\n"; SI.dump());
+        require(
+            DS == LastSeenScope,
+            "Basic block contains a non-contiguous lexical scope at -Onone");
+      }
+    }
+  }
+
   void visitSILBasicBlock(SILBasicBlock *BB) {
     // Make sure that each of the successors/predecessors of this basic block
     // have this basic block in its predecessor/successor list.
@@ -4488,6 +4461,7 @@ public:
     }
     
     SILInstructionVisitor::visitSILBasicBlock(BB);
+    verifyDebugScopeHoles(BB);
   }
 
   void visitBasicBlockArguments(SILBasicBlock *BB) {
@@ -4599,8 +4573,8 @@ void SILVTable::verify(const SILModule &M) const {
     auto baseInfo = M.Types.getConstantInfo(entry.Method);
     ValueDecl *decl = entry.Method.getDecl();
 
-    assert((!isa<FuncDecl>(decl)
-            || !cast<FuncDecl>(decl)->isObservingAccessor())
+    assert((!isa<AccessorDecl>(decl)
+            || !cast<AccessorDecl>(decl)->isObservingAccessor())
            && "observing accessors shouldn't have vtable entries");
 
     // For ivar destroyers, the decl is the class itself.
@@ -4666,9 +4640,7 @@ void SILWitnessTable::verify(const SILModule &M) const {
         // If a SILWitnessTable is going to be serialized, it must only
         // reference public or serializable functions.
         if (isSerialized()) {
-          assert((!isLessVisibleThan(F->getLinkage(), getLinkage()) ||
-                  (F->isSerialized() &&
-                   hasSharedVisibility(F->getLinkage()))) &&
+          assert(F->hasValidLinkageForFragileRef() &&
                  "Fragile witness tables should not reference "
                  "less visible functions.");
         }
@@ -4695,15 +4667,18 @@ void SILDefaultWitnessTable::verify(const SILModule &M) const {
       continue;
 
     SILFunction *F = E.getWitness();
-    // FIXME
-    #if 0
-    assert(!isLessVisibleThan(F->getLinkage(), getLinkage()) &&
+
+#if 0
+    // FIXME: For now, all default witnesses are private.
+    assert(F->hasValidLinkageForFragileRef() &&
            "Default witness tables should not reference "
            "less visible functions.");
-    #endif
+#endif
+
     assert(F->getLoweredFunctionType()->getRepresentation() ==
            SILFunctionTypeRepresentation::WitnessMethod &&
            "Default witnesses must have witness_method representation.");
+
     auto *witnessSelfProtocol = F->getLoweredFunctionType()
         ->getDefaultWitnessMethodProtocol();
     assert(witnessSelfProtocol == getProtocol() &&

@@ -105,7 +105,6 @@ extension String {
     CustomDebugStringConvertible {
 
     public typealias Index = String.Index
-    public typealias IndexDistance = Int
 
     /// The position of the first code unit if the `String` is
     /// nonempty; identical to `endIndex` otherwise.
@@ -164,7 +163,7 @@ extension String {
 
     // TODO: swift-3-indexing-model - add docs
     @_inlineable // FIXME(sil-serialize-all)
-    public func index(_ i: Index, offsetBy n: IndexDistance) -> Index {
+    public func index(_ i: Index, offsetBy n: Int) -> Index {
       // FIXME: swift-3-indexing-model: range check i?
       return Index(encodedOffset: i.encodedOffset.advanced(by: n))
     }
@@ -172,7 +171,7 @@ extension String {
     // TODO: swift-3-indexing-model - add docs
     @_inlineable // FIXME(sil-serialize-all)
     public func index(
-      _ i: Index, offsetBy n: IndexDistance, limitedBy limit: Index
+      _ i: Index, offsetBy n: Int, limitedBy limit: Index
     ) -> Index? {
       // FIXME: swift-3-indexing-model: range check i?
       let d = i.encodedOffset.distance(to: limit.encodedOffset)
@@ -184,7 +183,7 @@ extension String {
 
     // TODO: swift-3-indexing-model - add docs
     @_inlineable // FIXME(sil-serialize-all)
-    public func distance(from start: Index, to end: Index) -> IndexDistance {
+    public func distance(from start: Index, to end: Index) -> Int {
       // FIXME: swift-3-indexing-model: range check start and end?
       return start.encodedOffset.distance(to: end.encodedOffset)
     }
@@ -192,7 +191,7 @@ extension String {
     @_inlineable // FIXME(sil-serialize-all)
     @_versioned // FIXME(sil-serialize-all)
     internal func _internalIndex(at i: Int) -> Int {
-      return _core.startIndex + i
+      return _guts.startIndex + i
     }
 
     /// Accesses the code unit at the given position.
@@ -213,30 +212,29 @@ extension String {
           "out-of-range access on a UTF16View")
 
       let index = _internalIndex(at: i.encodedOffset)
-      let u = _core[index]
-      if _fastPath((u &>> 11) != 0b1101_1) {
+      let u = _guts[index]
+      if _fastPath(UTF16._isScalar(u)) {
         // Neither high-surrogate, nor low-surrogate -- well-formed sequence
         // of 1 code unit.
         return u
       }
 
-      if (u &>> 10) == 0b1101_10 {
-        // `u` is a high-surrogate.  Sequence is well-formed if it
-        // is followed by a low-surrogate.
+      if UTF16.isLeadSurrogate(u) {
+        // Sequence is well-formed if `u` is followed by a low-surrogate.
         if _fastPath(
-               index + 1 < _core.count &&
-               (_core[index + 1] &>> 10) == 0b1101_11) {
+          index + 1 < _guts.count &&
+          UTF16.isTrailSurrogate(_guts[index + 1])) {
           return u
         }
-        return 0xfffd
+        return UTF16._replacementCodeUnit
       }
 
       // `u` is a low-surrogate.  Sequence is well-formed if
       // previous code unit is a high-surrogate.
-      if _fastPath(index != 0 && (_core[index - 1] &>> 10) == 0b1101_10) {
+      if _fastPath(index != 0 && UTF16.isLeadSurrogate(_guts[index - 1])) {
         return u
       }
-      return 0xfffd
+      return UTF16._replacementCodeUnit
     }
 
 #if _runtime(_ObjC)
@@ -259,23 +257,21 @@ extension String {
 
     @_inlineable // FIXME(sil-serialize-all)
     @_versioned // FIXME(sil-serialize-all)
-    internal init(_ _core: _StringCore) {
-      self.init(_core, offset: 0, length: _core.count)
+    internal init(_ _guts: _StringGuts) {
+      self.init(_guts, offset: 0, length: _guts.count)
     }
 
     @_inlineable // FIXME(sil-serialize-all)
     @_versioned // FIXME(sil-serialize-all)
-    internal init(_ _core: _StringCore, offset: Int, length: Int) {
+    internal init(_ _guts: _StringGuts, offset: Int, length: Int) {
       self._offset = offset
       self._length = length
-      self._core = _core
+      self._guts = _guts
     }
 
     @_inlineable // FIXME(sil-serialize-all)
     public var description: String {
-      let start = _internalIndex(at: _offset)
-      let end = _internalIndex(at: _offset + _length)
-      return String(_core[start..<end])
+      return String(_guts._extractSlice(_encodedOffsetRange))
     }
 
     @_inlineable // FIXME(sil-serialize-all)
@@ -287,15 +283,16 @@ extension String {
     internal var _offset: Int
     @_versioned // FIXME(sil-serialize-all)
     internal var _length: Int
-    @_versioned // FIXME(sil-serialize-all)
-    internal let _core: _StringCore
+
+    @_versioned
+    internal var _guts: _StringGuts
   }
 
   /// A UTF-16 encoding of `self`.
   @_inlineable // FIXME(sil-serialize-all)
   public var utf16: UTF16View {
     get {
-      return UTF16View(_core)
+      return UTF16View(_guts)
     }
     set {
       self = String(describing: newValue)
@@ -328,9 +325,7 @@ extension String {
     // semantics may be impossible to preserve in the case of string literals,
     // since we no longer have access to the length of the original string when
     // there is no owner and elements are dropped from the end.
-    let wholeString = utf16._core.nativeBuffer.map { String(_StringCore($0)) }
-       ?? String(utf16._core)
-
+    let wholeString = String(utf16._guts)
     guard
       let start = UTF16Index(_offset: utf16._offset)
         .samePosition(in: wholeString),
@@ -341,14 +336,13 @@ extension String {
         return nil
     }
     self = wholeString[start..<end]
-
   }
 
   /// Creates a string corresponding to the given sequence of UTF-16 code units.
   @_inlineable // FIXME(sil-serialize-all)
   @available(swift, introduced: 4.0)
   public init(_ utf16: UTF16View) {
-    self = String(utf16._core)
+    self = String(utf16._guts)
   }
 
   /// The index type for subscripting a string.
@@ -361,7 +355,19 @@ extension String.UTF16View : _SwiftStringView {
   internal var _ephemeralContent : String { return _persistentContent }
   @_inlineable // FIXME(sil-serialize-all)
   @_versioned // FIXME(sil-serialize-all)
-  internal var _persistentContent : String { return String(self._core) }
+  internal var _persistentContent : String { return String(self._guts) }
+
+  @_inlineable // FIXME(sil-serialize-all)
+  @_versioned // FIXME(sil-serialize-all)
+  var _wholeString : String {
+    return String(_guts)
+  }
+
+  @_inlineable // FIXME(sil-serialize-all)
+  @_versioned // FIXME(sil-serialize-all)
+  var _encodedOffsetRange : Range<Int> {
+    return _offset..<_offset+_length
+  }
 }
 
 // Index conversions
@@ -448,7 +454,6 @@ extension String.UTF16View : CustomPlaygroundQuickLookable {
 
 extension String.UTF16View.Indices : BidirectionalCollection {
   public typealias Index = String.UTF16View.Index
-  public typealias IndexDistance = String.UTF16View.IndexDistance
   public typealias Indices = String.UTF16View.Indices
   public typealias SubSequence = String.UTF16View.Indices
 
@@ -519,14 +524,14 @@ extension String.UTF16View.Indices : BidirectionalCollection {
   }
 
   @_inlineable // FIXME(sil-serialize-all)
-  public func index(_ i: Index, offsetBy n: IndexDistance) -> Index {
+  public func index(_ i: Index, offsetBy n: Int) -> Index {
     // FIXME: swift-3-indexing-model: range check i?
     return _elements.index(i, offsetBy: n)
   }
 
   @_inlineable // FIXME(sil-serialize-all)
   public func index(
-    _ i: Index, offsetBy n: IndexDistance, limitedBy limit: Index
+    _ i: Index, offsetBy n: Int, limitedBy limit: Index
   ) -> Index? {
     // FIXME: swift-3-indexing-model: range check i?
     return _elements.index(i, offsetBy: n, limitedBy: limit)
@@ -534,7 +539,7 @@ extension String.UTF16View.Indices : BidirectionalCollection {
 
   // TODO: swift-3-indexing-model - add docs
   @_inlineable // FIXME(sil-serialize-all)
-  public func distance(from start: Index, to end: Index) -> IndexDistance {
+  public func distance(from start: Index, to end: Index) -> Int {
     // FIXME: swift-3-indexing-model: range check start and end?
     return _elements.distance(from: start, to: end)
   }
@@ -554,14 +559,14 @@ extension String.UTF16View {
     swift, obsoleted: 4.0,
     message: "Any String view index conversion can fail in Swift 4; please unwrap the optional index")
   public func index(
-    _ i: Index?, offsetBy n: IndexDistance) -> Index {
+    _ i: Index?, offsetBy n: Int) -> Index {
     return index(i!, offsetBy: n)
   }
   @_inlineable // FIXME(sil-serialize-all)
   @available(
     swift, obsoleted: 4.0,
     message: "Any String view index conversion can fail in Swift 4; please unwrap the optional indices")
-  public func distance(from i: Index?, to j: Index?) -> IndexDistance {
+  public func distance(from i: Index?, to j: Index?) -> Int {
     return distance(from: i!, to: j!)
   }
   @_inlineable // FIXME(sil-serialize-all)
@@ -594,7 +599,7 @@ extension String.UTF16View {
   @available(swift, obsoleted: 4)
   public subscript(bounds: Range<Index>) -> String.UTF16View {
     return String.UTF16View(
-      _core,
+      _guts,
       offset: _internalIndex(at: bounds.lowerBound.encodedOffset),
       length: bounds.upperBound.encodedOffset - bounds.lowerBound.encodedOffset)
   }

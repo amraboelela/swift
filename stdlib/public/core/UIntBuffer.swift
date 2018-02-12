@@ -38,7 +38,7 @@ public struct _UIntBuffer<
 }
 
 extension _UIntBuffer : Sequence {
-  public typealias SubSequence = RangeReplaceableRandomAccessSlice<_UIntBuffer>
+  public typealias SubSequence = Slice<_UIntBuffer>
   
   @_fixed_layout
   public struct Iterator : IteratorProtocol, Sequence {
@@ -129,19 +129,18 @@ extension _UIntBuffer : BidirectionalCollection {
 }
 
 extension _UIntBuffer : RandomAccessCollection {
-  public typealias Indices = DefaultRandomAccessIndices<_UIntBuffer>
-  public typealias IndexDistance = Int
+  public typealias Indices = DefaultIndices<_UIntBuffer>
   
   @_inlineable // FIXME(sil-serialize-all)
   @inline(__always)
-  public func index(_ i: Index, offsetBy n: IndexDistance) -> Index {
-    let x = IndexDistance(i.bitOffset) &+ n &* Element.bitWidth
+  public func index(_ i: Index, offsetBy n: Int) -> Index {
+    let x = Int(i.bitOffset) &+ n &* Element.bitWidth
     return Index(bitOffset: UInt8(truncatingIfNeeded: x))
   }
 
   @_inlineable // FIXME(sil-serialize-all)
   @inline(__always)
-  public func distance(from i: Index, to j: Index) -> IndexDistance {
+  public func distance(from i: Index, to j: Index) -> Int {
     return (Int(j.bitOffset) &- Int(i.bitOffset)) / Element.bitWidth
   }
 }
@@ -199,10 +198,13 @@ extension _UIntBuffer : RangeReplaceableCollection {
 
   @_inlineable // FIXME(sil-serialize-all)
   @inline(__always)
-  public mutating func removeFirst() {
+  @discardableResult
+  public mutating func removeFirst() -> Element {
     _debugPrecondition(!isEmpty)
+    let result = Element(truncatingIfNeeded: _storage)
     _bitCount = _bitCount &- _elementWidth
     _storage = _storage._fullShiftRight(_elementWidth)
+    return result
   }
   
   @_inlineable // FIXME(sil-serialize-all)
@@ -232,6 +234,6 @@ extension _UIntBuffer : RangeReplaceableCollection {
     _storage |= replacement1._storage &<< (headCount &* w)
     _storage |= tailBits &<< ((tailOffset &+ growth) &* w)
     _bitCount = UInt8(
-      truncatingIfNeeded: IndexDistance(_bitCount) &+ growth &* w)
+      truncatingIfNeeded: Int(_bitCount) &+ growth &* w)
   }
 }

@@ -130,8 +130,9 @@ SourceLoc Stmt::getEndLoc() const {
 BraceStmt::BraceStmt(SourceLoc lbloc, ArrayRef<ASTNode> elts,
                      SourceLoc rbloc, Optional<bool> implicit)
   : Stmt(StmtKind::Brace, getDefaultImplicitFlag(implicit, lbloc)),
-    NumElements(elts.size()), LBLoc(lbloc), RBLoc(rbloc)
+    LBLoc(lbloc), RBLoc(rbloc)
 {
+  Bits.BraceStmt.NumElements = elts.size();
   std::uninitialized_copy(elts.begin(), elts.end(),
                           getTrailingObjects<ASTNode>());
 }
@@ -371,13 +372,14 @@ CaseStmt::CaseStmt(SourceLoc CaseLoc, ArrayRef<CaseLabelItem> CaseLabelItems,
                    Optional<bool> Implicit)
     : Stmt(StmtKind::Case, getDefaultImplicitFlag(Implicit, CaseLoc)),
       CaseLoc(CaseLoc), ColonLoc(ColonLoc),
-      BodyAndHasBoundDecls(Body, HasBoundDecls),
-      NumPatterns(CaseLabelItems.size()) {
-  assert(NumPatterns > 0 && "case block must have at least one pattern");
+      BodyAndHasBoundDecls(Body, HasBoundDecls) {
+  Bits.CaseStmt.NumPatterns = CaseLabelItems.size();
+  assert(Bits.CaseStmt.NumPatterns > 0 &&
+         "case block must have at least one pattern");
   MutableArrayRef<CaseLabelItem> Items{ getTrailingObjects<CaseLabelItem>(),
-                                        NumPatterns };
+                                        Bits.CaseStmt.NumPatterns };
 
-  for (unsigned i = 0; i < NumPatterns; ++i) {
+  for (unsigned i = 0; i < Bits.CaseStmt.NumPatterns; ++i) {
     new (&Items[i]) CaseLabelItem(CaseLabelItems[i]);
     Items[i].getPattern()->markOwnedByStatement(this);
   }
@@ -402,7 +404,8 @@ SwitchStmt *SwitchStmt::create(LabeledStmtInfo LabelInfo, SourceLoc SwitchLoc,
 #ifndef NDEBUG
   for (auto N : Cases)
     assert((N.is<Stmt*>() && isa<CaseStmt>(N.get<Stmt*>())) ||
-           (N.is<Decl*>() && isa<IfConfigDecl>(N.get<Decl*>())));
+           (N.is<Decl*>() && (isa<IfConfigDecl>(N.get<Decl*>()) ||
+                              isa<PoundDiagnosticDecl>(N.get<Decl*>()))));
 #endif
 
   void *p = C.Allocate(totalSizeToAlloc<ASTNode>(Cases.size()),

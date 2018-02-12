@@ -84,11 +84,6 @@ ERROR(writeback_overlap_subscript,none,
 NOTE(writebackoverlap_note,none,
       "concurrent writeback occurred here", ())
 
-ERROR(addressonly_type_used_in_multipattern_case,none,
-      "matching %select{type '%1'|a protocol value|a generic value}0 in multiple patterns "
-      "is not yet supported; use separate cases instead",
-      (unsigned, Type))
-
 ERROR(inout_argument_alias,none,
       "inout arguments are not allowed to alias each other", ())
 NOTE(previous_inout_alias,none,
@@ -214,6 +209,14 @@ ERROR(assignment_to_immutable_value,none,
 ERROR(mutating_protocol_witness_method_on_let_constant,none,
       "cannot perform mutating operation: '%0' is a 'let' constant",
       (StringRef))
+
+WARNING(designated_init_in_cross_module_extension,none,
+        "initializer for struct %0 must use \"self.init(...)\" or \"self = ...\""
+        "%select{| on all paths}1 because "
+        "%select{it is not in module %2|the struct was imported from C}3",
+        (Type, bool, Identifier, bool))
+NOTE(designated_init_c_struct_fix,none,
+     "use \"self.init()\" to initialize the struct with zero values", ())
 
 
 // Control flow diagnostics.

@@ -435,7 +435,7 @@ ClosureCloner::initCloned(SILFunction *Orig, IsSerialized_t Serialized,
       Orig->getDebugScope());
   for (auto &Attr : Orig->getSemanticsAttrs())
     Fn->addSemanticsAttr(Attr);
-  if (Orig->hasUnqualifiedOwnership()) {
+  if (!Orig->hasQualifiedOwnership()) {
     Fn->setUnqualifiedOwnership();
   }
   return Fn;
@@ -534,7 +534,7 @@ void ClosureCloner::visitDebugValueAddrInst(DebugValueAddrInst *Inst) {
 void
 ClosureCloner::visitStrongReleaseInst(StrongReleaseInst *Inst) {
   assert(
-      Inst->getFunction()->hasUnqualifiedOwnership() &&
+      !Inst->getFunction()->hasQualifiedOwnership() &&
       "Should not see strong release in a function with qualified ownership");
   SILValue Operand = Inst->getOperand();
   if (auto *A = dyn_cast<SILArgument>(Operand)) {
@@ -680,7 +680,7 @@ void ClosureCloner::visitLoadInst(LoadInst *LI) {
     // Loads of a struct_element_addr of an argument get replaced with a
     // struct_extract of the new passed in value. The value should be borrowed
     // already, so we can just extract the value.
-    assert(getBuilder().getFunction().hasUnqualifiedOwnership() ||
+    assert(!getBuilder().getFunction().hasQualifiedOwnership() ||
            Val.getOwnershipKind().isTrivialOr(ValueOwnershipKind::Guaranteed));
     Val = getBuilder().emitStructExtract(LI->getLoc(), Val, SEAI->getField(),
                                          LI->getType());
@@ -1175,7 +1175,7 @@ constructClonedFunction(PartialApplyInst *PAI, FunctionRefInst *FRI,
 static SILValue getOrCreateProjectBoxHelper(SILValue PartialOperand) {
   // If we have a copy_value, just create a project_box on the copy and return.
   if (auto *CVI = dyn_cast<CopyValueInst>(PartialOperand)) {
-    SILBuilder B(std::next(CVI->getIterator()));
+    SILBuilderWithScope B(std::next(CVI->getIterator()));
     return B.createProjectBox(CVI->getLoc(), CVI, 0);
   }
 
@@ -1189,7 +1189,7 @@ static SILValue getOrCreateProjectBoxHelper(SILValue PartialOperand) {
   }
 
   // Just return a project_box.
-  SILBuilder B(std::next(Box->getIterator()));
+  SILBuilderWithScope B(std::next(Box->getIterator()));
   return B.createProjectBox(Box->getLoc(), Box, 0);
 }
 
@@ -1306,6 +1306,9 @@ class CapturePromotionPass : public SILModuleTransform {
   void run() override {
     SmallVector<SILFunction*, 128> Worklist;
     for (auto &F : *getModule()) {
+      if (F.wasDeserializedCanonical())
+        continue;
+
       processFunction(&F, Worklist);
     }
 

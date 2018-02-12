@@ -54,7 +54,7 @@ const uint16_t VERSION_MAJOR = 0;
 /// in source control, you should also update the comment to briefly
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
-const uint16_t VERSION_MINOR = 388; // Last change: Outlined Destroy
+const uint16_t VERSION_MINOR = 398; // Private discriminators for type xrefs
 
 using DeclIDField = BCFixed<31>;
 
@@ -790,8 +790,6 @@ namespace decls_block {
 
   using ArraySliceTypeLayout = SyntaxSugarTypeLayout<ARRAY_SLICE_TYPE>;
   using OptionalTypeLayout = SyntaxSugarTypeLayout<OPTIONAL_TYPE>;
-  using ImplicitlyUnwrappedOptionalTypeLayout =
-    SyntaxSugarTypeLayout<UNCHECKED_OPTIONAL_TYPE>;
 
   using DictionaryTypeLayout = BCRecordLayout<
     DICTIONARY_TYPE,
@@ -977,14 +975,40 @@ namespace decls_block {
     BCFixed<1>,   // has dynamic self?
     BCFixed<1>,   // has forced static dispatch?
     BCFixed<1>,   // throws?
-    BCVBR<5>,     // number of parameter patterns
     GenericEnvironmentIDField, // generic environment
     TypeIDField,  // interface type
     DeclIDField,  // operator decl
     DeclIDField,  // overridden function
-    DeclIDField,  // AccessorStorageDecl
     BCVBR<5>,     // 0 for a simple name, otherwise the number of parameter name
                   // components plus one
+    AccessLevelField, // access level
+    BCFixed<1>,   // requires a new vtable slot
+    BCFixed<1>,   // default argument resilience expansion
+    BCArray<IdentifierIDField> // name components,
+                               // followed by TypeID dependencies
+    // The record is trailed by:
+    // - its _silgen_name, if any
+    // - its generic parameters, if any
+    // - body parameter patterns
+  >;
+
+  // TODO: remove the unnecessary FuncDecl components here
+  using AccessorLayout = BCRecordLayout<
+    ACCESSOR_DECL,
+    DeclContextIDField,  // context decl
+    BCFixed<1>,   // implicit?
+    BCFixed<1>,   // is 'static' or 'class'?
+    StaticSpellingKindField, // spelling of 'static' or 'class'
+    BCFixed<1>,   // explicitly objc?
+    SelfAccessKindField,   // self access kind
+    BCFixed<1>,   // has dynamic self?
+    BCFixed<1>,   // has forced static dispatch?
+    BCFixed<1>,   // throws?
+    GenericEnvironmentIDField, // generic environment
+    TypeIDField,  // interface type
+    DeclIDField,  // overridden function
+    DeclIDField,  // AccessorStorageDecl
+    AccessorKindField, // accessor kind
     AddressorKindField, // addressor kind
     AccessLevelField, // access level
     BCFixed<1>,   // requires a new vtable slot
@@ -1216,11 +1240,11 @@ namespace decls_block {
     NORMAL_PROTOCOL_CONFORMANCE,
     DeclIDField, // the protocol
     DeclContextIDField, // the decl that provided this conformance
-    BCVBR<5>, // value mapping count
     BCVBR<5>, // type mapping count
+    BCVBR<5>, // value mapping count
     BCVBR<5>, // requirement signature conformance count
     BCArray<DeclIDField>
-    // The array contains archetype-value pairs, then type declarations.
+    // The array contains type witnesses, then value witnesses.
     // Requirement signature conformances follow, then the substitution records
     // for the associated types.
   >;
@@ -1264,6 +1288,7 @@ namespace decls_block {
   using XRefTypePathPieceLayout = BCRecordLayout<
     XREF_TYPE_PATH_PIECE,
     IdentifierIDField, // name
+    IdentifierIDField, // private discriminator
     BCFixed<1>         // restrict to protocol extension
   >;
 
@@ -1396,6 +1421,8 @@ namespace decls_block {
     = BCRecordLayout<ObjCRuntimeName_DECL_ATTR>;
   using RestatedObjCConformanceDeclAttrLayout
     = BCRecordLayout<RestatedObjCConformance_DECL_ATTR>;
+  using ClangImporterSynthesizedTypeDeclAttrLayout
+    = BCRecordLayout<ClangImporterSynthesizedType_DECL_ATTR>;
 
   using InlineDeclAttrLayout = BCRecordLayout<
     Inline_DECL_ATTR,

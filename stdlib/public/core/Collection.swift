@@ -82,9 +82,11 @@ public typealias Indexable = Collection
 ///     // Prints "15.0"
 ///     // Prints "20.0"
 @_fixed_layout
-public struct IndexingIterator<
-  Elements : Collection
-> : IteratorProtocol, Sequence {
+public struct IndexingIterator<Elements : Collection> {
+  @_versioned
+  internal let _elements: Elements
+  @_versioned
+  internal var _position: Elements.Index
 
   @_inlineable
   @inline(__always)
@@ -103,6 +105,12 @@ public struct IndexingIterator<
     self._elements = _elements
     self._position = _position
   }
+}
+
+extension IndexingIterator: IteratorProtocol, Sequence {
+  public typealias Element = Elements.Element
+  public typealias Iterator = IndexingIterator<Elements>
+  public typealias SubSequence = AnySequence<Element>
 
   /// Advances to the next element and returns it, or `nil` if no next element
   /// exists.
@@ -136,11 +144,6 @@ public struct IndexingIterator<
     _elements.formIndex(after: &_position)
     return element
   }
-  
-  @_versioned
-  internal let _elements: Elements
-  @_versioned
-  internal var _position: Elements.Index
 }
 
 /// A sequence whose elements can be traversed multiple times,
@@ -345,8 +348,7 @@ public struct IndexingIterator<
 /// or bidirectional collection must traverse the entire collection to count
 /// the number of contained elements, accessing its `count` property is an
 /// O(*n*) operation.
-public protocol Collection : Sequence
-{
+public protocol Collection: Sequence where SubSequence: Collection {
   // FIXME(ABI): Associated type inference requires this.
   associatedtype Element
 
@@ -356,7 +358,7 @@ public protocol Collection : Sequence
   /// "past the end" position that's not valid for use as a subscript
   /// argument.
   associatedtype Index : Comparable
- 
+
   /// The position of the first element in a nonempty collection.
   ///
   /// If the collection is empty, `startIndex` is equal to `endIndex`.
@@ -379,10 +381,6 @@ public protocol Collection : Sequence
   /// If the collection is empty, `endIndex` is equal to `startIndex`.
   var endIndex: Index { get }
 
-  /// A type that represents the number of steps between a pair of
-  /// indices.
-  associatedtype IndexDistance : SignedInteger = Int
-
   /// A type that provides the collection's iteration interface and
   /// encapsulates its iteration state.
   ///
@@ -403,9 +401,7 @@ public protocol Collection : Sequence
   /// This associated type appears as a requirement in the `Sequence`
   /// protocol, but it is restated here with stricter constraints. In a
   /// collection, the subsequence should also conform to `Collection`.
-  associatedtype SubSequence : Collection = Slice<Self>
-    where SubSequence.Index == Index,
-          SubSequence.IndexDistance == IndexDistance
+  associatedtype SubSequence = Slice<Self> where SubSequence.Index == Index
 
   /// Accesses the element at the specified position.
   ///
@@ -610,7 +606,7 @@ public protocol Collection : Sequence
   /// - Complexity: O(1) if the collection conforms to
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the length
   ///   of the collection.
-  var count: IndexDistance { get }
+  var count: Int { get }
   
   // The following requirement enables dispatching for index(of:) when
   // the element type is Equatable.
@@ -657,7 +653,7 @@ public protocol Collection : Sequence
   /// - Complexity: O(1) if the collection conforms to
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the absolute
   ///   value of `n`.
-  func index(_ i: Index, offsetBy n: IndexDistance) -> Index
+  func index(_ i: Index, offsetBy n: Int) -> Index
 
   /// Returns an index that is the specified distance from the given index,
   /// unless that distance is beyond a given limiting index.
@@ -700,7 +696,7 @@ public protocol Collection : Sequence
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the absolute
   ///   value of `n`.
   func index(
-    _ i: Index, offsetBy n: IndexDistance, limitedBy limit: Index
+    _ i: Index, offsetBy n: Int, limitedBy limit: Index
   ) -> Index?
 
   /// Returns the distance between two indices.
@@ -719,7 +715,7 @@ public protocol Collection : Sequence
   /// - Complexity: O(1) if the collection conforms to
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the
   ///   resulting distance.
-  func distance(from start: Index, to end: Index) -> IndexDistance
+  func distance(from start: Index, to end: Index) -> Int
 
   /// Performs a range check in O(1), or a no-op when a range check is not
   /// implementable in O(1).
@@ -780,6 +776,9 @@ public protocol Collection : Sequence
   /// - Parameter i: A valid index of the collection. `i` must be less than
   ///   `endIndex`.
   func formIndex(after i: inout Index)
+
+  @available(*, deprecated, message: "all index distances are now of type Int")
+  typealias IndexDistance = Int
 }
 
 /// Default implementation for forward collections.
@@ -859,7 +858,7 @@ extension Collection {
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the absolute
   ///   value of `n`.
   @_inlineable
-  public func index(_ i: Index, offsetBy n: IndexDistance) -> Index {
+  public func index(_ i: Index, offsetBy n: Int) -> Index {
     return self._advanceForward(i, by: n)
   }
 
@@ -905,7 +904,7 @@ extension Collection {
   ///   value of `n`.
   @_inlineable
   public func index(
-    _ i: Index, offsetBy n: IndexDistance, limitedBy limit: Index
+    _ i: Index, offsetBy n: Int, limitedBy limit: Index
   ) -> Index? {
     return self._advanceForward(i, by: n, limitedBy: limit)
   }
@@ -924,7 +923,7 @@ extension Collection {
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the absolute
   ///   value of `n`.
   @_inlineable
-  public func formIndex(_ i: inout Index, offsetBy n: IndexDistance) {
+  public func formIndex(_ i: inout Index, offsetBy n: Int) {
     i = index(i, offsetBy: n)
   }
 
@@ -951,7 +950,7 @@ extension Collection {
   ///   value of `n`.
   @_inlineable
   public func formIndex(
-    _ i: inout Index, offsetBy n: IndexDistance, limitedBy limit: Index
+    _ i: inout Index, offsetBy n: Int, limitedBy limit: Index
   ) -> Bool {
     if let advancedIndex = index(i, offsetBy: n, limitedBy: limit) {
       i = advancedIndex
@@ -978,12 +977,12 @@ extension Collection {
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the
   ///   resulting distance.
   @_inlineable
-  public func distance(from start: Index, to end: Index) -> IndexDistance {
+  public func distance(from start: Index, to end: Index) -> Int {
     _precondition(start <= end,
       "Only BidirectionalCollections can have end come before start")
 
     var start = start
-    var count: IndexDistance = 0
+    var count = 0
     while start != end {
       count = count + 1
       formIndex(after: &start)
@@ -995,7 +994,7 @@ extension Collection {
   @_inlineable
   @_versioned
   @inline(__always)
-  internal func _advanceForward(_ i: Index, by n: IndexDistance) -> Index {
+  internal func _advanceForward(_ i: Index, by n: Int) -> Index {
     _precondition(n >= 0,
       "Only BidirectionalCollections can be advanced by a negative amount")
 
@@ -1011,7 +1010,7 @@ extension Collection {
   @_versioned
   @inline(__always)
   internal func _advanceForward(
-    _ i: Index, by n: IndexDistance, limitedBy limit: Index
+    _ i: Index, by n: Int, limitedBy limit: Index
   ) -> Index? {
     _precondition(n >= 0,
       "Only BidirectionalCollections can be advanced by a negative amount")
@@ -1151,7 +1150,7 @@ extension Collection {
   @_inlineable
   public var underestimatedCount: Int {
     // TODO: swift-3-indexing-model - review the following
-    return numericCast(count)
+    return count
   }
 
   /// The number of elements in the collection.
@@ -1165,7 +1164,7 @@ extension Collection {
   ///   `RandomAccessCollection`; otherwise, O(*n*), where *n* is the length
   ///   of the collection.
   @_inlineable
-  public var count: IndexDistance {
+  public var count: Int {
     return distance(from: startIndex, to: endIndex)
   }
 
@@ -1214,17 +1213,17 @@ extension Collection {
     _ transform: (Element) throws -> T
   ) rethrows -> [T] {
     // TODO: swift-3-indexing-model - review the following
-    let count: Int = numericCast(self.count)
-    if count == 0 {
+    let n = self.count
+    if n == 0 {
       return []
     }
 
     var result = ContiguousArray<T>()
-    result.reserveCapacity(count)
+    result.reserveCapacity(n)
 
     var i = self.startIndex
 
-    for _ in 0..<count {
+    for _ in 0..<n {
       result.append(try transform(self[i]))
       formIndex(after: &i)
     }
@@ -1256,7 +1255,7 @@ extension Collection {
   public func dropFirst(_ n: Int) -> SubSequence {
     _precondition(n >= 0, "Can't drop a negative number of elements from a collection")
     let start = index(startIndex,
-      offsetBy: numericCast(n), limitedBy: endIndex) ?? endIndex
+      offsetBy: n, limitedBy: endIndex) ?? endIndex
     return self[start..<endIndex]
   }
 
@@ -1282,9 +1281,9 @@ extension Collection {
   public func dropLast(_ n: Int) -> SubSequence {
     _precondition(
       n >= 0, "Can't drop a negative number of elements from a collection")
-    let amount = Swift.max(0, numericCast(count) - n)
+    let amount = Swift.max(0, count - n)
     let end = index(startIndex,
-      offsetBy: numericCast(amount), limitedBy: endIndex) ?? endIndex
+      offsetBy: amount, limitedBy: endIndex) ?? endIndex
     return self[startIndex..<end]
   }
   
@@ -1330,7 +1329,7 @@ extension Collection {
       maxLength >= 0,
       "Can't take a prefix of negative length from a collection")
     let end = index(startIndex,
-      offsetBy: numericCast(maxLength), limitedBy: endIndex) ?? endIndex
+      offsetBy: maxLength, limitedBy: endIndex) ?? endIndex
     return self[startIndex..<end]
   }
   
@@ -1377,9 +1376,9 @@ extension Collection {
     _precondition(
       maxLength >= 0,
       "Can't take a suffix of negative length from a collection")
-    let amount = Swift.max(0, numericCast(count) - maxLength)
+    let amount = Swift.max(0, count - maxLength)
     let start = index(startIndex,
-      offsetBy: numericCast(amount), limitedBy: endIndex) ?? endIndex
+      offsetBy: amount, limitedBy: endIndex) ?? endIndex
     return self[start..<endIndex]
   }
 
@@ -1678,9 +1677,9 @@ extension Collection where SubSequence == Self {
   public mutating func removeFirst(_ n: Int) {
     if n == 0 { return }
     _precondition(n >= 0, "Number of elements to remove should be non-negative")
-    _precondition(count >= numericCast(n),
+    _precondition(count >= n,
       "Can't remove more items from a collection than it contains")
-    self = self[index(startIndex, offsetBy: numericCast(n))..<endIndex]
+    self = self[index(startIndex, offsetBy: n)..<endIndex]
   }
 }
 
@@ -1699,9 +1698,28 @@ extension Collection {
   // guarantees of Swift 3, but it cannot due to a bug.
   @available(*, unavailable, renamed: "Iterator")
   public typealias Generator = Iterator
-}
 
-extension Collection {
   @available(swift, deprecated: 3.2, renamed: "Element")
   public typealias _Element = Element
+
+  @available(*, deprecated, message: "all index distances are now of type Int")
+  public func index<T: BinaryInteger>(_ i: Index, offsetBy n: T) -> Index {
+    return index(i, offsetBy: Int(n))
+  }
+  @available(*, deprecated, message: "all index distances are now of type Int")
+  public func formIndex<T: BinaryInteger>(_ i: inout Index, offsetBy n: T) {
+    return formIndex(&i, offsetBy: Int(n))
+  }
+  @available(*, deprecated, message: "all index distances are now of type Int")
+  public func index<T: BinaryInteger>(_ i: Index, offsetBy n: T, limitedBy limit: Index) -> Index? {
+    return index(i, offsetBy: Int(n), limitedBy: limit)
+  }
+  @available(*, deprecated, message: "all index distances are now of type Int")
+  public func formIndex<T: BinaryInteger>(_ i: inout Index, offsetBy n: T, limitedBy limit: Index) -> Bool {
+    return formIndex(&i, offsetBy: Int(n), limitedBy: limit)
+  }
+  @available(*, deprecated, message: "all index distances are now of type Int")
+  public func distance<T: BinaryInteger>(from start: Index, to end: Index) -> T {
+    return numericCast(distance(from: start, to: end) as Int)
+  }
 }

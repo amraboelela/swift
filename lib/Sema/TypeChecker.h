@@ -451,114 +451,109 @@ public:
 
 /// Flags that describe the context of type checking a pattern or
 /// type.
-enum TypeResolutionFlags : unsigned {
+enum class TypeResolutionFlags : unsigned {
   /// Whether to allow unspecified types within a pattern.
-  TR_AllowUnspecifiedTypes = 0x01,
+  AllowUnspecifiedTypes = 0x01,
 
   /// Whether the given type can override the type of a typed pattern.
-  TR_OverrideType = 0x04,
+  OverrideType = 0x04,
 
   /// Whether to allow unbound generic types.
-  TR_AllowUnboundGenerics = 0x08,
+  AllowUnboundGenerics = 0x08,
 
   /// Whether we are validating the type for SIL.
-  TR_SILType = 0x10,
+  SILType = 0x10,
 
-  /// Whether we are parsing a SIL file.  Not the same as TR_SILType,
+  /// Whether we are parsing a SIL file.  Not the same as SILType,
   /// because the latter is not set if we're parsing an AST type.
-  TR_SILMode = 0x20,
+  SILMode = 0x20,
 
   /// Whether we are in the input type of a function, or under one level of
   /// tuple type.  This is not set for multi-level tuple arguments.
-  TR_FunctionInput = 0x40,
+  FunctionInput = 0x40,
 
   /// Whether this is the immediate input type to a function type,
-  TR_ImmediateFunctionInput = 0x80,
+  ImmediateFunctionInput = 0x80,
 
   /// Whether this is a variadic function input.
-  TR_VariadicFunctionInput = 0x100,
+  VariadicFunctionInput = 0x100,
 
   /// Whether we are in the result type of a function body that is
   /// known to produce dynamic Self.
-  TR_DynamicSelfResult = 0x200,
+  DynamicSelfResult = 0x200,
 
   /// Whether this is a resolution based on a non-inferred type pattern.
-  TR_FromNonInferredPattern = 0x400,
+  FromNonInferredPattern = 0x400,
 
   /// Whether we are the variable type in a for/in statement.
-  TR_EnumerationVariable = 0x800,
+  EnumerationVariable = 0x800,
 
   /// Whether we are looking only in the generic signature of the context
   /// we're searching, rather than the entire context.
-  TR_GenericSignature = 0x1000,
+  GenericSignature = 0x1000,
 
   /// Whether an unavailable protocol can be referenced.
-  TR_AllowUnavailableProtocol = 0x2000,
+  AllowUnavailableProtocol = 0x2000,
 
   /// Whether this type is the value carried in an enum case.
-  TR_EnumCase = 0x4000,
+  EnumCase = 0x4000,
 
   /// Whether this type is being used in an expression or local declaration.
   ///
   /// This affects what sort of dependencies are recorded when resolving the
   /// type.
-  TR_InExpression = 0x8000,
+  InExpression = 0x8000,
 
   /// Whether this type resolution is guaranteed not to affect downstream files.
-  TR_KnownNonCascadingDependency = 0x10000,
+  KnownNonCascadingDependency = 0x10000,
 
   /// Whether we should allow references to unavailable types.
-  TR_AllowUnavailable = 0x20000,
+  AllowUnavailable = 0x20000,
 
   /// Whether this is the payload subpattern of an enum pattern.
-  TR_EnumPatternPayload = 0x40000,
+  EnumPatternPayload = 0x40000,
 
   /// Whether we are binding an extension declaration, which limits
   /// the lookup.
-  TR_ExtensionBinding = 0x80000,
+  ExtensionBinding = 0x80000,
 
   /// Whether we are in the inheritance clause of a nominal type declaration
   /// or extension.
-  TR_InheritanceClause = 0x100000,
+  InheritanceClause = 0x100000,
 
   /// Whether we should resolve only the structure of the resulting
   /// type rather than its complete semantic properties.
-  TR_ResolveStructure = 0x200000,
+  ResolveStructure = 0x200000,
 
   /// Whether this is the type of an editor placeholder.
-  TR_EditorPlaceholder = 0x400000,
+  EditorPlaceholder = 0x400000,
 
   /// Whether we are in a type argument for an optional
-  TR_ImmediateOptionalTypeArgument = 0x800000,
+  ImmediateOptionalTypeArgument = 0x800000,
 
   /// Whether we are checking the underlying type of a typealias.
-  TR_TypeAliasUnderlyingType = 0x1000000,
+  TypeAliasUnderlyingType = 0x1000000,
 
   /// Whether we are checking the parameter list of a subscript.
-  TR_SubscriptParameters = 0x2000000,
+  SubscriptParameters = 0x2000000,
 
   /// Is it okay to resolve an IUO sigil ("!") here?
-  TR_AllowIUO = 0x4000000,
+  AllowIUO = 0x4000000,
 };
 
 /// Option set describing how type resolution should work.
 typedef OptionSet<TypeResolutionFlags> TypeResolutionOptions;
 
-inline TypeResolutionOptions operator|(TypeResolutionFlags lhs,
-                                       TypeResolutionFlags rhs) {
-  return TypeResolutionOptions(lhs) | rhs;
-}
-
 /// Strip the contextual options from the given type resolution options.
 static inline TypeResolutionOptions
 withoutContext(TypeResolutionOptions options, bool preserveSIL = false) {
-  options -= TR_ImmediateFunctionInput;
-  options -= TR_FunctionInput;
-  options -= TR_VariadicFunctionInput;
-  options -= TR_EnumCase;
-  options -= TR_ImmediateOptionalTypeArgument;
-  options -= TR_AllowIUO;
-  if (!preserveSIL) options -= TR_SILType;
+  options -= TypeResolutionFlags::ImmediateFunctionInput;
+  options -= TypeResolutionFlags::FunctionInput;
+  options -= TypeResolutionFlags::VariadicFunctionInput;
+  options -= TypeResolutionFlags::EnumCase;
+  options -= TypeResolutionFlags::ImmediateOptionalTypeArgument;
+  options -= TypeResolutionFlags::AllowIUO;
+  if (!preserveSIL) options -= TypeResolutionFlags::SILType;
   return options;
 }
 
@@ -669,6 +664,13 @@ enum class ConformanceCheckFlags {
   /// FIXME: This deals with some oddities with the
   /// _ObjectiveCBridgeable conformances.
   SuppressDependencyTracking = 0x04,
+  /// Whether to skip the check for any conditional conformances.
+  ///
+  /// When set, the caller takes responsibility for any
+  /// conditional requirements required for the conformance to be
+  /// correctly used. Otherwise (the default), all of the conditional
+  /// requirements will be checked.
+  SkipConditionalRequirements = 0x08,
 };
 
 /// Options that control protocol conformance checking.
@@ -709,6 +711,11 @@ public:
   /// The list of protocol conformances that were "used" and will need to be
   /// completed before type checking is considered complete.
   llvm::SetVector<NormalProtocolConformance *> UsedConformances;
+
+  /// The list of protocol conformances whose requirements could not be
+  /// fully checked and, therefore, should be checked again at the top
+  /// level.
+  llvm::SetVector<NormalProtocolConformance *> PartiallyCheckedConformances;
 
   /// The list of declarations that we've done at least partial validation
   /// of during type-checking, but which will need to be finalized before
@@ -975,7 +982,6 @@ public:
   Type getArraySliceType(SourceLoc loc, Type elementType);
   Type getDictionaryType(SourceLoc loc, Type keyType, Type valueType);
   Type getOptionalType(SourceLoc loc, Type elementType);
-  Type getImplicitlyUnwrappedOptionalType(SourceLoc loc, Type elementType);
   Type getUnsafePointerType(SourceLoc loc, Type pointeeType);
   Type getUnsafeMutablePointerType(SourceLoc loc, Type pointeeType);
   Type getStringType(DeclContext *dc);
@@ -1071,6 +1077,11 @@ public:
   /// properly extends the nominal type it names.
   void validateExtension(ExtensionDecl *ext);
 
+  /// Request that type containing the given member needs to have all
+  /// members validated after everythign in the translation unit has
+  /// been processed.
+  void requestMemberLayout(ValueDecl *member);
+
   /// Request that the given class needs to have all members validated
   /// after everything in the translation unit has been processed.
   void requestNominalLayout(NominalTypeDecl *nominalDecl);
@@ -1083,10 +1094,6 @@ public:
   /// Perform final validation of a declaration after everything in the
   /// translation unit has been processed.
   void finalizeDecl(ValueDecl *D);
-
-  /// \brief Force all members of an external decl, and also add its
-  /// conformances.
-  void forceExternalDeclMembers(NominalTypeDecl *NTD);
 
   /// Resolve a reference to the given type declaration within a particular
   /// context.
@@ -1337,19 +1344,9 @@ public:
     synthesizeMemberForLookup(nominal, member);
   }
 
-  virtual void
-  resolveExternalDeclImplicitMembers(NominalTypeDecl *nominal) override {
-    handleExternalDecl(nominal);
-  }
-
   /// Infer default value witnesses for all requirements in the given protocol.
   void inferDefaultWitnesses(ProtocolDecl *proto);
 
-  /// Determine whether the given (potentially constrained) protocol extension
-  /// is usable for the given type.
-  bool isProtocolExtensionUsable(DeclContext *dc, Type type,
-                                 ExtensionDecl *protocolExtension) override;
- 
   /// Perform semantic checks on the given generic parameter list.
   void prepareGenericParamList(GenericParamList *genericParams,
                                DeclContext *dc);
@@ -1461,6 +1458,24 @@ public:
                             GenericTypeResolver *resolver,
                             GenericSignatureBuilder *builder = nullptr);
 
+  /// Create a text string that describes the bindings of generic parameters
+  /// that are relevant to the given set of types, e.g.,
+  /// "[with T = Bar, U = Wibble]".
+  ///
+  /// \param types The types that will be scanned for generic type parameters,
+  /// which will be used in the resulting type.
+  ///
+  /// \param genericParams The generic parameters to use to resugar any
+  /// generic parameters that occur within the types.
+  ///
+  /// \param substitutions The generic parameter -> generic argument
+  /// substitutions that will have been applied to these types.
+  /// These are used to produce the "parameter = argument" bindings in the test.
+  static std::string
+  gatherGenericParamBindingsText(ArrayRef<Type> types,
+                              TypeArrayView<GenericTypeParamType> genericParams,
+                              TypeSubstitutionFn substitutions);
+
   /// Check the given set of generic arguments against the requirements in a
   /// generic signature.
   ///
@@ -1468,7 +1483,9 @@ public:
   /// \param loc The location at which any diagnostics should be emitted.
   /// \param noteLoc The location at which any notes will be printed.
   /// \param owner The type that owns the generic signature.
-  /// \param genericSig The actual generic signature.
+  /// \param genericParams The generic parameters being substituted.
+  /// \param requirements The requirements against which the generic arguments
+  /// should be checked.
   /// \param substitutions Substitutions from interface types of the signature.
   /// \param unsatisfiedDependency Optional callback for reporting unsatisfied
   /// dependencies.
@@ -1478,7 +1495,9 @@ public:
   /// notify callers about diagnosed errors.
   RequirementCheckResult checkGenericArguments(
       DeclContext *dc, SourceLoc loc, SourceLoc noteLoc, Type owner,
-      GenericSignature *genericSig, TypeSubstitutionFn substitutions,
+      TypeArrayView<GenericTypeParamType> genericParams,
+      ArrayRef<Requirement> requirements,
+      TypeSubstitutionFn substitutions,
       LookupConformanceFn conformances,
       UnsatisfiedDependency *unsatisfiedDependency,
       ConformanceCheckOptions conformanceOptions = ConformanceCheckFlags::Used,
@@ -1790,11 +1809,15 @@ public:
 
   bool typeCheckCatchPattern(CatchStmt *S, DeclContext *dc);
 
+  /// Request nominal layout for any types that could be sources of typemetadata
+  /// or conformances.
+  void requestRequiredNominalTypeLayoutForParameters(ParameterList *PL);
+
   /// Type check a parameter list.
   bool typeCheckParameterList(ParameterList *PL, DeclContext *dc,
                               TypeResolutionOptions options,
                               GenericTypeResolver &resolver);
-  
+
   /// Coerce a pattern to the given type.
   ///
   /// \param P The pattern, which may be modified by this coercion.
@@ -2012,6 +2035,9 @@ public:
 
   /// Completely check the given conformance.
   void checkConformance(NormalProtocolConformance *conformance);
+
+  /// Check the requirement signature of the given conformance.
+  void checkConformanceRequirements(NormalProtocolConformance *conformance);
 
   /// Check all of the conformances in the given context.
   void checkConformancesInContext(DeclContext *dc,
@@ -2255,6 +2281,8 @@ public:
   bool isRepresentableInObjC(const VarDecl *VD, ObjCReason Reason);
   bool isRepresentableInObjC(const SubscriptDecl *SD, ObjCReason Reason);
 
+  bool canBeRepresentedInObjC(const ValueDecl *decl);
+
   void diagnoseTypeNotRepresentableInObjC(const DeclContext *DC,
                                           Type T, SourceRange TypeRange);
 
@@ -2267,7 +2295,20 @@ public:
   bool diagnoseInlineableDeclRef(SourceLoc loc, const ValueDecl *D,
                                  const DeclContext *DC);
 
-  void diagnoseResilientConstructor(ConstructorDecl *ctor);
+  /// Used in diagnostic %selects.
+  enum class FragileFunctionKind : unsigned {
+    Transparent,
+    InlineAlways,
+    Inlineable,
+    DefaultArgument,
+    PropertyInitializer
+  };
+
+  /// Given that \p DC is within a fragile context for some reason, describe
+  /// why.
+  ///
+  /// \see FragileFunctionKind
+  FragileFunctionKind getFragileFunctionKind(const DeclContext *DC);
 
   /// \name Availability checking
   ///
@@ -2357,7 +2398,7 @@ public:
   /// Emits a diagnostic for a reference to a storage accessor that is
   /// potentially unavailable.
   void diagnosePotentialAccessorUnavailability(
-      FuncDecl *Accessor, SourceRange ReferenceRange,
+      AccessorDecl *Accessor, SourceRange ReferenceRange,
       const DeclContext *ReferenceDC, const UnavailabilityReason &Reason,
       bool ForInout);
 
@@ -2431,15 +2472,6 @@ public:
 
   /// Diagnose assigning variable to itself.
   bool diagnoseSelfAssignment(const Expr *E);
-
-  /// When referencing a class initializer, check that the base expression is
-  /// either a static metatype or that the initializer is 'required'.
-  bool
-  diagnoseInvalidDynamicConstructorReferences(Expr *base,
-                                              DeclNameLoc memberRefLoc,
-                                              AnyMetatypeType *metaTy,
-                                              ConstructorDecl *ctorDecl,
-                                              bool SuppressDiagnostics);
 
   /// Builds a string representing a "default" generic argument list for
   /// \p typeDecl. In general, this means taking the bound of each generic

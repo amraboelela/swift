@@ -228,13 +228,14 @@ public:
 
 static bool makeParserAST(CompilerInstance &CI, StringRef Text,
                           CompilerInvocation Invocation) {
-  Invocation.clearInputs();
+  Invocation.getFrontendOptions().InputsAndOutputs.clearInputs();
   Invocation.setModuleName("main");
   Invocation.setInputKind(InputFileKind::IFK_Swift);
 
   std::unique_ptr<llvm::MemoryBuffer> Buf;
   Buf = llvm::MemoryBuffer::getMemBuffer(Text, "<module-interface>");
-  Invocation.addInputBuffer(Buf.get());
+  Invocation.getFrontendOptions().InputsAndOutputs.addInput(
+      InputFile(Buf.get()->getBufferIdentifier(), false, Buf.get()));
   if (CI.setup(Invocation))
     return true;
   CI.performParseOnly();
@@ -401,7 +402,7 @@ SwiftInterfaceGenContext::create(StringRef DocumentName,
   // Display diagnostics to stderr.
   CI.addDiagnosticConsumer(&IFaceGenCtx->Impl.DiagConsumer);
 
-  Invocation.clearInputs();
+  Invocation.getFrontendOptions().InputsAndOutputs.clearInputs();
   if (CI.setup(Invocation)) {
     ErrMsg = "Error during invocation setup";
     return nullptr;
@@ -699,8 +700,8 @@ void SwiftLangSupport::editorOpenInterface(EditorConsumer &Consumer,
 
   CompilerInvocation Invocation;
   std::string Error;
-  if (getASTManager().initCompilerInvocation(Invocation, Args, CI.getDiags(),
-                                             StringRef(), Error)) {
+  if (getASTManager().initCompilerInvocationNoInputs(Invocation, Args,
+                                                     CI.getDiags(), Error)) {
     Consumer.handleRequestError(Error.c_str());
     return;
   }
@@ -813,8 +814,8 @@ void SwiftLangSupport::editorOpenHeaderInterface(EditorConsumer &Consumer,
   std::string Error;
 
   ArrayRef<const char *> SwiftArgs = UsingSwiftArgs ? Args : llvm::None;
-  if (getASTManager().initCompilerInvocation(Invocation, SwiftArgs, CI.getDiags(),
-                                             StringRef(), Error)) {
+  if (getASTManager().initCompilerInvocationNoInputs(Invocation, SwiftArgs,
+                                                     CI.getDiags(), Error)) {
     Consumer.handleRequestError(Error.c_str());
     return;
   }

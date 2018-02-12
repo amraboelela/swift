@@ -116,7 +116,8 @@ SDKPath("sdk", llvm::cl::desc("The path to the SDK for use with the clang "
         llvm::cl::init(""));
 
 static llvm::cl::opt<std::string>
-Target("target", llvm::cl::desc("target triple"));
+Target("target", llvm::cl::desc("target triple"),
+       llvm::cl::init(llvm::sys::getDefaultTargetTriple()));
 
 static llvm::cl::opt<OptGroup> OptimizationGroup(
     llvm::cl::desc("Predefined optimization groups:"),
@@ -194,6 +195,11 @@ static llvm::cl::opt<bool>
 AssumeUnqualifiedOwnershipWhenParsing(
     "assume-parsing-unqualified-ownership-sil", llvm::cl::Hidden, llvm::cl::init(false),
     llvm::cl::desc("Assume all parsed functions have unqualified ownership"));
+
+static llvm::cl::opt<bool>
+EnableGuaranteedNormalArguments(
+    "enable-guaranteed-normal-arguments", llvm::cl::Hidden, llvm::cl::init(false),
+    llvm::cl::desc("Assume that the input module was compiled with -enable-guaranteed-normal-arguments enabled"));
 
 /// Regular expression corresponding to the value given in one of the
 /// -pass-remarks* command line flags. Passes whose name matches this regexp
@@ -315,6 +321,8 @@ int main(int argc, char **argv) {
   SILOpts.EnableSILOwnership = EnableSILOwnershipOpt;
   SILOpts.AssumeUnqualifiedOwnershipWhenParsing =
     AssumeUnqualifiedOwnershipWhenParsing;
+  SILOpts.EnableGuaranteedNormalArguments =
+    EnableGuaranteedNormalArguments;
 
   if (EnforceExclusivity.getNumOccurrences() != 0) {
     switch (EnforceExclusivity) {
@@ -344,8 +352,9 @@ int main(int argc, char **argv) {
 
   serialization::ExtendedValidationInfo extendedInfo;
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> FileBufOrErr =
-      Invocation.setUpInputForSILTool(InputFilename, ModuleName, false,
-                                      extendedInfo);
+      Invocation.setUpInputForSILTool(InputFilename, ModuleName,
+                                      /*alwaysSetModuleToMain*/ false,
+                                      /*bePrimary*/ !PerformWMO, extendedInfo);
   if (!FileBufOrErr) {
     fprintf(stderr, "Error! Failed to open file: %s\n", InputFilename.c_str());
     exit(-1);
@@ -354,11 +363,6 @@ int main(int argc, char **argv) {
   CompilerInstance CI;
   PrintingDiagnosticConsumer PrintDiags;
   CI.addDiagnosticConsumer(&PrintDiags);
-
-  if (!PerformWMO) {
-    Invocation.getFrontendOptions().Inputs.setPrimaryInputForInputFilename(
-        InputFilename);
-  }
 
   if (CI.setup(Invocation))
     return 1;

@@ -338,10 +338,14 @@ public protocol Sequence {
   /// Returns an iterator over the elements of this sequence.
   func makeIterator() -> Iterator
 
-  /// A value less than or equal to the number of elements in
-  /// the sequence, calculated nondestructively.
+  /// A value less than or equal to the number of elements in the sequence,
+  /// calculated nondestructively.
   ///
-  /// - Complexity: O(1)
+  /// The default implementation returns 0. If you provide your own
+  /// implementation, make sure to compute the value nondestructively.
+  ///
+  /// - Complexity: O(1), except if the sequence also conforms to `Collection`.
+  ///   In this case, see the documentation of `Collection.underestimatedCount`.
   var underestimatedCount: Int { get }
 
   /// Returns an array containing the results of mapping the given closure
@@ -612,6 +616,13 @@ public protocol Sequence {
   ) -> (Iterator,UnsafeMutableBufferPointer<Element>.Index)
 }
 
+// Provides a default associated type witness for Iterator when the
+// Self type is both a Sequence and an Iterator.
+extension Sequence where Self: IteratorProtocol {
+  // @_implements(Sequence, Iterator)
+  public typealias _Default_Iterator = Self
+}
+
 /// A default makeIterator() function for `IteratorProtocol` instances that
 /// are declared to conform to `Sequence`
 extension Sequence where Self.Iterator == Self {
@@ -621,7 +632,6 @@ extension Sequence where Self.Iterator == Self {
     return self
   }
 }
-
 
 /// A sequence that lazily consumes and drops `n` elements from an underlying
 /// `Base` iterator before possibly returning the first available element.
@@ -879,10 +889,14 @@ extension Sequence {
     return Array(result)
   }
 
-  /// Returns a value less than or equal to the number of elements in
-  /// the sequence, nondestructively.
+  /// A value less than or equal to the number of elements in the sequence,
+  /// calculated nondestructively.
   ///
-  /// - Complexity: O(*n*)
+  /// The default implementation returns 0. If you provide your own
+  /// implementation, make sure to compute the value nondestructively.
+  ///
+  /// - Complexity: O(1), except if the sequence also conforms to `Collection`.
+  ///   In this case, see the documentation of `Collection.underestimatedCount`.
   @_inlineable
   public var underestimatedCount: Int {
     return 0
@@ -1433,15 +1447,18 @@ extension Sequence {
 ///
 ///     for x in IteratorSequence(i) { ... }
 @_fixed_layout
-public struct IteratorSequence<
-  Base : IteratorProtocol
-> : IteratorProtocol, Sequence {
+public struct IteratorSequence<Base : IteratorProtocol> {
+  @_versioned
+  internal var _base: Base
+
   /// Creates an instance whose iterator is a copy of `base`.
   @_inlineable
   public init(_ base: Base) {
     _base = base
   }
+}
 
+extension IteratorSequence: IteratorProtocol, Sequence {
   /// Advances to the next element and returns it, or `nil` if no next element
   /// exists.
   ///
@@ -1453,7 +1470,4 @@ public struct IteratorSequence<
   public mutating func next() -> Base.Element? {
     return _base.next()
   }
-
-  @_versioned
-  internal var _base: Base
 }

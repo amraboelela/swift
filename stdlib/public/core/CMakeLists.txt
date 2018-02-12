@@ -37,9 +37,9 @@ set(SWIFTLIB_ESSENTIAL
   Character.swift
   CharacterUnicodeScalars.swift
   CocoaArray.swift
-  Codable.swift
+  Codable.swift.gyb
   Collection.swift
-  CollectionAlgorithms.swift.gyb
+  CollectionAlgorithms.swift
   Comparable.swift
   CompilerProtocols.swift
   ClosedRange.swift
@@ -53,11 +53,10 @@ set(SWIFTLIB_ESSENTIAL
   EmptyCollection.swift
   Equatable.swift
   ErrorType.swift
-  Existential.swift
-  Filter.swift.gyb
+  Filter.swift
   FixedArray.swift.gyb
   FlatMap.swift
-  Flatten.swift.gyb
+  Flatten.swift
   FloatingPoint.swift.gyb
   FloatingPointParsing.swift.gyb
   FloatingPointTypes.swift.gyb
@@ -72,17 +71,17 @@ set(SWIFTLIB_ESSENTIAL
   HeapBuffer.swift
   ICU.swift
   ImplicitlyUnwrappedOptional.swift
-  Indices.swift.gyb
+  Indices.swift
   InputStream.swift
   IntegerParsing.swift
   Integers.swift.gyb
   Join.swift
   KeyPath.swift
-  LazyCollection.swift.gyb
+  LazyCollection.swift
   LazySequence.swift
   LifetimeManager.swift
   ManagedBuffer.swift
-  Map.swift.gyb
+  Map.swift
   MemoryLayout.swift
   UnicodeScalar.swift # ORDER DEPENDENCY: Must precede Mirrors.swift
   Mirrors.swift.gyb
@@ -99,8 +98,8 @@ set(SWIFTLIB_ESSENTIAL
   PrefixWhile.swift.gyb
   Print.swift
   RandomAccessCollection.swift
-  Range.swift.gyb
-  RangeReplaceableCollection.swift.gyb
+  Range.swift
+  RangeReplaceableCollection.swift
   ReflectionLegacy.swift
   Repeat.swift
   REPL.swift
@@ -115,7 +114,7 @@ set(SWIFTLIB_ESSENTIAL
   SetAlgebra.swift
   ShadowProtocols.swift
   Shims.swift
-  Slice.swift.gyb
+  Slice.swift
   Sort.swift.gyb
   StaticString.swift
   Stride.swift.gyb
@@ -123,18 +122,20 @@ set(SWIFTLIB_ESSENTIAL
   StringHashable.swift  # ORDER DEPENDENCY: Must precede String.swift
   String.swift
   StringBridge.swift
-  StringBuffer.swift
   StringComparable.swift
-  StringCore.swift
+  StringGuts.swift
+  StringObject.swift
   StringIndex.swift
   StringInterpolation.swift
   StringLegacy.swift
   StringRangeReplaceableCollection.swift.gyb
+  StringStorage.swift
   StringSwitch.swift
   StringIndexConversions.swift
   StringUnicodeScalarView.swift
   StringUTF16.swift
   StringUTF8.swift
+  StringVariant.swift
   Substring.swift.gyb
   SwiftNativeNSArray.swift
   ThreadLocalStorage.swift
@@ -143,6 +144,8 @@ set(SWIFTLIB_ESSENTIAL
   UnicodeEncoding.swift
   UnicodeParser.swift
   Unmanaged.swift
+  UnmanagedOpaqueString.swift
+  UnmanagedString.swift
   UnsafeBitMap.swift
   UnsafeBufferPointer.swift.gyb
   UnsafeRawBufferPointer.swift.gyb
@@ -153,6 +156,7 @@ set(SWIFTLIB_ESSENTIAL
   UTF16.swift
   UTF32.swift
   Unicode.swift # ORDER DEPENDENCY: must follow new unicode support
+  StringGraphemeBreaking.swift # ORDER DEPENDENCY: Must follow UTF16.swift
   ValidUTF8Buffer.swift
   WriteBackMutableSlice.swift
   )
@@ -249,7 +253,6 @@ add_swift_library(swiftCore ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_STDLIB IS_STD
   # and the generated directory as dependencies.
   FILE_DEPENDS
     copy_shim_headers "${SWIFTLIB_DIR}/shims"
-    section_magic
     ${GROUP_INFO_JSON_FILE}
   SWIFT_COMPILE_FLAGS ${swift_stdlib_compile_flags}
   LINK_FLAGS ${swift_core_link_flags}

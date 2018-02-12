@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2018 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -77,6 +77,8 @@ def driver_print_actions : Flag<["-"], "driver-print-actions">,
   InternalDebugOpt, HelpText<"Dump list of actions to perform">;
 def driver_print_output_file_map : Flag<["-"], "driver-print-output-file-map">,
   InternalDebugOpt, HelpText<"Dump the contents of the output file map">;
+def driver_print_derived_output_file_map : Flag<["-"], "driver-print-derived-output-file-map">,
+  InternalDebugOpt, HelpText<"Dump the contents of the derived output file map">;
 def driver_print_bindings : Flag<["-"], "driver-print-bindings">,
   InternalDebugOpt, HelpText<"Dump list of job inputs and outputs">;
 def driver_print_jobs : Flag<["-"], "driver-print-jobs">, InternalDebugOpt,
@@ -618,6 +620,14 @@ def i : Flag<["-"], "i">, ModeOpt; // only used to provide diagnostics.
 def whole_module_optimization : Flag<["-"], "whole-module-optimization">,
   HelpText<"Optimize input files together instead of individually">,
   Flags<[FrontendOption, NoInteractiveOption]>;
+
+def enable_batch_mode : Flag<["-"], "enable-batch-mode">,
+  Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>,
+  HelpText<"Enable combining frontend jobs into batches">;
+
+def disable_batch_mode : Flag<["-"], "disable-batch-mode">,
+  Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>,
+  HelpText<"Disable combining frontend jobs into batches">;
 
 def wmo : Flag<["-"], "wmo">, Alias<whole_module_optimization>,
   Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>;

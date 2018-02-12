@@ -90,8 +90,10 @@ class ConstraintLocator;
 
 /// Describes a conversion restriction or a fix.
 struct RestrictionOrFix {
-  ConversionRestrictionKind Restriction;
-  Fix TheFix;
+  union {
+    ConversionRestrictionKind Restriction;
+    Fix TheFix;
+  };
   bool IsRestriction;
 
 public:
@@ -175,9 +177,6 @@ enum TypeVariableOptions {
 /// to, what specific types it might be and, eventually, the fixed type to
 /// which it is assigned.
 class TypeVariableType::Implementation {
-  /// Type variable options.
-  unsigned Options : 3;
-
   /// \brief The locator that describes where this type variable was generated.
   constraints::ConstraintLocator *locator;
 
@@ -189,37 +188,9 @@ class TypeVariableType::Implementation {
   /// The corresponding node in the constraint graph.
   constraints::ConstraintGraphNode *GraphNode = nullptr;
 
-  ///  Index into the list of type variables, as used by the
-  ///  constraint graph.
-  unsigned GraphIndex;
-
   friend class constraints::SavedTypeVariableBinding;
 
 public:
-  explicit Implementation(constraints::ConstraintLocator *locator,
-                          unsigned options)
-    : Options(options), locator(locator),
-      ParentOrFixed(getTypeVariable()) { }
-
-  /// \brief Retrieve the unique ID corresponding to this type variable.
-  unsigned getID() const { return getTypeVariable()->getID(); }
-
-  /// Whether this type variable can bind to an lvalue type.
-  bool canBindToLValue() const { return Options & TVO_CanBindToLValue; }
-
-  /// Whether this type variable can bind to an inout type.
-  bool canBindToInOut() const { return Options & TVO_CanBindToInOut; }
-
-  /// Whether this type variable prefers a subtype binding over a supertype
-  /// binding.
-  bool prefersSubtypeBinding() const {
-    return Options & TVO_PrefersSubtypeBinding;
-  }
-
-  bool mustBeMaterializable() const {
-    return !(Options & TVO_CanBindToInOut) && !(Options & TVO_CanBindToLValue);
-  }
-
   /// \brief Retrieve the type variable associated with this implementation.
   TypeVariableType *getTypeVariable() {
     return reinterpret_cast<TypeVariableType *>(this) - 1;
@@ -228,6 +199,42 @@ public:
   /// \brief Retrieve the type variable associated with this implementation.
   const TypeVariableType *getTypeVariable() const {
     return reinterpret_cast<const TypeVariableType *>(this) - 1;
+  }
+
+  explicit Implementation(constraints::ConstraintLocator *locator,
+                          unsigned options)
+    : locator(locator), ParentOrFixed(getTypeVariable()) {
+    getTypeVariable()->Bits.TypeVariableType.Options = options;
+  }
+
+  /// \brief Retrieve the unique ID corresponding to this type variable.
+  unsigned getID() const { return getTypeVariable()->getID(); }
+
+  unsigned getRawOptions() const {
+    return getTypeVariable()->Bits.TypeVariableType.Options;
+  }
+
+  void setRawOptions(unsigned bits) {
+    getTypeVariable()->Bits.TypeVariableType.Options = bits;
+    assert(getTypeVariable()->Bits.TypeVariableType.Options == bits
+           && "Trucation");
+  }
+
+  /// Whether this type variable can bind to an lvalue type.
+  bool canBindToLValue() const { return getRawOptions() & TVO_CanBindToLValue; }
+
+  /// Whether this type variable can bind to an inout type.
+  bool canBindToInOut() const { return getRawOptions() & TVO_CanBindToInOut; }
+
+  /// Whether this type variable prefers a subtype binding over a supertype
+  /// binding.
+  bool prefersSubtypeBinding() const {
+    return getRawOptions() & TVO_PrefersSubtypeBinding;
+  }
+
+  bool mustBeMaterializable() const {
+    return !(getRawOptions() & TVO_CanBindToInOut) &&
+           !(getRawOptions() & TVO_CanBindToLValue);
   }
 
   /// Retrieve the corresponding node in the constraint graph.
@@ -241,11 +248,13 @@ public:
   /// Retrieve the index into the constraint graph's list of type variables.
   unsigned getGraphIndex() const { 
     assert(GraphNode && "Graph node isn't set");
-    return GraphIndex; 
+    return getTypeVariable()->Bits.TypeVariableType.GraphIndex; 
   }
 
   /// Set the index into the constraint graph's list of type variables.
-  void setGraphIndex(unsigned newIndex) { GraphIndex = newIndex; }
+  void setGraphIndex(unsigned newIndex) {
+    getTypeVariable()->Bits.TypeVariableType.GraphIndex = newIndex;
+  }
   
   /// \brief Check whether this type variable either has a representative that
   /// is not itself or has a fixed type binding.
@@ -337,8 +346,8 @@ public:
     if (!mustBeMaterializable() && otherRep->getImpl().mustBeMaterializable()) {
       if (record)
         recordBinding(*record);
-      Options &= ~TVO_CanBindToLValue;
-      Options &= ~TVO_CanBindToInOut;
+      getTypeVariable()->Bits.TypeVariableType.Options &= ~TVO_CanBindToLValue;
+      getTypeVariable()->Bits.TypeVariableType.Options &= ~TVO_CanBindToInOut;
     }
   }
 
@@ -379,8 +388,10 @@ public:
     if (!rep->getImpl().mustBeMaterializable()) {
       if (record)
         rep->getImpl().recordBinding(*record);
-      rep->getImpl().Options &= ~TVO_CanBindToLValue;
-      rep->getImpl().Options &= ~TVO_CanBindToInOut;
+      rep->getImpl().getTypeVariable()->Bits.TypeVariableType.Options
+        &= ~TVO_CanBindToLValue;
+      rep->getImpl().getTypeVariable()->Bits.TypeVariableType.Options
+        &= ~TVO_CanBindToInOut;
     }
   }
 
@@ -849,9 +860,9 @@ struct MemberLookupResult {
     UR_Inaccessible,
   };
   
-  /// This is a list of considered, but rejected, candidates, along with a
+  /// This is a list of considered (but rejected) candidates, along with a
   /// reason for their rejection.
-  SmallVector<std::pair<ValueDecl*, UnviableReason>, 4> UnviableCandidates;
+  SmallVector<std::pair<OverloadChoice, UnviableReason>, 4> UnviableCandidates;
 
 
   /// Mark this as being an already-diagnosed error and return itself.
@@ -864,8 +875,8 @@ struct MemberLookupResult {
     ViableCandidates.push_back(candidate);
   }
   
-  void addUnviable(ValueDecl *VD, UnviableReason reason) {
-    UnviableCandidates.push_back({VD, reason});
+  void addUnviable(OverloadChoice candidate, UnviableReason reason) {
+    UnviableCandidates.push_back({candidate, reason});
   }
   
   OverloadChoice *getFavoredChoice() {
@@ -1996,6 +2007,9 @@ public:
   /// element type of the set.
   static Optional<Type> isSetType(Type t);
 
+  /// Determine if the type in question is one of the known collection types.
+  static bool isCollectionType(Type t);
+
   /// \brief Determine if the type in question is AnyHashable.
   bool isAnyHashableType(Type t);
 
@@ -2163,11 +2177,6 @@ public:
                       DeclContext *useDC, ConstraintLocator *locator,
                       OverloadChoice *favored = nullptr);
 
-  /// If the given type is ImplicitlyUnwrappedOptional<T>, and we're in a context
-  /// that should transparently look through ImplicitlyUnwrappedOptional types,
-  /// return T.
-  Type lookThroughImplicitlyUnwrappedOptionalType(Type type);
-
   /// \brief Retrieve the allocator used by this constraint system.
   llvm::BumpPtrAllocator &getAllocator() { return Allocator; }
 
@@ -2228,6 +2237,32 @@ public:
     Error
   };
 
+  class TypeMatchResult {
+    SolutionKind Kind;
+
+  public:
+    inline bool isSuccess() const { return Kind == SolutionKind::Solved; }
+    inline bool isFailure() const { return Kind == SolutionKind::Error; }
+    inline bool isAmbiguous() const { return Kind == SolutionKind::Unsolved; }
+
+    static TypeMatchResult success(ConstraintSystem &cs) {
+      return {SolutionKind::Solved};
+    }
+
+    static TypeMatchResult failure(ConstraintSystem &cs,
+                                   ConstraintLocatorBuilder location) {
+      return {SolutionKind::Error};
+    }
+
+    static TypeMatchResult ambiguous(ConstraintSystem &cs) {
+      return {SolutionKind::Unsolved};
+    }
+
+    operator SolutionKind() { return Kind; }
+  private:
+    TypeMatchResult(SolutionKind result) : Kind(result) {}
+  };
+
   /// \brief Compute the rvalue type of the given expression, which is the
   /// destination of an assignment statement.
   Type computeAssignDestType(Expr *dest, SourceLoc equalLoc);
@@ -2235,44 +2270,44 @@ public:
   /// \brief Subroutine of \c matchTypes(), which matches up two tuple types.
   ///
   /// \returns the result of performing the tuple-to-tuple conversion.
-  SolutionKind matchTupleTypes(TupleType *tuple1, TupleType *tuple2,
-                               ConstraintKind kind, TypeMatchOptions flags,
-                               ConstraintLocatorBuilder locator);
+  TypeMatchResult matchTupleTypes(TupleType *tuple1, TupleType *tuple2,
+                                  ConstraintKind kind, TypeMatchOptions flags,
+                                  ConstraintLocatorBuilder locator);
 
   /// \brief Subroutine of \c matchTypes(), which matches a scalar type to
   /// a tuple type.
   ///
   /// \returns the result of performing the scalar-to-tuple conversion.
-  SolutionKind matchScalarToTupleTypes(Type type1, TupleType *tuple2,
-                                       ConstraintKind kind,
-                                       TypeMatchOptions flags,
-                                       ConstraintLocatorBuilder locator);
+  TypeMatchResult matchScalarToTupleTypes(Type type1, TupleType *tuple2,
+                                          ConstraintKind kind,
+                                          TypeMatchOptions flags,
+                                          ConstraintLocatorBuilder locator);
 
   /// \brief Subroutine of \c matchTypes(), which matches up two function
   /// types.
-  SolutionKind matchFunctionTypes(FunctionType *func1, FunctionType *func2,
-                                  ConstraintKind kind, TypeMatchOptions flags,
-                                  ConstraintLocatorBuilder locator);
+  TypeMatchResult matchFunctionTypes(FunctionType *func1, FunctionType *func2,
+                                     ConstraintKind kind, TypeMatchOptions flags,
+                                     ConstraintLocatorBuilder locator);
   
   /// \brief Subroutine of \c matchFunctionTypes(), which matches up the
   /// parameter types of two function types.
-  SolutionKind matchFunctionParamTypes(ArrayRef<AnyFunctionType::Param> type1,
-                                       ArrayRef<AnyFunctionType::Param> type2,
-                                       Type argType, Type paramType,
-                                       ConstraintKind kind,
-                                       TypeMatchOptions flags,
-                                       ConstraintLocatorBuilder locator);
+  TypeMatchResult matchFunctionParamTypes(ArrayRef<AnyFunctionType::Param> type1,
+                                          ArrayRef<AnyFunctionType::Param> type2,
+                                          Type argType, Type paramType,
+                                          ConstraintKind kind,
+                                          TypeMatchOptions flags,
+                                          ConstraintLocatorBuilder locator);
   
   /// \brief Subroutine of \c matchTypes(), which matches up a value to a
   /// superclass.
-  SolutionKind matchSuperclassTypes(Type type1, Type type2,
-                                    TypeMatchOptions flags,
-                                    ConstraintLocatorBuilder locator);
+  TypeMatchResult matchSuperclassTypes(Type type1, Type type2,
+                                       TypeMatchOptions flags,
+                                       ConstraintLocatorBuilder locator);
 
   /// \brief Subroutine of \c matchTypes(), which matches up two types that
   /// refer to the same declaration via their generic arguments.
-  SolutionKind matchDeepEqualityTypes(Type type1, Type type2,
-                                      ConstraintLocatorBuilder locator);
+  TypeMatchResult matchDeepEqualityTypes(Type type1, Type type2,
+                                         ConstraintLocatorBuilder locator);
 
   /// \brief Subroutine of \c matchTypes(), which matches up a value to an
   /// existential type.
@@ -2281,18 +2316,18 @@ public:
   /// ConstraintKind::ConformsTo. Usually this uses SelfObjectOfProtocol,
   /// but when matching the instance type of a metatype with the instance type
   /// of an existential metatype, since we want an actual conformance check.
-  SolutionKind matchExistentialTypes(Type type1, Type type2,
-                                     ConstraintKind kind,
-                                     TypeMatchOptions flags,
-                                     ConstraintLocatorBuilder locator);
+  TypeMatchResult matchExistentialTypes(Type type1, Type type2,
+                                        ConstraintKind kind,
+                                        TypeMatchOptions flags,
+                                        ConstraintLocatorBuilder locator);
 
   /// \brief Subroutine of \c matchTypes(), used to bind a type to a
   /// type variable.
-  SolutionKind
+  TypeMatchResult
   matchTypesBindTypeVar(TypeVariableType *typeVar, Type type,
                         ConstraintKind kind, TypeMatchOptions flags,
                         ConstraintLocatorBuilder locator,
-                        std::function<SolutionKind()> formUnsolvedResult);
+                        std::function<TypeMatchResult()> formUnsolvedResult);
 
 public: // FIXME: public due to statics in CSSimplify.cpp
   /// \brief Attempt to match up types \c type1 and \c type2, which in effect
@@ -2312,11 +2347,104 @@ public: // FIXME: public due to statics in CSSimplify.cpp
   /// the specific types being matched.
   ///
   /// \returns the result of attempting to solve this constraint.
-  SolutionKind matchTypes(Type type1, Type type2, ConstraintKind kind,
-                          TypeMatchOptions flags,
-                          ConstraintLocatorBuilder locator);
+  TypeMatchResult matchTypes(Type type1, Type type2, ConstraintKind kind,
+                             TypeMatchOptions flags,
+                             ConstraintLocatorBuilder locator);
+
+  TypeMatchResult getTypeMatchSuccess() {
+    return TypeMatchResult::success(*this);
+  }
+
+  TypeMatchResult getTypeMatchFailure(ConstraintLocatorBuilder locator) {
+    return TypeMatchResult::failure(*this, locator);
+  }
+
+  TypeMatchResult getTypeMatchAmbiguous() {
+    return TypeMatchResult::ambiguous(*this);
+  }
 
 public:
+  /// Given a function type where the eventual result type is an optional,
+  /// where "eventual result type" is defined as:
+  ///   1. The result type is an optional
+  ///   2. The result type is a function type with an eventual result
+  ///      type that is an optional.
+  ///
+  /// return the same function type but with the eventual result type
+  /// replaced by its underlying type.
+  ///
+  /// i.e. return (S) -> T for (S) -> T?
+  //       return (X) -> () -> Y for (X) -> () -> Y?
+  Type replaceFinalResultTypeWithUnderlying(AnyFunctionType *fnTy) {
+    auto resultTy = fnTy->getResult();
+    if (auto *resultFnTy = resultTy->getAs<AnyFunctionType>())
+      resultTy = replaceFinalResultTypeWithUnderlying(resultFnTy);
+    else
+      resultTy = resultTy->getWithoutSpecifierType()->getOptionalObjectType();
+
+    assert(resultTy);
+
+    if (auto *genericFn = fnTy->getAs<GenericFunctionType>()) {
+      return GenericFunctionType::get(genericFn->getGenericSignature(),
+                                      genericFn->getParams(), resultTy,
+                                      genericFn->getExtInfo());
+    }
+
+    return FunctionType::get(fnTy->getParams(), resultTy, fnTy->getExtInfo());
+  }
+
+  // Build a disjunction that attempts both T? and T for a particular
+  // type binding. The choice of T? is preferred, and we will not
+  // attempt T if we can type check with T?
+  void
+  buildDisjunctionForOptionalVsUnderlying(Type boundTy, Type type,
+                                          ConstraintLocator *locator) {
+    // Create the constraint to bind to the optional type and make it
+    // the favored choice.
+    auto *bindToOptional =
+      Constraint::create(*this, ConstraintKind::Bind, boundTy, type, locator);
+    bindToOptional->setFavored();
+
+    Type underlyingType;
+    if (auto *fnTy = type->getAs<AnyFunctionType>())
+      underlyingType = replaceFinalResultTypeWithUnderlying(fnTy);
+    else
+      underlyingType = type->getWithoutSpecifierType()->getOptionalObjectType();
+
+    assert(underlyingType);
+
+    if (type->is<LValueType>())
+      underlyingType = LValueType::get(underlyingType);
+    assert(!type->is<InOutType>());
+
+    auto *bindToUnderlying = Constraint::create(
+        *this, ConstraintKind::Bind, boundTy, underlyingType, locator);
+
+    llvm::SmallVector<Constraint *, 2> choices = {bindToOptional,
+                                                  bindToUnderlying};
+
+    // Create the disjunction
+    addDisjunctionConstraint(choices, locator, RememberChoice);
+  }
+
+  // Build a disjunction for types declared IUO.
+  void
+  buildDisjunctionForImplicitlyUnwrappedOptional(Type boundTy, Type type,
+                                                 ConstraintLocator *locator) {
+    auto *disjunctionLocator = getConstraintLocator(
+        locator, ConstraintLocator::ImplicitlyUnwrappedDisjunctionChoice);
+    buildDisjunctionForOptionalVsUnderlying(boundTy, type, disjunctionLocator);
+  }
+
+  // Build a disjunction for dynamic lookup results, which are
+  // implicitly unwrapped if needed.
+  void buildDisjunctionForDynamicLookupResult(Type boundTy, Type type,
+                                              ConstraintLocator *locator) {
+    auto *dynamicLocator =
+        getConstraintLocator(locator, ConstraintLocator::DynamicLookupResult);
+    buildDisjunctionForOptionalVsUnderlying(boundTy, type, dynamicLocator);
+  }
+
   /// \brief Resolve the given overload set to the given choice.
   void resolveOverload(ConstraintLocator *locator, Type boundType,
                        OverloadChoice choice, DeclContext *useDC);
@@ -2550,6 +2678,9 @@ private:
     /// The kind of bindings permitted.
     AllowedBindingKind Kind;
 
+    /// The kind of the constraint this binding came from.
+    ConstraintKind BindingSource;
+
     /// The defaulted protocol associated with this binding.
     Optional<ProtocolDecl *> DefaultedProtocol;
 
@@ -2558,9 +2689,11 @@ private:
     ConstraintLocator *DefaultableBinding = nullptr;
 
     PotentialBinding(Type type, AllowedBindingKind kind,
+                     ConstraintKind bindingSource,
                      Optional<ProtocolDecl *> defaultedProtocol = None,
                      ConstraintLocator *defaultableBinding = nullptr)
-        : BindingType(type), Kind(kind), DefaultedProtocol(defaultedProtocol),
+        : BindingType(type), Kind(kind), BindingSource(bindingSource),
+          DefaultedProtocol(defaultedProtocol),
           DefaultableBinding(defaultableBinding) {}
 
     bool isDefaultableBinding() const { return DefaultableBinding != nullptr; }
@@ -2625,6 +2758,9 @@ private:
       if (!x.hasNonDefaultableBindings())
         return false;
 
+      if (x.FullyBound || x.SubtypeOfExistentialType)
+        return false;
+
       llvm::SmallPtrSet<Constraint *, 8> intersection(x.Sources);
       llvm::set_intersect(intersection, y.Sources);
 
@@ -2641,7 +2777,9 @@ private:
           return x.TypeVar == typeVar;
       }
 
-      return false;
+      // If the only difference is default types,
+      // prioritize bindings with fewer of them.
+      return x.NumDefaultableBindings < y.NumDefaultableBindings;
     }
 
     void foundLiteralBinding(ProtocolDecl *proto) {

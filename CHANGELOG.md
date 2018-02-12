@@ -6,6 +6,7 @@ CHANGELOG
 
 | Contents               |
 | :--------------------- |
+| [Swift 5.0](#swift-50) |
 | [Swift 4.1](#swift-41) |
 | [Swift 4.0](#swift-40) |
 | [Swift 3.1](#swift-31) |
@@ -19,8 +20,66 @@ CHANGELOG
 
 </details>
 
+Swift 5.0
+---------
+
+* C macros containing casts are no longer imported to Swift if the type in the
+  cast is unavailable or deprecated, or produces some other diagnostic when
+  referenced. (These macros were already only imported under very limited
+  circumstances with very simple values, so this is unlikely to affect
+  real-world code.)
+
+* [SE-0143][]
+
+	Runtime query of conditional conformances is now implemented. Therefore,
+	a dynamic cast such as `value as? P`, where the dynamic type of `value`
+	conditionally conforms to `P`, will succeed when the conditional
+	requirements are met.
+
 Swift 4.1
 ---------
+
+* [SE-0189][]
+
+  If an initializer is declared in a different module from a struct, it must
+  use `self.init(…)` or `self = …` before returning or accessing `self`.
+  Failure to do so will produce a warning in Swift 4 and an error in Swift 5.
+  This is to keep a client app from accidentally depending on a library's
+  implementation details, and matches an existing restriction for classes,
+  where cross-module initializers must be convenience initializers.
+
+  This will most commonly affect code that extends a struct imported from C.
+  However, most imported C structs are given a zeroing no-argument initializer,
+  which can be called as `self.init()` before modifying specific properties.
+
+  Swift library authors who wish to continue allowing initialization on a
+  per-member basis should explicitly declare a public memberwise initializer
+  for clients in other modules to use.
+
+* [SE-0166][] / [SE-0143][]
+
+  The standard library now defines the conformances of `Optional`,
+  `Array`, `Dictionary`, and `Set` to `Encodable` and `Decodable` as
+  conditional conformances, available only when their type parameters
+  conform to `Encodable` or `Decodable`, respectively.
+
+* [SE-0188][] 
+  
+  Index types for most standard library collections now conform to `Hashable`. 
+  These indices can now be used in key-path subscripts and hashed collections:
+  
+  ```swift
+  let s = "Hashable"
+  let p = \String.[s.startIndex]
+  s[keyPath: p] // "H"
+  ```
+
+* [SE-0143][] The standard library types `Optional`, `Array`, and
+	`Dictionary` now conform to the `Equatable` protocol when their element types
+	conform to `Equatable`. This allows the `==` operator to compose (e.g., one
+	can compare two values of type `[Int : [Int?]?]` with `==`), as well as use
+  various algorthims defined for `Equatable` element types, such as
+	`index(of:)`.
 
 * [SE-0157][] is implemented. Associated types can now declare "recursive"
 	constraints, which require that the associated type conform to the enclosing
@@ -6803,3 +6862,10 @@ Swift 1.0
 [SE-0184]: <https://github.com/apple/swift-evolution/blob/master/proposals/0184-unsafe-pointers-add-missing.md>
 [SE-0185]: <https://github.com/apple/swift-evolution/blob/master/proposals/0185-synthesize-equatable-hashable.md>
 [SE-0186]: <https://github.com/apple/swift-evolution/blob/master/proposals/0186-remove-ownership-keyword-support-in-protocols.md>
+[SE-0187]: <https://github.com/apple/swift-evolution/blob/master/proposals/0187-introduce-filtermap.md>
+[SE-0188]: <https://github.com/apple/swift-evolution/blob/master/proposals/0188-stdlib-index-types-hashable.md>
+[SE-0189]: <https://github.com/apple/swift-evolution/blob/master/proposals/0189-restrict-cross-module-struct-initializers.md>
+[SE-0190]: <https://github.com/apple/swift-evolution/blob/master/proposals/0190-target-environment-platform-condition.md>
+[SE-0191]: <https://github.com/apple/swift-evolution/blob/master/proposals/0191-eliminate-indexdistance.md>
+[SE-0192]: <https://github.com/apple/swift-evolution/blob/master/proposals/0192-non-exhaustive-enums.md>
+[SE-0193]: <https://github.com/apple/swift-evolution/blob/master/proposals/0193-cross-module-inlining-and-specialization.md>

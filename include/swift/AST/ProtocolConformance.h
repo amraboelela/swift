@@ -463,6 +463,15 @@ public:
     return ContextAndInvalid.getPointer().dyn_cast<AbstractStorageDecl *>();
   }
 
+  /// A "retroactive" conformance is one that is defined in a module that
+  /// is neither the module that defines the protocol nor the module that
+  /// defines the conforming type.
+  bool isRetroactive() const;
+
+  /// Whether this conformance was synthesized automatically in multiple
+  /// modules, but in a manner that ensures that all copies are equivalent.
+  bool isSynthesizedNonUnique() const;
+
   /// Retrieve the type witness and type decl (if one exists)
   /// for the given associated type.
   std::pair<Type, TypeDecl *>

@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Statistic.h"
+#include "swift/AST/Identifier.h"
 #include "swift/Basic/SourceLoc.h"
 #include "swift/Basic/Timer.h"
 
@@ -47,7 +48,16 @@
 // Generally we make one of these per-process: either early in the life of the
 // driver, or early in the life of the frontend.
 
+namespace clang {
+  class Decl;
+  class SourceManager;
+}
+
 namespace swift {
+
+class Decl;
+class Expr;
+class SILFunction;
 
 class UnifiedStatsReporter {
 
@@ -75,14 +85,29 @@ public:
     int dummyInstanceVariableToGetConstructorToParse;
   };
 
+  // To trace an entity, you have to provide a TraceFormatter for it. This is a
+  // separate type since we do not have retroactive conformances in C++, and it
+  // is a type that takes void* arguments since we do not have existentials
+  // separate from objects in C++. Pity us.
+  struct TraceFormatter {
+    virtual void traceName(const void *Entity, raw_ostream &OS) const = 0;
+    virtual void traceLoc(const void *Entity,
+                          SourceManager *SourceMgr,
+                          clang::SourceManager *ClangSourceMgr,
+                          raw_ostream &OS) const = 0;
+    virtual ~TraceFormatter();
+  };
+
   struct FrontendStatsTracer
   {
     UnifiedStatsReporter *Reporter;
     llvm::TimeRecord SavedTime;
-    StringRef Name;
-    SourceRange Range;
-    FrontendStatsTracer(StringRef Name,
-                        SourceRange const &Range,
+    StringRef EventName;
+    const void *Entity;
+    const TraceFormatter *Formatter;
+    FrontendStatsTracer(StringRef EventName,
+                        const void *Entity,
+                        const TraceFormatter *Formatter,
                         UnifiedStatsReporter *Reporter);
     FrontendStatsTracer();
     FrontendStatsTracer(FrontendStatsTracer&& other);
@@ -101,7 +126,8 @@ public:
     StringRef CounterName;
     size_t CounterDelta;
     size_t CounterValue;
-    SourceRange SourceRange;
+    const void *Entity;
+    const TraceFormatter *Formatter;
   };
 
 private:
@@ -112,6 +138,7 @@ private:
   llvm::TimeRecord StartedTime;
   std::unique_ptr<llvm::NamedRegionTimer> Timer;
   SourceManager *SourceMgr;
+  clang::SourceManager *ClangSourceMgr;
   std::unique_ptr<AlwaysOnDriverCounters> DriverCounters;
   std::unique_ptr<AlwaysOnFrontendCounters> FrontendCounters;
   std::unique_ptr<AlwaysOnFrontendCounters> LastTracedFrontendCounters;
@@ -126,6 +153,7 @@ private:
                        StringRef AuxName,
                        StringRef Directory,
                        SourceManager *SM,
+                       clang::SourceManager *CSM,
                        bool TraceEvents);
 public:
   UnifiedStatsReporter(StringRef ProgramName,
@@ -136,6 +164,7 @@ public:
                        StringRef OptType,
                        StringRef Directory,
                        SourceManager *SM=nullptr,
+                       clang::SourceManager *CSM=nullptr,
                        bool TraceEvents=false);
   ~UnifiedStatsReporter();
 
@@ -143,10 +172,15 @@ public:
   AlwaysOnFrontendCounters &getFrontendCounters();
   AlwaysOnFrontendRecursiveSharedTimers &getFrontendRecursiveSharedTimers();
   void noteCurrentProcessExitStatus(int);
-  FrontendStatsTracer getStatsTracer(StringRef N,
-                                     SourceRange const &R);
-  void saveAnyFrontendStatsEvents(FrontendStatsTracer const& T,
-                                  bool IsEntry);
+  // We declare 4 explicit overloads here, but the _definitions_ live in the
+  // upper-level files (in libswiftAST or libswiftSIL) that provide the types
+  // being traced. If you want to trace those types, it's assumed you're linking
+  // with the object files that define the tracer.
+  FrontendStatsTracer getStatsTracer(StringRef EventName, const Decl *D);
+  FrontendStatsTracer getStatsTracer(StringRef EventName, const clang::Decl*D);
+  FrontendStatsTracer getStatsTracer(StringRef EventName, const Expr *E);
+  FrontendStatsTracer getStatsTracer(StringRef EventName, const SILFunction *F);
+  void saveAnyFrontendStatsEvents(FrontendStatsTracer const &T, bool IsEntry);
 };
 
 }

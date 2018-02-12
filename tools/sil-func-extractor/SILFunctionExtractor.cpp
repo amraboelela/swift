@@ -212,7 +212,7 @@ void removeUnwantedFunctions(SILModule *M, ArrayRef<std::string> MangledNames,
   // After running this pass all of the functions we will remove
   // should consist only of one basic block terminated by
   // UnreachableInst.
-  performSILDiagnoseUnreachable(M, nullptr);
+  performSILDiagnoseUnreachable(M);
 
   // Now mark all of these functions as public and remove their bodies.
   for (auto &F : DeadFunctions) {
@@ -256,8 +256,9 @@ int main(int argc, char **argv) {
 
   serialization::ExtendedValidationInfo extendedInfo;
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> FileBufOrErr =
-      Invocation.setUpInputForSILTool(InputFilename, ModuleName, true,
-                                      extendedInfo);
+      Invocation.setUpInputForSILTool(InputFilename, ModuleName,
+                                      /*alwaysSetModuleToMain*/ true,
+                                      /*bePrimary*/ false, extendedInfo);
   if (!FileBufOrErr) {
     fprintf(stderr, "Error! Failed to open file: %s\n", InputFilename.c_str());
     exit(-1);

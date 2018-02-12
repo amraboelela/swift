@@ -192,8 +192,7 @@ namespace swift {
 
 // FIXME: HACK: copied from HeapObject.cpp
 extern "C" LLVM_LIBRARY_VISIBILITY LLVM_ATTRIBUTE_NOINLINE LLVM_ATTRIBUTE_USED
-void _swift_release_dealloc(swift::HeapObject *object)
-SWIFT_CC(RegisterPreservingCC_IMPL);
+void _swift_release_dealloc(swift::HeapObject *object);
 
 namespace swift {
 
@@ -376,39 +375,6 @@ class RefCountBitsT {
     setField(UseSlowRC, value);
   }
 
-    
-  // Returns true if the decrement is a fast-path result.
-  // Returns false if the decrement should fall back to some slow path
-  // (for example, because UseSlowRC is set
-  // or because the refcount is now zero and should deinit).
-  template <ClearPinnedFlag clearPinnedFlag>
-  LLVM_NODISCARD LLVM_ATTRIBUTE_ALWAYS_INLINE
-  bool doDecrementStrongExtraRefCount(uint32_t dec) {
-#ifndef NDEBUG
-    if (!hasSideTable()) {
-      // Can't check these assertions with side table present.
-      
-      // clearPinnedFlag assumes the flag is already set.
-      if (clearPinnedFlag)
-        assert(getIsPinned() && "unpinning reference that was not pinned");
-
-      if (getIsDeiniting())
-        assert(getStrongExtraRefCount() >= dec  &&  
-               "releasing reference whose refcount is already zero");
-      else 
-        assert(getStrongExtraRefCount() + 1 >= dec  &&  
-               "releasing reference whose refcount is already zero");
-    }
-#endif
-
-    BitsType unpin = (clearPinnedFlag
-                      ? (BitsType(1) << Offsets::IsPinnedShift)
-                      : 0);
-    // This deliberately underflows by borrowing from the UseSlowRC field.
-    bits -= unpin + (BitsType(dec) << Offsets::StrongExtraRefCountShift);
-    return (SignedBitsType(bits) >= 0);
-  }
-
   public:
 
   LLVM_ATTRIBUTE_ALWAYS_INLINE
@@ -553,15 +519,38 @@ class RefCountBitsT {
     return (SignedBitsType(bits) >= 0);
   }
 
-  // FIXME: I don't understand why I can't make clearPinned a template argument
-  // (compiler balks at calls from class RefCounts that way)
+  // Returns true if the decrement is a fast-path result.
+  // Returns false if the decrement should fall back to some slow path
+  // (for example, because UseSlowRC is set
+  // or because the refcount is now zero and should deinit).
+  template <ClearPinnedFlag clearPinnedFlag>
   LLVM_NODISCARD LLVM_ATTRIBUTE_ALWAYS_INLINE
-  bool decrementStrongExtraRefCount(uint32_t dec, bool clearPinned = false) {
-    if (clearPinned) 
-      return doDecrementStrongExtraRefCount<DoClearPinnedFlag>(dec);
-    else
-      return doDecrementStrongExtraRefCount<DontClearPinnedFlag>(dec);
+  bool decrementStrongExtraRefCount(uint32_t dec) {
+#ifndef NDEBUG
+    if (!hasSideTable()) {
+      // Can't check these assertions with side table present.
+
+      // clearPinnedFlag assumes the flag is already set.
+      if (clearPinnedFlag)
+        assert(getIsPinned() && "unpinning reference that was not pinned");
+
+      if (getIsDeiniting())
+        assert(getStrongExtraRefCount() >= dec  &&
+               "releasing reference whose refcount is already zero");
+      else
+        assert(getStrongExtraRefCount() + 1 >= dec  &&
+               "releasing reference whose refcount is already zero");
+    }
+#endif
+
+    BitsType unpin = (clearPinnedFlag
+                      ? (BitsType(1) << Offsets::IsPinnedShift)
+                      : 0);
+    // This deliberately underflows by borrowing from the UseSlowRC field.
+    bits -= unpin + (BitsType(dec) << Offsets::StrongExtraRefCountShift);
+    return (SignedBitsType(bits) >= 0);
   }
+
   // Returns the old reference count before the increment.
   LLVM_ATTRIBUTE_ALWAYS_INLINE
   uint32_t incrementUnownedRefCount(uint32_t inc) {
@@ -986,6 +975,18 @@ class RefCounts {
       return bits.getIsDeiniting();
   }
 
+  bool hasSideTable() const {
+    auto bits = refCounts.load(SWIFT_MEMORY_ORDER_CONSUME);
+    return bits.hasSideTable();
+  }
+
+  void *getSideTable() const {
+    auto bits = refCounts.load(SWIFT_MEMORY_ORDER_CONSUME);
+    if (!bits.hasSideTable())
+      return nullptr;
+    return bits.getSideTable();
+  }
+
   /// Return true if the object can be freed directly right now.
   /// (transition DEINITING -> DEAD)
   /// This is used in swift_deallocObject().
@@ -1023,7 +1024,8 @@ class RefCounts {
     do {
       newbits = oldbits;
       
-      bool fast = newbits.decrementStrongExtraRefCount(dec, clearPinnedFlag);
+      bool fast =
+        newbits.template decrementStrongExtraRefCount<clearPinnedFlag>(dec);
       if (fast) {
         // Decrement completed normally. New refcount is not zero.
         deinitNow = false;
@@ -1062,7 +1064,8 @@ class RefCounts {
     bool deinitNow;
     auto newbits = oldbits;
 
-    bool fast = newbits.decrementStrongExtraRefCount(dec, clearPinnedFlag);
+    bool fast =
+      newbits.template decrementStrongExtraRefCount<clearPinnedFlag>(dec);
     if (fast) {
       // Decrement completed normally. New refcount is not zero.
       deinitNow = false;
@@ -1104,7 +1107,8 @@ class RefCounts {
     
     do {
       newbits = oldbits;
-      bool fast = newbits.decrementStrongExtraRefCount(dec, clearPinnedFlag);
+      bool fast =
+        newbits.template decrementStrongExtraRefCount<clearPinnedFlag>(dec);
       if (!fast)
         // Slow paths include side table; deinit; underflow
         return doDecrementSlow<clearPinnedFlag, performDeinit>(oldbits, dec);
@@ -1238,7 +1242,9 @@ class RefCounts {
       newbits = oldbits;
       assert(newbits.getWeakRefCount() != 0);
       newbits.incrementWeakRefCount();
-      // FIXME: overflow check
+      
+      if (newbits.getWeakRefCount() < oldbits.getWeakRefCount())
+        swift_abortWeakRetainOverflow();
     } while (!refCounts.compare_exchange_weak(oldbits, newbits,
                                               std::memory_order_relaxed));
   }
@@ -1269,16 +1275,7 @@ class RefCounts {
   
   // Return weak reference count.
   // Note that this is not equal to the number of outstanding weak pointers.
-  uint32_t getWeakCount() const {
-    auto bits = refCounts.load(SWIFT_MEMORY_ORDER_CONSUME);
-    if (bits.hasSideTable()) {
-      return bits.getSideTable()->getWeakCount();
-    } else {
-      // No weak refcount storage. Return only the weak increment held
-      // on behalf of the unowned count.
-      return bits.getUnownedRefCount() ? 1 : 0;
-    }
-  }
+  uint32_t getWeakCount() const;
 
 
   private:
@@ -1294,6 +1291,11 @@ static_assert(swift::IsTriviallyConstructible<InlineRefCounts>::value,
               "InlineRefCounts must be trivially initializable");
 static_assert(std::is_trivially_destructible<InlineRefCounts>::value,
               "InlineRefCounts must be trivially destructible");
+
+template <>
+inline uint32_t RefCounts<InlineRefCountBits>::getWeakCount() const;
+template <>
+inline uint32_t RefCounts<SideTableRefCountBits>::getWeakCount() const;
 
 class HeapObjectSideTableEntry {
   // FIXME: does object need to be atomic?
@@ -1488,7 +1490,7 @@ inline bool RefCounts<InlineRefCountBits>::doDecrementNonAtomic(uint32_t dec) {
     return doDecrementNonAtomicSlow<clearPinnedFlag, performDeinit>(oldbits, dec);
 
   auto newbits = oldbits;
-  bool fast = newbits.decrementStrongExtraRefCount(dec, clearPinnedFlag);
+  bool fast = newbits.decrementStrongExtraRefCount<clearPinnedFlag>(dec);
   if (!fast)
     return doDecrementNonAtomicSlow<clearPinnedFlag, performDeinit>(oldbits, dec);
 
@@ -1539,6 +1541,23 @@ doDecrementNonAtomicSideTable(SideTableRefCountBits oldbits, uint32_t dec) {
                "a side table entry of its own");
 }
 
+template <>
+inline uint32_t RefCounts<InlineRefCountBits>::getWeakCount() const {
+  auto bits = refCounts.load(SWIFT_MEMORY_ORDER_CONSUME);
+  if (bits.hasSideTable()) {
+    return bits.getSideTable()->getWeakCount();
+  } else {
+    // No weak refcount storage. Return only the weak increment held
+    // on behalf of the unowned count.
+    return bits.getUnownedRefCount() ? 1 : 0;
+  }
+}
+
+template <>
+inline uint32_t RefCounts<SideTableRefCountBits>::getWeakCount() const {
+  auto bits = refCounts.load(SWIFT_MEMORY_ORDER_CONSUME);
+  return bits.getWeakRefCount();
+}
 
 template <> inline
 HeapObject* RefCounts<InlineRefCountBits>::getHeapObject() {

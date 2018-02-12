@@ -18,6 +18,7 @@
 #ifndef SWIFT_BASIC_LANGOPTIONS_H
 #define SWIFT_BASIC_LANGOPTIONS_H
 
+#include "swift/Config.h"
 #include "swift/Basic/LLVM.h"
 #include "swift/Basic/Version.h"
 #include "clang/Basic/VersionTuple.h"
@@ -46,6 +47,8 @@ namespace swift {
     Runtime,
     /// Conditional import of module
     CanImport,
+    /// Target Environment (currently just 'simulator' or absent)
+    TargetEnvironment,
   };
 
   /// Describes which Swift 3 Objective-C inference warnings should be
@@ -114,6 +117,10 @@ namespace swift {
     /// expression.
     bool CodeCompleteInitsInPostfixExpr = false;
 
+    /// Whether to use heuristics to decide whether to show call-pattern
+    /// completions.
+    bool CodeCompleteCallPatternHeuristics = false;
+
     ///
     /// Flags for use by tests
     ///
@@ -121,6 +128,10 @@ namespace swift {
     /// Enable Objective-C Runtime interop code generation and build
     /// configuration options.
     bool EnableObjCInterop = true;
+
+    /// On Darwin platforms, use the pre-stable ABI's mark bit for Swift
+    /// classes instead of the stable ABI's bit.
+    bool UseDarwinPreStableABIBit = !bool(SWIFT_DARWIN_ENABLE_STABLE_ABI_BIT);
 
     /// Enables checking that uses of @objc require importing
     /// the Foundation module.
@@ -154,7 +165,7 @@ namespace swift {
     bool IterativeTypeChecker = false;
 
     /// \brief Enable named lazy member loading.
-    bool NamedLazyMemberLoading = false;
+    bool NamedLazyMemberLoading = true;
 
     /// Debug the generic signatures computed by the generic signature builder.
     bool DebugGenericSignatures = false;
@@ -187,11 +198,6 @@ namespace swift {
     /// \brief Staging flag for treating inout parameters as Thread Sanitizer
     /// accesses.
     bool DisableTsanInoutInstrumentation = false;
-
-    /// \brief Staging flag for class resilience, which we do not want to enable
-    /// fully until more code is in place, to allow the standard library to be
-    /// tested with value type resilience only.
-    bool EnableClassResilience = false;
 
     /// Should we check the target OSs of serialized modules to see that they're
     /// new enough?
@@ -249,6 +255,9 @@ namespace swift {
     /// Whether to create and keep track of a libSyntax tree associated with
     /// this source file.
     bool KeepSyntaxInfoInSourceFile = false;
+
+    /// Whether to verify the parsed syntax tree and emit related diagnostics.
+    bool VerifySyntaxTree = false;
 
     /// Sets the target we are building for and updates platform conditions
     /// to match.
@@ -351,7 +360,7 @@ namespace swift {
     }
 
   private:
-    llvm::SmallVector<std::pair<PlatformConditionKind, std::string>, 4>
+    llvm::SmallVector<std::pair<PlatformConditionKind, std::string>, 5>
         PlatformConditionValues;
     llvm::SmallVector<std::string, 2> CustomConditionalCompilationFlags;
   };

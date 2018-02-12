@@ -226,8 +226,8 @@ DECL_ATTR(__objc_bridged, ObjCBridged, OnClass | NotSerialized | RejectByParser,
 SIMPLE_DECL_ATTR(NSApplicationMain, NSApplicationMain,
                  OnClass, 52)
 
-SIMPLE_DECL_ATTR(objc_non_lazy_realization, ObjCNonLazyRealization,
-                 OnClass, 53)
+SIMPLE_DECL_ATTR(_objc_non_lazy_realization, ObjCNonLazyRealization,
+                 OnClass | UserInaccessible, 53)
 
 DECL_ATTR(__synthesized_protocol, SynthesizedProtocol,
           OnStruct | OnEnum | OnClass | NotSerialized | RejectByParser,
@@ -288,8 +288,6 @@ DECL_ATTR(_restatedObjCConformance, RestatedObjCConformance,
           OnProtocol | NotSerialized | LongAttribute | RejectByParser,
          /*Not serialized */ 70)
 
-// 70 is available; it was not a serialized attribute.
-
 // HACK: Attribute needed to preserve source compatibility by downgrading errors
 // due to an SDK change in Dispatch
 SIMPLE_DECL_ATTR(_downgrade_exhaustivity_check, DowngradeExhaustivityCheck,
@@ -297,11 +295,17 @@ SIMPLE_DECL_ATTR(_downgrade_exhaustivity_check, DowngradeExhaustivityCheck,
 
 SIMPLE_DECL_ATTR(_implicitly_unwrapped_optional,
                  ImplicitlyUnwrappedOptional,
-                 OnFunc | OnVar | OnSubscript | OnConstructor | RejectByParser, 72)
+                 OnFunc | OnVar | OnParam | OnSubscript | OnConstructor
+                 | RejectByParser, 72)
 
 DECL_ATTR(_optimize, Optimize,
           OnFunc | OnConstructor | OnDestructor | OnSubscript | OnVar |
           UserInaccessible, 73)
+
+DECL_ATTR(_clangImporterSynthesizedType, ClangImporterSynthesizedType,
+          OnClass | OnStruct | OnEnum | OnProtocol | OnTypeAlias |
+          LongAttribute | NotSerialized | RejectByParser | UserInaccessible,
+          /*Not serialized*/74)
 
 #undef TYPE_ATTR
 #undef DECL_ATTR_ALIAS

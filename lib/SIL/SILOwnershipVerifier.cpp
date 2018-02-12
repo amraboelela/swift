@@ -613,6 +613,7 @@ ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP_OR_METATYPE(MustBeLive, ObjCSuperMethod)
   }
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, SuperMethod)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, BridgeObjectToWord)
+ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, ClassifyBridgeObject)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, CopyBlock)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, OpenExistentialBox)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, RefTailAddr)
@@ -627,6 +628,7 @@ ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, ProjectExistentialBox)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, UnmanagedRetainValue)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, UnmanagedReleaseValue)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, UnmanagedAutoreleaseValue)
+ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, ConvertEscapeToNoEscape)
 #undef ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP
 
 OwnershipUseCheckerResult
@@ -1033,9 +1035,16 @@ OwnershipUseCheckerResult OwnershipCompatibilityUseChecker::visitEnumArgument(
   // The operand has a non-trivial ownership kind. It must match the argument
   // convention.
   auto ownership = getOwnershipKind();
-  auto lifetimeConstraint = (ownership == ValueOwnershipKind::Owned)
-                                ? UseLifetimeConstraint::MustBeInvalidated
-                                : UseLifetimeConstraint::MustBeLive;
+  UseLifetimeConstraint lifetimeConstraint;
+  if (ownership == ValueOwnershipKind::Owned) {
+    if (RequiredKind != ValueOwnershipKind::Owned) {
+      lifetimeConstraint = UseLifetimeConstraint::MustBeLive;
+    } else {
+      lifetimeConstraint = UseLifetimeConstraint::MustBeInvalidated;
+    }
+  } else {
+    lifetimeConstraint = UseLifetimeConstraint::MustBeLive;
+  }
   return {compatibleOwnershipKinds(ownership, RequiredKind),
           lifetimeConstraint};
 }
@@ -1081,7 +1090,11 @@ visitFullApply(FullApplySite apply) {
     return {true, UseLifetimeConstraint::MustBeLive};
   case ParameterConvention::Indirect_In_Guaranteed:
   case ParameterConvention::Direct_Guaranteed:
-    return visitApplyParameter(ValueOwnershipKind::Guaranteed,
+    // A +1 value may be passed to a guaranteed argument. From the caller's
+    // point of view, this is just like a normal non-consuming use.
+    // Direct_Guaranteed only accepts non-trivial types, but trivial types are
+    // already handled above.
+    return visitApplyParameter(ValueOwnershipKind::Any,
                                UseLifetimeConstraint::MustBeLive);
   // The following conventions should take address types.
   case ParameterConvention::Indirect_Inout:
@@ -1401,6 +1414,7 @@ BUILTINS_THAT_SHOULD_HAVE_BEEN_LOWERED_TO_SILINSTS(
     CastReferenceFromBridgeObject)
 BUILTINS_THAT_SHOULD_HAVE_BEEN_LOWERED_TO_SILINSTS(
     CastBitPatternFromBridgeObject)
+BUILTINS_THAT_SHOULD_HAVE_BEEN_LOWERED_TO_SILINSTS(ClassifyBridgeObject)
 BUILTINS_THAT_SHOULD_HAVE_BEEN_LOWERED_TO_SILINSTS(BridgeToRawPointer)
 BUILTINS_THAT_SHOULD_HAVE_BEEN_LOWERED_TO_SILINSTS(BridgeFromRawPointer)
 BUILTINS_THAT_SHOULD_HAVE_BEEN_LOWERED_TO_SILINSTS(CastReference)
@@ -2194,7 +2208,7 @@ void SILInstruction::verifyOperandOwnership() const {
 
   // If the given function has unqualified ownership or we have been asked by
   // the user not to verify this function, there is nothing to verify.
-  if (getFunction()->hasUnqualifiedOwnership() ||
+  if (!getFunction()->hasQualifiedOwnership() ||
       !getFunction()->shouldVerifyOwnership())
     return;
 
@@ -2242,7 +2256,7 @@ void SILValue::verifyOwnership(SILModule &Mod, DeadEndBlocks *DEBlocks) const {
 
   // If the given function has unqualified ownership or we have been asked by
   // the user not to verify this function, there is nothing to verify.
-  if (F->hasUnqualifiedOwnership() || !F->shouldVerifyOwnership())
+  if (!F->hasQualifiedOwnership() || !F->shouldVerifyOwnership())
     return;
 
   ErrorBehaviorKind ErrorBehavior;
@@ -2280,7 +2294,7 @@ bool OwnershipChecker::checkValue(SILValue Value) {
 
   // If the given function has unqualified ownership, there is nothing further
   // to verify.
-  if (F->hasUnqualifiedOwnership())
+  if (!F->hasQualifiedOwnership())
     return false;
 
   ErrorBehaviorKind ErrorBehavior(ErrorBehaviorKind::ReturnFalse);

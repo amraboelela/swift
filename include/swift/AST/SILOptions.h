@@ -112,10 +112,9 @@ public:
 
   /// Should we use a pass pipeline passed in via a json file? Null by default.
   llvm::StringRef ExternalPassPipelineFilename;
-  
-  /// Emit captures and function contexts using +0 caller-guaranteed ARC
-  /// conventions.
-  bool EnableGuaranteedClosureContexts = true;
+
+  /// Emit normal function arguments using the +0 guaranteed convention.
+  bool EnableGuaranteedNormalArguments = false;
 
   /// Don't generate code using partial_apply in SIL generation.
   bool DisableSILPartialApply = false;
@@ -162,6 +161,10 @@ public:
   bool shouldOptimize() const {
     return OptMode > OptimizationMode::NoOptimization;
   }
+
+  bool hasMultipleIRGenThreads() const { return NumThreads > 1; }
+  bool shouldPerformIRGenerationInParallel() const { return NumThreads != 0; }
+  bool hasMultipleIGMs() const { return hasMultipleIRGenThreads(); }
 };
 
 } // end namespace swift

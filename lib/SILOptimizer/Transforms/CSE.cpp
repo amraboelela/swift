@@ -93,7 +93,11 @@ public:
   hash_code visitBridgeObjectToWordInst(BridgeObjectToWordInst *X) {
     return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
   }
-  
+
+  hash_code visitClassifyBridgeObjectInst(ClassifyBridgeObjectInst *X) {
+    return llvm::hash_combine(X->getKind(), X->getOperand());
+  }
+
   hash_code visitRefToBridgeObjectInst(RefToBridgeObjectInst *X) {
     OperandValueArrayRef Operands(X->getAllOperands());
     return llvm::hash_combine(
@@ -880,9 +884,6 @@ bool CSE::canHandle(SILInstruction *Inst) {
       return false;
     return !BI->mayReadOrWriteMemory();
   }
-  if (auto *WMI = dyn_cast<WitnessMethodInst>(Inst)) {
-    return !WMI->isVolatile();
-  }
   if (auto *EMI = dyn_cast<ExistentialMetatypeInst>(Inst)) {
     return !EMI->getOperand()->getType().isAddress();
   }
@@ -933,10 +934,12 @@ bool CSE::canHandle(SILInstruction *Inst) {
   case SILInstructionKind::RefToBridgeObjectInst:
   case SILInstructionKind::BridgeObjectToRefInst:
   case SILInstructionKind::BridgeObjectToWordInst:
+  case SILInstructionKind::ClassifyBridgeObjectInst:
   case SILInstructionKind::ThinFunctionToPointerInst:
   case SILInstructionKind::PointerToThinFunctionInst:
   case SILInstructionKind::MarkDependenceInst:
   case SILInstructionKind::OpenExistentialRefInst:
+  case SILInstructionKind::WitnessMethodInst:
     return true;
   default:
     return false;

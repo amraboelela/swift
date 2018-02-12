@@ -174,7 +174,7 @@ public func _persistCString(_ p: UnsafePointer<CChar>?) -> [CChar]? {
   guard let s = p else {
     return nil
   }
-  let count = Int(_swift_stdlib_strlen(s))
+  let count = Int(_stdlib_strlen(s))
   var result = [CChar](repeating: 0, count: count + 1)
   for i in 0..<count {
     result[i] = s[i]
@@ -197,9 +197,7 @@ internal func _decodeCString<Encoding : _UnicodeEncoding>(
   let buffer = UnsafeBufferPointer<Encoding.CodeUnit>(
     start: cString, count: length)
 
-  let (stringBuffer, hadError) = _StringBuffer.fromCodeUnits(
+  let (guts, hadError) = _StringGuts.fromCodeUnits(
     buffer, encoding: encoding, repairIllFormedSequences: isRepairing)
-  return stringBuffer.map {
-    (result: String(_storage: $0), repairsMade: hadError)
-  }
+  return guts.map { (result: String($0), repairsMade: hadError) }
 }

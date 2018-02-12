@@ -29,6 +29,7 @@
 #include "clang/AST/DeclObjC.h"
 #include "clang/Analysis/DomainSpecific/CocoaConventions.h"
 #include "clang/Basic/CharInfo.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -205,6 +206,29 @@ CanSILFunctionType Lowering::adjustFunctionType(
                               witnessMethodConformance);
 }
 
+CanSILFunctionType
+SILFunctionType::getWithRepresentation(Representation repr) {
+  return getWithExtInfo(getExtInfo().withRepresentation(repr));
+}
+
+CanSILFunctionType SILFunctionType::getWithExtInfo(ExtInfo newExt) {
+  auto oldExt = getExtInfo();
+  if (newExt == oldExt)
+    return CanSILFunctionType(this);
+
+  auto calleeConvention =
+    (newExt.hasContext()
+       ? (oldExt.hasContext()
+            ? getCalleeConvention()
+            : Lowering::DefaultThickCalleeConvention)
+       : ParameterConvention::Direct_Unowned);
+
+  return get(getGenericSignature(), newExt, getCoroutineKind(),
+             calleeConvention, getParameters(), getYields(),
+             getResults(), getOptionalErrorResult(), getASTContext(),
+             getWitnessMethodConformanceOrNone());
+}
+
 namespace {
 
 enum class ConventionsKind : uint8_t {
@@ -237,7 +261,7 @@ public:
   getDirectParameter(unsigned index,
                      const AbstractionPattern &type,
                      const TypeLowering &substTL) const = 0;
-  virtual ParameterConvention getCallee(bool useGuaranteedContext) const = 0;
+  virtual ParameterConvention getCallee() const = 0;
   virtual ResultConvention getResult(const TypeLowering &resultTL) const = 0;
   virtual ParameterConvention
   getIndirectSelfParameter(const AbstractionPattern &type) const = 0;
@@ -424,7 +448,7 @@ private:
     if (clangTy->isPointerType()
         && clangTy->getPointeeType().isConstQualified()) {
       // Peek through optionals.
-      if (auto substObjTy = substTy.getAnyOptionalObjectType())
+      if (auto substObjTy = substTy.getOptionalObjectType())
         substTy = substObjTy;
 
       // Void pointers aren't usefully indirectable.
@@ -740,6 +764,119 @@ static bool isPseudogeneric(SILDeclRef c) {
   return (classDecl && classDecl->usesObjCGenericsModel());
 }
 
+/// Update the result type given the foreign error convention that we will be
+/// using.
+static std::pair<AbstractionPattern, CanType> updateResultTypeForForeignError(
+    ForeignErrorConvention convention, CanGenericSignature genericSig,
+    AbstractionPattern origResultType, CanType substFormalResultType) {
+  switch (convention.getKind()) {
+  // These conventions replace the result type.
+  case ForeignErrorConvention::ZeroResult:
+  case ForeignErrorConvention::NonZeroResult:
+    assert(substFormalResultType->isVoid());
+    substFormalResultType = convention.getResultType();
+    origResultType = AbstractionPattern(genericSig, substFormalResultType);
+    return {origResultType, substFormalResultType};
+
+  // These conventions wrap the result type in a level of optionality.
+  case ForeignErrorConvention::NilResult:
+    assert(!substFormalResultType->getOptionalObjectType());
+    substFormalResultType =
+        OptionalType::get(substFormalResultType)->getCanonicalType();
+    origResultType =
+        AbstractionPattern::getOptional(origResultType);
+    return {origResultType, substFormalResultType};
+
+  // These conventions don't require changes to the formal error type.
+  case ForeignErrorConvention::ZeroPreservedResult:
+  case ForeignErrorConvention::NonNilError:
+    return {origResultType, substFormalResultType};
+  }
+}
+
+/// Lower any/all capture context parameters.
+///
+/// *NOTE* Currently default arg generators can not capture anything.
+/// If we ever add that ability, it will be a different capture list
+/// from the function to which the argument is attached.
+static void
+lowerCaptureContextParameters(SILModule &M, AnyFunctionRef function,
+                              CanGenericSignature genericSig,
+                              SmallVectorImpl<SILParameterInfo> &inputs) {
+
+  // NB: The generic signature may be elided from the lowered function type
+  // if the function is in a fully-specialized context, but we still need to
+  // canonicalize references to the generic parameters that may appear in
+  // non-canonical types in that context. We need the original generic
+  // signature from the AST for that.
+  auto origGenericSig = function.getGenericSignature();
+
+  auto &Types = M.Types;
+  auto loweredCaptures = Types.getLoweredLocalCaptures(function);
+
+  for (auto capture : loweredCaptures.getCaptures()) {
+    if (capture.isDynamicSelfMetadata()) {
+      ParameterConvention convention = ParameterConvention::Direct_Unowned;
+      auto dynamicSelfInterfaceType =
+          loweredCaptures.getDynamicSelfType()->mapTypeOutOfContext();
+
+      auto selfMetatype = MetatypeType::get(dynamicSelfInterfaceType,
+                                            MetatypeRepresentation::Thick);
+
+      auto canSelfMetatype = selfMetatype->getCanonicalType(origGenericSig);
+      SILParameterInfo param(canSelfMetatype, convention);
+      inputs.push_back(param);
+
+      continue;
+    }
+
+    auto *VD = capture.getDecl();
+    auto type = VD->getInterfaceType();
+    auto canType = type->getCanonicalType(origGenericSig);
+
+    auto &loweredTL =
+        Types.getTypeLowering(AbstractionPattern(genericSig, canType), canType);
+    auto loweredTy = loweredTL.getLoweredType();
+    switch (Types.getDeclCaptureKind(capture)) {
+    case CaptureKind::None:
+      break;
+    case CaptureKind::Constant: {
+      // Constants are captured by value.
+      ParameterConvention convention;
+      if (loweredTL.isAddressOnly()) {
+        convention = ParameterConvention::Indirect_In_Guaranteed;
+      } else if (loweredTL.isTrivial()) {
+        convention = ParameterConvention::Direct_Unowned;
+      } else {
+        convention = ParameterConvention::Direct_Guaranteed;
+      }
+      SILParameterInfo param(loweredTy.getSwiftRValueType(), convention);
+      inputs.push_back(param);
+      break;
+    }
+    case CaptureKind::Box: {
+      // Lvalues are captured as a box that owns the captured value.
+      auto boxTy = Types.getInterfaceBoxTypeForCapture(
+          VD, loweredTy.getSwiftRValueType(),
+          /*mutable*/ true);
+      auto convention = ParameterConvention::Direct_Guaranteed;
+      auto param = SILParameterInfo(boxTy, convention);
+      inputs.push_back(param);
+      break;
+    }
+    case CaptureKind::StorageAddress: {
+      // Non-escaping lvalues are captured as the address of the value.
+      SILType ty = loweredTy.getAddressType();
+      auto param =
+          SILParameterInfo(ty.getSwiftRValueType(),
+                           ParameterConvention::Indirect_InoutAliasable);
+      inputs.push_back(param);
+      break;
+    }
+    }
+  }
+}
+
 /// Create the appropriate SIL function type for the given formal type
 /// and conventions.
 ///
@@ -814,36 +951,14 @@ static CanSILFunctionType getSILFunctionType(
   }
 
   // Lower the result type.
-
   AbstractionPattern origResultType = origType.getFunctionResultType();
   CanType substFormalResultType = substFnInterfaceType.getResult();
 
   // If we have a foreign error convention, restore the original result type.
-  if (foreignInfo.Error) {
-    auto &foreignError = *foreignInfo.Error;
-    switch (foreignError.getKind()) {
-    // These conventions replace the result type.
-    case ForeignErrorConvention::ZeroResult:
-    case ForeignErrorConvention::NonZeroResult:
-      assert(substFormalResultType->isVoid());
-      substFormalResultType = foreignError.getResultType();
-      origResultType = AbstractionPattern(genericSig, substFormalResultType);
-      break;
-
-    // These conventions wrap the result type in a level of optionality.
-    case ForeignErrorConvention::NilResult:
-      assert(!substFormalResultType->getAnyOptionalObjectType());
-      substFormalResultType =
-        OptionalType::get(substFormalResultType)->getCanonicalType();
-      origResultType =
-        AbstractionPattern::getOptional(origResultType, OTK_Optional);
-      break;
-
-    // These conventions don't require changes to the formal error type.
-    case ForeignErrorConvention::ZeroPreservedResult:
-    case ForeignErrorConvention::NonNilError:
-      break;
-    }
+  if (auto convention = foreignInfo.Error) {
+    std::tie(origResultType, substFormalResultType) =
+        updateResultTypeForForeignError(*convention, genericSig, origResultType,
+                                        substFormalResultType);
   }
 
   // Destructure the result tuple type.
@@ -863,96 +978,19 @@ static CanSILFunctionType getSILFunctionType(
   }
   
   // Lower the capture context parameters, if any.
-  // But note that default arg generators can't capture anything right now,
-  // and if we ever add that ability, it will be a different capture list
+  //
+  // *NOTE* Currently default arg generators can not capture anything.
+  // If we ever add that ability, it will be a different capture list
   // from the function to which the argument is attached.
-  if (constant && !constant->isDefaultArgGenerator())
-  if (auto function = constant->getAnyFunctionRef()) {
-    // NB: The generic signature may be elided from the lowered function type
-    // if the function is in a fully-specialized context, but we still need to
-    // canonicalize references to the generic parameters that may appear in
-    // non-canonical types in that context. We need the original generic
-    // signature from the AST for that.
-    auto origGenericSig
-      = function->getGenericSignature();
-
-    auto &Types = M.Types;
-    auto loweredCaptures = Types.getLoweredLocalCaptures(*function);
-    
-    for (auto capture : loweredCaptures.getCaptures()) {
-      if (capture.isDynamicSelfMetadata()) {
-        ParameterConvention convention = ParameterConvention::Direct_Unowned;
-        auto dynamicSelfInterfaceType =
-            loweredCaptures.getDynamicSelfType()->mapTypeOutOfContext();
-        
-        auto selfMetatype = MetatypeType::get(
-            dynamicSelfInterfaceType,
-            MetatypeRepresentation::Thick);
-        
-        auto canSelfMetatype =
-          selfMetatype->getCanonicalType(origGenericSig);
-        SILParameterInfo param(canSelfMetatype, convention);
-        inputs.push_back(param);
-
-        continue;
-      }
-
-      auto *VD = capture.getDecl();
-      auto type = VD->getInterfaceType();
-      auto canType = type->getCanonicalType(origGenericSig);
-
-      auto &loweredTL = Types.getTypeLowering(
-                              AbstractionPattern(genericSig, canType), canType);
-      auto loweredTy = loweredTL.getLoweredType();
-      switch (Types.getDeclCaptureKind(capture)) {
-      case CaptureKind::None:
-        break;
-      case CaptureKind::Constant: {
-        // Constants are captured by value.
-        ParameterConvention convention;
-        if (loweredTL.isAddressOnly()) {
-          convention = M.getOptions().EnableGuaranteedClosureContexts
-            ? ParameterConvention::Indirect_In_Guaranteed
-            : ParameterConvention::Indirect_In;
-        } else if (loweredTL.isTrivial()) {
-          convention = ParameterConvention::Direct_Unowned;
-        } else {
-          convention = M.getOptions().EnableGuaranteedClosureContexts
-            ? ParameterConvention::Direct_Guaranteed
-            : ParameterConvention::Direct_Owned;
-        }
-        SILParameterInfo param(loweredTy.getSwiftRValueType(), convention);
-        inputs.push_back(param);
-        break;
-      }
-      case CaptureKind::Box: {
-        // Lvalues are captured as a box that owns the captured value.
-        auto boxTy = Types.getInterfaceBoxTypeForCapture(VD,
-                                                 loweredTy.getSwiftRValueType(),
-                                                 /*mutable*/ true);
-        auto convention = M.getOptions().EnableGuaranteedClosureContexts
-          ? ParameterConvention::Direct_Guaranteed
-          : ParameterConvention::Direct_Owned;
-        auto param = SILParameterInfo(boxTy, convention);
-        inputs.push_back(param);
-        break;
-      }
-      case CaptureKind::StorageAddress: {
-        // Non-escaping lvalues are captured as the address of the value.
-        SILType ty = loweredTy.getAddressType();
-        auto param = SILParameterInfo(ty.getSwiftRValueType(),
-                                  ParameterConvention::Indirect_InoutAliasable);
-        inputs.push_back(param);
-        break;
-      }
-      }
+  if (constant && !constant->isDefaultArgGenerator()) {
+    if (auto function = constant->getAnyFunctionRef()) {
+      lowerCaptureContextParameters(M, *function, genericSig, inputs);
     }
   }
   
   auto calleeConvention = ParameterConvention::Direct_Unowned;
   if (extInfo.hasContext())
-    calleeConvention =
-        conventions.getCallee(M.getOptions().EnableGuaranteedClosureContexts);
+    calleeConvention = conventions.getCallee();
 
   bool pseudogeneric = (constant ? isPseudogeneric(*constant) : false);
 
@@ -991,7 +1029,7 @@ struct DeallocatorConventions : Conventions {
     llvm_unreachable("Deallocators do not have non-self direct parameters");
   }
 
-  ParameterConvention getCallee(bool) const override {
+  ParameterConvention getCallee() const override {
     llvm_unreachable("Deallocators do not have callees");
   }
 
@@ -1024,27 +1062,39 @@ struct DeallocatorConventions : Conventions {
 
 namespace {
 
-/// The default Swift conventions.
-struct DefaultConventions : Conventions {
+enum class NormalParameterConvention { Owned, Guaranteed };
 
-  DefaultConventions()
-    : Conventions(ConventionsKind::Default) {}
+/// The default Swift conventions.
+class DefaultConventions : public Conventions {
+  NormalParameterConvention normalParameterConvention;
+
+public:
+  DefaultConventions(NormalParameterConvention normalParameterConvention)
+      : Conventions(ConventionsKind::Default),
+        normalParameterConvention(normalParameterConvention) {}
+
+  bool isNormalParameterConventionGuaranteed() const {
+    return normalParameterConvention == NormalParameterConvention::Guaranteed;
+  }
 
   ParameterConvention getIndirectParameter(unsigned index,
                             const AbstractionPattern &type,
                             const TypeLowering &substTL) const override {
+    if (isNormalParameterConventionGuaranteed()) {
+      return ParameterConvention::Indirect_In_Guaranteed;
+    }
     return ParameterConvention::Indirect_In;
   }
 
   ParameterConvention getDirectParameter(unsigned index,
                             const AbstractionPattern &type,
                             const TypeLowering &substTL) const override {
+    if (isNormalParameterConventionGuaranteed())
+      return ParameterConvention::Direct_Guaranteed;
     return ParameterConvention::Direct_Owned;
   }
 
-  ParameterConvention getCallee(bool useGuaranteedContext) const override {
-    if (useGuaranteedContext)
-      return ParameterConvention::Direct_Guaranteed;
+  ParameterConvention getCallee() const override {
     return DefaultThickCalleeConvention;
   }
 
@@ -1068,12 +1118,22 @@ struct DefaultConventions : Conventions {
 };
 
 /// The default conventions for Swift initializing constructors.
+///
+/// Initializing constructors take all parameters (including) self at +1. This
+/// is because:
+///
+/// 1. We are likely to be initializing fields of self implying that the
+///    parameters are likely to be forwarded into memory without further
+///    copies.
+/// 2. Initializers must take 'self' at +1, since they will return it back
+///    at +1, and may chain onto Objective-C initializers that replace the
+///    instance.
 struct DefaultInitializerConventions : DefaultConventions {
-  using DefaultConventions::DefaultConventions;
+  DefaultInitializerConventions()
+      : DefaultConventions(NormalParameterConvention::Owned) {}
 
-  /// Initializers must take 'self' at +1, since they will return it back
-  /// at +1, and may chain onto Objective-C initializers that replace the
-  /// instance.
+  /// Initializers must take 'self' at +1, since they will return it back at +1,
+  /// and may chain onto Objective-C initializers that replace the instance.
   ParameterConvention
   getDirectSelfParameter(const AbstractionPattern &type) const override {
     return ParameterConvention::Direct_Owned;
@@ -1083,6 +1143,34 @@ struct DefaultInitializerConventions : DefaultConventions {
   getIndirectSelfParameter(const AbstractionPattern &type) const override {
     return ParameterConvention::Indirect_In;
   }
+};
+
+/// The convention used for allocating inits. Allocating inits take their normal
+/// parameters at +1 and do not have a self parameter.
+struct DefaultAllocatorConventions : DefaultConventions {
+  DefaultAllocatorConventions()
+      : DefaultConventions(NormalParameterConvention::Owned) {}
+
+  ParameterConvention
+  getDirectSelfParameter(const AbstractionPattern &type) const override {
+    llvm_unreachable("Allocating inits do not have self parameters");
+  }
+
+  ParameterConvention
+  getIndirectSelfParameter(const AbstractionPattern &type) const override {
+    llvm_unreachable("Allocating inits do not have self parameters");
+  }
+};
+
+/// The default conventions for Swift setter acccessors.
+///
+/// These take self at +0, but all other parameters at +1. This is because we
+/// assume that setter parameters are likely to be values to be forwarded into
+/// memory. Thus by passing in the +1 value, we avoid a potential copy in that
+/// case.
+struct DefaultSetterConventions : DefaultConventions {
+  DefaultSetterConventions()
+      : DefaultConventions(NormalParameterConvention::Owned) {}
 };
 
 /// The default conventions for ObjC blocks.
@@ -1101,7 +1189,7 @@ struct DefaultBlockConventions : Conventions {
     return ParameterConvention::Direct_Unowned;
   }
 
-  ParameterConvention getCallee(bool) const override {
+  ParameterConvention getCallee() const override {
     return ParameterConvention::Direct_Unowned;
   }
 
@@ -1133,6 +1221,14 @@ getSILFunctionTypeForAbstractCFunction(SILModule &M,
                                        AnyFunctionType::ExtInfo extInfo,
                                        Optional<SILDeclRef> constant);
 
+/// If EnableGuaranteedNormalArguments is set, return a default convention that
+/// uses guaranteed.
+static DefaultConventions getNormalArgumentConvention(SILModule &M) {
+  if (M.getOptions().EnableGuaranteedNormalArguments)
+    return DefaultConventions(NormalParameterConvention::Guaranteed);
+  return DefaultConventions(NormalParameterConvention::Owned);
+}
+
 static CanSILFunctionType getNativeSILFunctionType(
     SILModule &M, AbstractionPattern origType,
     CanAnyFunctionType substInterfaceType, AnyFunctionType::ExtInfo extInfo,
@@ -1156,20 +1252,29 @@ static CanSILFunctionType getNativeSILFunctionType(
       return getSILFunctionType(M, origType, substInterfaceType, extInfo,
                                 DefaultInitializerConventions(), ForeignInfo(),
                                 constant, witnessMethodConformance);
-
-    case SILDeclRef::Kind::Func:
     case SILDeclRef::Kind::Allocator:
+      return getSILFunctionType(M, origType, substInterfaceType, extInfo,
+                                DefaultAllocatorConventions(), ForeignInfo(),
+                                constant, witnessMethodConformance);
+    case SILDeclRef::Kind::Func:
+      // If we have a setter, use the special setter convention. This ensures
+      // that we take normal parameters at +1.
+      if (constant && constant->isSetter()) {
+        return getSILFunctionType(M, origType, substInterfaceType, extInfo,
+                                  DefaultSetterConventions(), ForeignInfo(),
+                                  constant, witnessMethodConformance);
+      }
+      LLVM_FALLTHROUGH;
     case SILDeclRef::Kind::Destroyer:
     case SILDeclRef::Kind::GlobalAccessor:
-    case SILDeclRef::Kind::GlobalGetter:
     case SILDeclRef::Kind::DefaultArgGenerator:
     case SILDeclRef::Kind::StoredPropertyInitializer:
     case SILDeclRef::Kind::IVarInitializer:
     case SILDeclRef::Kind::IVarDestroyer:
     case SILDeclRef::Kind::EnumElement:
       return getSILFunctionType(M, origType, substInterfaceType, extInfo,
-                                DefaultConventions(), ForeignInfo(), constant,
-                                witnessMethodConformance);
+                                getNormalArgumentConvention(M), ForeignInfo(),
+                                constant, witnessMethodConformance);
     case SILDeclRef::Kind::Deallocator:
       return getSILFunctionType(M, origType, substInterfaceType, extInfo,
                                 DeallocatorConventions(), ForeignInfo(),
@@ -1273,7 +1378,7 @@ public:
     return getDirectCParameterConvention(Method->param_begin()[index]);
   }
 
-  ParameterConvention getCallee(bool) const override {
+  ParameterConvention getCallee() const override {
     // Always thin.
     return ParameterConvention::Direct_Unowned;
   }
@@ -1424,7 +1529,7 @@ public:
     return getDirectCParameterConvention(getParamType(index));
   }
 
-  ParameterConvention getCallee(bool) const override {
+  ParameterConvention getCallee() const override {
     // FIXME: blocks should be Direct_Guaranteed.
     return ParameterConvention::Direct_Unowned;
   }
@@ -1647,14 +1752,16 @@ static SelectorFamily getSelectorFamily(SILDeclRef c) {
       return SelectorFamily::None;
       
     auto *FD = cast<FuncDecl>(c.getDecl());
-    switch (FD->getAccessorKind()) {
-    case AccessorKind::NotAccessor:
+    auto accessor = dyn_cast<AccessorDecl>(FD);
+    if (!accessor)
       return getSelectorFamily(FD->getName());
+
+    switch (accessor->getAccessorKind()) {
     case AccessorKind::IsGetter:
       // Getter selectors can belong to families if their name begins with the
       // wrong thing.
-      if (FD->getAccessorStorageDecl()->isObjC() || c.isForeign) {
-        auto declName = FD->getAccessorStorageDecl()->getBaseName();
+      if (accessor->getStorage()->isObjC() || c.isForeign) {
+        auto declName = accessor->getStorage()->getBaseName();
         switch (declName.getKind()) {
         case DeclBaseName::Kind::Normal:
           return getSelectorFamily(declName.getIdentifier());
@@ -1688,7 +1795,6 @@ static SelectorFamily getSelectorFamily(SILDeclRef c) {
   case SILDeclRef::Kind::Destroyer:
   case SILDeclRef::Kind::Deallocator:
   case SILDeclRef::Kind::GlobalAccessor:
-  case SILDeclRef::Kind::GlobalGetter:
   case SILDeclRef::Kind::IVarDestroyer:
   case SILDeclRef::Kind::DefaultArgGenerator:
   case SILDeclRef::Kind::StoredPropertyInitializer:
@@ -1719,7 +1825,7 @@ public:
     return ParameterConvention::Direct_Unowned;
   }
 
-  ParameterConvention getCallee(bool) const override {
+  ParameterConvention getCallee() const override {
     // Always thin.
     return ParameterConvention::Direct_Unowned;
   }
@@ -1782,8 +1888,8 @@ getSILFunctionTypeForSelectorFamily(SILModule &M, SelectorFamily family,
 static bool isImporterGeneratedAccessor(const clang::Decl *clangDecl,
                                         SILDeclRef constant) {
   // Must be an accessor.
-  auto func = dyn_cast<FuncDecl>(constant.getDecl());
-  if (!func || !func->isAccessor())
+  auto accessor = dyn_cast<AccessorDecl>(constant.getDecl());
+  if (!accessor)
     return false;
 
   // Must be a type member.
@@ -1845,7 +1951,7 @@ getUncachedSILFunctionTypeForConstant(SILModule &M,
         assert(origLoweredInterfaceType->getNumParams() == 2);
 
         // The 'self' parameter is still the second argument.
-        unsigned selfIndex = cast<FuncDecl>(decl)->isSetter() ? 1 : 0;
+        unsigned selfIndex = cast<AccessorDecl>(decl)->isSetter() ? 1 : 0;
         assert(selfIndex == 1 ||
                origLoweredInterfaceType.getParams()[0].getType()->isVoid());
         foreignInfo.Self.setSelfIndex(selfIndex);
@@ -1923,7 +2029,6 @@ TypeConverter::getDeclRefRepresentation(SILDeclRef c) {
 
   switch (c.kind) {
     case SILDeclRef::Kind::GlobalAccessor:
-    case SILDeclRef::Kind::GlobalGetter:
     case SILDeclRef::Kind::DefaultArgGenerator:
     case SILDeclRef::Kind::StoredPropertyInitializer:
       return SILFunctionTypeRepresentation::Thin;
@@ -1946,10 +2051,17 @@ TypeConverter::getDeclRefRepresentation(SILDeclRef c) {
   llvm_unreachable("Unhandled SILDeclRefKind in switch.");
 }
 
+// Provide the ability to turn off the type converter cache to ease debugging.
+static llvm::cl::opt<bool>
+    DisableConstantInfoCache("sil-disable-typelowering-constantinfo-cache",
+                             llvm::cl::init(false));
+
 const SILConstantInfo &TypeConverter::getConstantInfo(SILDeclRef constant) {
-  auto found = ConstantTypes.find(constant);
-  if (found != ConstantTypes.end())
-    return *found->second;
+  if (!DisableConstantInfoCache) {
+    auto found = ConstantTypes.find(constant);
+    if (found != ConstantTypes.end())
+      return *found->second;
+  }
 
   // First, get a function type for the constant.  This creates the
   // right type for a getter or setter.
@@ -1989,6 +2101,9 @@ const SILConstantInfo &TypeConverter::getConstantInfo(SILDeclRef constant) {
                                                   loweredInterfaceType,
                                                   silFnType,
                                                   genericEnv};
+  if (DisableConstantInfoCache)
+    return *result;
+
   auto inserted = ConstantTypes.insert({constant, result});
   assert(inserted.second);
   return *result;
@@ -2022,20 +2137,7 @@ SILParameterInfo TypeConverter::getConstantSelfParameter(SILDeclRef constant) {
 // @guaranteed or whatever.
 static bool checkASTTypeForABIDifferences(CanType type1,
                                           CanType type2) {
-  return !type1->matches(type2, TypeMatchFlags::AllowABICompatible,
-                         /*resolver*/nullptr);
-}
-
-SILDeclRef TypeConverter::getOverriddenVTableEntry(SILDeclRef method) {
-  SILDeclRef cur = method, next = method;
-  do {
-    cur = next;
-    if (cur.requiresNewVTableEntry())
-      return cur;
-    next = cur.getNextOverriddenVTableEntry();
-  } while (next);
-
-  return cur;
+  return !type1->matches(type2, TypeMatchFlags::AllowABICompatible);
 }
 
 // FIXME: This makes me very upset. Can we do without this?
@@ -2044,11 +2146,11 @@ static CanType copyOptionalityFromDerivedToBase(TypeConverter &tc,
                                                 CanType base) {
   // Unwrap optionals, but remember that we did.
   bool derivedWasOptional = false;
-  if (auto object = derived.getAnyOptionalObjectType()) {
+  if (auto object = derived.getOptionalObjectType()) {
     derivedWasOptional = true;
     derived = object;
   }
-  if (auto object = base.getAnyOptionalObjectType()) {
+  if (auto object = base.getOptionalObjectType()) {
     base = object;
   }
 
@@ -2303,7 +2405,7 @@ public:
   /// Optionals need to have their object types substituted by these rules.
   CanType visitBoundGenericEnumType(CanBoundGenericEnumType origType) {
     // Only use a special rule if it's Optional.
-    if (!origType->getDecl()->classifyAsOptionalType()) {
+    if (!origType->getDecl()->isOptionalDecl()) {
       return visitType(origType);
     }
 
@@ -2446,7 +2548,6 @@ static AbstractFunctionDecl *getBridgedFunction(SILDeclRef declRef) {
   case SILDeclRef::Kind::Destroyer:
   case SILDeclRef::Kind::Deallocator:
   case SILDeclRef::Kind::GlobalAccessor:
-  case SILDeclRef::Kind::GlobalGetter:
   case SILDeclRef::Kind::DefaultArgGenerator:
   case SILDeclRef::Kind::StoredPropertyInitializer:
   case SILDeclRef::Kind::IVarInitializer:
@@ -2620,4 +2721,203 @@ TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
   auto uncurried = buildFinalFunctionType(uncurriedInputType, resultType);
 
   return { bridgingFnPattern, uncurried };
+}
+
+// TODO: We should compare generic signatures. Class and witness methods
+// allow variance in "self"-fulfilled parameters; other functions must
+// match exactly.
+// TODO: More sophisticated param and return ABI compatibility rules could
+// diverge.
+static bool areABICompatibleParamsOrReturns(SILType a, SILType b) {
+  // Address parameters are all ABI-compatible, though the referenced
+  // values may not be. Assume whoever's doing this knows what they're
+  // doing.
+  if (a.isAddress() && b.isAddress())
+    return true;
+
+  // Addresses aren't compatible with values.
+  // TODO: An exception for pointerish types?
+  if (a.isAddress() || b.isAddress())
+    return false;
+
+  // Tuples are ABI compatible if their elements are.
+  // TODO: Should destructure recursively.
+  SmallVector<CanType, 1> aElements, bElements;
+  if (auto tup = a.getAs<TupleType>()) {
+    auto types = tup.getElementTypes();
+    aElements.append(types.begin(), types.end());
+  } else {
+    aElements.push_back(a.getSwiftRValueType());
+  }
+  if (auto tup = b.getAs<TupleType>()) {
+    auto types = tup.getElementTypes();
+    bElements.append(types.begin(), types.end());
+  } else {
+    bElements.push_back(b.getSwiftRValueType());
+  }
+
+  if (aElements.size() != bElements.size())
+    return false;
+
+  for (unsigned i : indices(aElements)) {
+    auto aa = SILType::getPrimitiveObjectType(aElements[i]);
+    auto bb = SILType::getPrimitiveObjectType(bElements[i]);
+    // Equivalent types are always ABI-compatible.
+    if (aa == bb)
+      continue;
+
+    // FIXME: If one or both types are dependent, we can't accurately assess
+    // whether they're ABI-compatible without a generic context. We can
+    // do a better job here when dependent types are related to their
+    // generic signatures.
+    if (aa.hasTypeParameter() || bb.hasTypeParameter())
+      continue;
+
+    // Bridgeable object types are interchangeable.
+    if (aa.isBridgeableObjectType() && bb.isBridgeableObjectType())
+      continue;
+
+    // Optional and IUO are interchangeable if their elements are.
+    auto aObject = aa.getOptionalObjectType();
+    auto bObject = bb.getOptionalObjectType();
+    if (aObject && bObject && areABICompatibleParamsOrReturns(aObject, bObject))
+      continue;
+    // Optional objects are ABI-interchangeable with non-optionals;
+    // None is represented by a null pointer.
+    if (aObject && aObject.isBridgeableObjectType() &&
+        bb.isBridgeableObjectType())
+      continue;
+    if (bObject && bObject.isBridgeableObjectType() &&
+        aa.isBridgeableObjectType())
+      continue;
+
+    // Optional thick metatypes are ABI-interchangeable with non-optionals
+    // too.
+    if (aObject)
+      if (auto aObjMeta = aObject.getAs<MetatypeType>())
+        if (auto bMeta = bb.getAs<MetatypeType>())
+          if (aObjMeta->getRepresentation() == bMeta->getRepresentation() &&
+              bMeta->getRepresentation() != MetatypeRepresentation::Thin)
+            continue;
+    if (bObject)
+      if (auto aMeta = aa.getAs<MetatypeType>())
+        if (auto bObjMeta = bObject.getAs<MetatypeType>())
+          if (aMeta->getRepresentation() == bObjMeta->getRepresentation() &&
+              aMeta->getRepresentation() != MetatypeRepresentation::Thin)
+            continue;
+
+    // Function types are interchangeable if they're also ABI-compatible.
+    if (auto aFunc = aa.getAs<SILFunctionType>()) {
+      if (auto bFunc = bb.getAs<SILFunctionType>()) {
+        // *NOTE* We swallow the specific error here for now. We will still get
+        // that the function types are incompatible though, just not more
+        // specific information.
+        return aFunc->isABICompatibleWith(bFunc).isCompatible();
+      }
+    }
+
+    // Metatypes are interchangeable with metatypes with the same
+    // representation.
+    if (auto aMeta = aa.getAs<MetatypeType>()) {
+      if (auto bMeta = bb.getAs<MetatypeType>()) {
+        if (aMeta->getRepresentation() == bMeta->getRepresentation())
+          continue;
+      }
+    }
+    // Other types must match exactly.
+    return false;
+  }
+
+  return true;
+}
+
+namespace {
+using ABICompatibilityCheckResult =
+    SILFunctionType::ABICompatibilityCheckResult;
+} // end anonymous namespace
+
+ABICompatibilityCheckResult
+SILFunctionType::isABICompatibleWith(CanSILFunctionType other) const {
+  // The calling convention and function representation can't be changed.
+  if (getRepresentation() != other->getRepresentation())
+    return ABICompatibilityCheckResult::DifferentFunctionRepresentations;
+
+  // Check the results.
+  if (getNumResults() != other->getNumResults())
+    return ABICompatibilityCheckResult::DifferentNumberOfResults;
+
+  for (unsigned i : indices(getResults())) {
+    auto result1 = getResults()[i];
+    auto result2 = other->getResults()[i];
+
+    if (result1.getConvention() != result2.getConvention())
+      return ABICompatibilityCheckResult::DifferentReturnValueConventions;
+
+    if (!areABICompatibleParamsOrReturns(result1.getSILStorageType(),
+                                         result2.getSILStorageType())) {
+      return ABICompatibilityCheckResult::ABIIncompatibleReturnValues;
+    }
+  }
+
+  // Our error result conventions are designed to be ABI compatible
+  // with functions lacking error results.  Just make sure that the
+  // actual conventions match up.
+  if (hasErrorResult() && other->hasErrorResult()) {
+    auto error1 = getErrorResult();
+    auto error2 = other->getErrorResult();
+    if (error1.getConvention() != error2.getConvention())
+      return ABICompatibilityCheckResult::DifferentErrorResultConventions;
+
+    if (!areABICompatibleParamsOrReturns(error1.getSILStorageType(),
+                                         error2.getSILStorageType()))
+      return ABICompatibilityCheckResult::ABIIncompatibleErrorResults;
+  }
+
+  // Check the parameters.
+  // TODO: Could allow known-empty types to be inserted or removed, but SIL
+  // doesn't know what empty types are yet.
+  if (getParameters().size() != other->getParameters().size())
+    return ABICompatibilityCheckResult::DifferentNumberOfParameters;
+
+  for (unsigned i : indices(getParameters())) {
+    auto param1 = getParameters()[i];
+    auto param2 = other->getParameters()[i];
+
+    if (param1.getConvention() != param2.getConvention())
+      return {ABICompatibilityCheckResult::DifferingParameterConvention, i};
+    if (!areABICompatibleParamsOrReturns(param1.getSILStorageType(),
+                                         param2.getSILStorageType()))
+      return {ABICompatibilityCheckResult::ABIIncompatibleParameterType, i};
+  }
+
+  return ABICompatibilityCheckResult::None;
+}
+
+StringRef SILFunctionType::ABICompatibilityCheckResult::getMessage() const {
+  switch (kind) {
+  case innerty::None:
+    return "None";
+  case innerty::DifferentFunctionRepresentations:
+    return "Different function representations";
+  case innerty::DifferentNumberOfResults:
+    return "Different number of results";
+  case innerty::DifferentReturnValueConventions:
+    return "Different return value conventions";
+  case innerty::ABIIncompatibleReturnValues:
+    return "ABI incompatible return values";
+  case innerty::DifferentErrorResultConventions:
+    return "Different error result conventions";
+  case innerty::ABIIncompatibleErrorResults:
+    return "ABI incompatible error results";
+  case innerty::DifferentNumberOfParameters:
+    return "Different number of parameters";
+
+  // These two have to do with specific parameters, so keep the error message
+  // non-plural.
+  case innerty::DifferingParameterConvention:
+    return "Differing parameter convention";
+  case innerty::ABIIncompatibleParameterType:
+    return "ABI incompatible parameter type.";
+  }
+  llvm_unreachable("Covered switch isn't completely covered?!");
 }

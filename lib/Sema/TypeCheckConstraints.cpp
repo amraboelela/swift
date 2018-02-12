@@ -61,12 +61,12 @@ void TypeVariableType::Implementation::print(llvm::raw_ostream &OS) {
 }
 
 SavedTypeVariableBinding::SavedTypeVariableBinding(TypeVariableType *typeVar)
-  : TypeVarAndOptions(typeVar, typeVar->getImpl().Options),
+  : TypeVarAndOptions(typeVar, typeVar->getImpl().getRawOptions()),
     ParentOrFixed(typeVar->getImpl().ParentOrFixed) { }
 
 void SavedTypeVariableBinding::restore() {
   auto *typeVar = getTypeVariable();
-  typeVar->getImpl().Options = getOptions();
+  typeVar->getImpl().setRawOptions(getOptions());
   typeVar->getImpl().ParentOrFixed = ParentOrFixed;
 }
 
@@ -540,10 +540,8 @@ resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE, DeclContext *DC) {
         D->getDeclContext()->isLocalContext() &&
         D->getDeclContext() == DC &&
         Context.SourceMgr.isBeforeInBuffer(Loc, D->getLoc())) {
-      if (!D->isInvalid()) {
-        diagnose(Loc, diag::use_local_before_declaration, Name);
-        diagnose(D, diag::decl_declared_here, Name);
-      }
+      diagnose(Loc, diag::use_local_before_declaration, Name);
+      diagnose(D, diag::decl_declared_here, Name);
       return new (Context) ErrorExpr(UDRE->getSourceRange());
     }
     if (matchesDeclRefKind(D, UDRE->getRefKind()))
@@ -1009,10 +1007,10 @@ bool PreCheckExpression::walkToClosureExprPre(ClosureExpr *closure) {
 
   // Validate the parameters.
   TypeResolutionOptions options;
-  options |= TR_AllowUnspecifiedTypes;
-  options |= TR_AllowUnboundGenerics;
-  options |= TR_InExpression;
-  options |= TR_AllowIUO;
+  options |= TypeResolutionFlags::AllowUnspecifiedTypes;
+  options |= TypeResolutionFlags::AllowUnboundGenerics;
+  options |= TypeResolutionFlags::InExpression;
+  options |= TypeResolutionFlags::AllowIUO;
   bool hadParameterError = false;
 
   GenericTypeToArchetypeResolver resolver(closure);
@@ -1030,7 +1028,7 @@ bool PreCheckExpression::walkToClosureExprPre(ClosureExpr *closure) {
   // Validate the result type, if present.
   if (closure->hasExplicitResultType() &&
       TC.validateType(closure->getExplicitResultTypeLoc(), DC,
-                      TR_InExpression, &resolver)) {
+                      TypeResolutionFlags::InExpression, &resolver)) {
     closure->setType(ErrorType::get(TC.Context));
     return false;
   }
@@ -1112,9 +1110,9 @@ TypeExpr *PreCheckExpression::simplifyNestedTypeExpr(UnresolvedDotExpr *UDE) {
     // Resolve the TypeRepr to get the base type for the lookup.
     // Disable availability diagnostics here, because the final
     // TypeRepr will be resolved again when generating constraints.
-    TypeResolutionOptions options = TR_AllowUnboundGenerics;
-    options |= TR_InExpression;
-    options |= TR_AllowUnavailable;
+    TypeResolutionOptions options = TypeResolutionFlags::AllowUnboundGenerics;
+    options |= TypeResolutionFlags::InExpression;
+    options |= TypeResolutionFlags::AllowUnavailable;
     auto BaseTy = TC.resolveType(InnerTypeRepr, DC, options);
 
     if (BaseTy && BaseTy->mayHaveMembers()) {
@@ -1155,11 +1153,8 @@ TypeExpr *PreCheckExpression::simplifyUnresolvedSpecializeExpr(
   // The base should be a TypeExpr that we already resolved.
   if (auto *te = dyn_cast<TypeExpr>(us->getSubExpr())) {
     if (auto *ITR = dyn_cast_or_null<IdentTypeRepr>(te->getTypeRepr())) {
-      return TypeExpr::createForSpecializedDecl(
-        ITR,
-        TC.Context.AllocateCopy(genericArgs),
-        angleRange,
-        TC.Context);
+      return TypeExpr::createForSpecializedDecl(ITR, genericArgs, angleRange,
+                                                TC.Context);
     }
   }
 
@@ -1422,8 +1417,7 @@ TypeExpr *PreCheckExpression::simplifyTypeExpr(Expr *E) {
       if (!rhs) return nullptr;
       Types.push_back(rhs->getTypeRepr());
 
-      auto CompRepr = new (TC.Context) CompositionTypeRepr(
-          TC.Context.AllocateCopy(Types),
+      auto CompRepr = CompositionTypeRepr::create(TC.Context, Types,
           lhsExpr->getStartLoc(), binaryExpr->getSourceRange());
       return new (TC.Context) TypeExpr(TypeLoc(CompRepr, Type()));
     }
@@ -2210,11 +2204,10 @@ bool TypeChecker::typeCheckBinding(Pattern *&pattern, Expr *&initializer,
   }
 
   if (resultTy) {
-    TypeResolutionOptions options;
-    options |= TR_OverrideType;
-    options |= TR_InExpression;
+    TypeResolutionOptions options = TypeResolutionFlags::OverrideType;
+    options |= TypeResolutionFlags::InExpression;
     if (isa<EditorPlaceholderExpr>(initializer->getSemanticsProvidingExpr())) {
-      options |= TR_EditorPlaceholder;
+      options |= TypeResolutionFlags::EditorPlaceholder;
     }
 
     // FIXME: initTy should be the same as resultTy; now that typeCheckExpression()
@@ -2364,7 +2357,7 @@ bool TypeChecker::typeCheckForEachBinding(DeclContext *dc, ForEachStmt *stmt) {
 
       // Look through one level of optional; this improves recovery but doesn't
       // change the result.
-      if (auto sequenceObjectType = sequenceType->getAnyOptionalObjectType())
+      if (auto sequenceObjectType = sequenceType->getOptionalObjectType())
         sequenceType = sequenceObjectType;
 
       // If the sequence type is an existential, we should not attempt to
@@ -2433,10 +2426,9 @@ bool TypeChecker::typeCheckForEachBinding(DeclContext *dc, ForEachStmt *stmt) {
 
       // Apply the solution to the iteration pattern as well.
       Pattern *pattern = Stmt->getPattern();
-      TypeResolutionOptions options;
-      options |= TR_OverrideType;
-      options |= TR_EnumerationVariable;
-      options |= TR_InExpression;
+      TypeResolutionOptions options = TypeResolutionFlags::OverrideType;
+      options |= TypeResolutionFlags::EnumerationVariable;
+      options |= TypeResolutionFlags::InExpression;
       if (tc.coercePatternToType(pattern, cs.DC, InitType, options)) {
         return nullptr;
       }
@@ -2606,9 +2598,9 @@ bool TypeChecker::typeCheckStmtCondition(StmtCondition &cond, DeclContext *dc,
 
     // Check the pattern, it allows unspecified types because the pattern can
     // provide type information.
-    TypeResolutionOptions options = TR_InExpression;
-    options |= TR_AllowUnspecifiedTypes;
-    options |= TR_AllowUnboundGenerics;
+    TypeResolutionOptions options = TypeResolutionFlags::InExpression;
+    options |= TypeResolutionFlags::AllowUnspecifiedTypes;
+    options |= TypeResolutionFlags::AllowUnboundGenerics;
     if (typeCheckPattern(pattern, dc, options)) {
       typeCheckPatternFailed();
       continue;
@@ -2829,9 +2821,7 @@ bool TypeChecker::checkedCastMaySucceed(Type t1, Type t2, DeclContext *dc) {
 
 bool TypeChecker::isSubstitutableFor(Type type, ArchetypeType *archetype,
                                      DeclContext *dc) {
-  if (archetype->requiresClass() &&
-      !type->mayHaveSuperclass() &&
-      !type->isObjCExistentialType())
+  if (archetype->requiresClass() && !type->satisfiesClassConstraint())
     return false;
 
   if (auto superclass = archetype->getSuperclass()) {
@@ -2860,7 +2850,15 @@ Expr *TypeChecker::coerceToRValue(Expr *expr,
   // If the type is already materializable, then we're already done.
   if (!exprTy->hasLValueType())
     return expr;
-  
+
+  // Walk into force optionals and coerce the source.
+  if (auto *FVE = dyn_cast<ForceValueExpr>(expr)) {
+    auto sub = coerceToRValue(FVE->getSubExpr(), getType, setType);
+    FVE->setSubExpr(sub);
+    setType(FVE, getType(sub)->getOptionalObjectType());
+    return FVE;
+  }
+
   // Load lvalues.
   if (auto lvalue = exprTy->getAs<LValueType>()) {
     expr->propagateLValueAccessKind(AccessKind::Read, getType);
@@ -3353,11 +3351,11 @@ CheckedCastKind TypeChecker::typeCheckCheckedCast(Type fromType,
 
   // Strip optional wrappers off of the destination type in sync with
   // stripping them off the origin type.
-  while (auto toValueType = toType->getAnyOptionalObjectType()) {
+  while (auto toValueType = toType->getOptionalObjectType()) {
     // Complain if we're trying to increase optionality, e.g.
     // casting an NSObject? to an NSString??.  That's not a subtype
     // relationship.
-    auto fromValueType = fromType->getAnyOptionalObjectType();
+    auto fromValueType = fromType->getOptionalObjectType();
     if (!fromValueType) {
       if (!suppressDiagnostics) {
         diagnose(diagLoc, diag::downcast_to_more_optional,
@@ -3375,7 +3373,7 @@ CheckedCastKind TypeChecker::typeCheckCheckedCast(Type fromType,
   
   // On the other hand, casts can decrease optionality monadically.
   unsigned extraFromOptionals = 0;
-  while (auto fromValueType = fromType->getAnyOptionalObjectType()) {
+  while (auto fromValueType = fromType->getOptionalObjectType()) {
     fromType = fromValueType;
     ++extraFromOptionals;
   }

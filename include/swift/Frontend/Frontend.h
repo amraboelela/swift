@@ -39,6 +39,7 @@
 #include "swift/Serialization/Validation.h"
 #include "swift/Subsystems.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -53,7 +54,7 @@ class SerializedModuleLoader;
 ///   - options for all stages of translation,
 ///   - information about the build environment,
 ///   - information about the job being performed, and
-///   - lists of inputs.
+///   - lists of inputs and outputs.
 ///
 /// A CompilerInvocation can be built from a frontend command line
 /// using parseArgs.  It can then be used to build a CompilerInstance,
@@ -174,10 +175,12 @@ public:
   }
 
   void setSerializedDiagnosticsPath(StringRef Path) {
-    FrontendOpts.SerializedDiagnosticsPath = Path;
+    FrontendOpts.InputsAndOutputs.supplementaryOutputs()
+        .SerializedDiagnosticsPath = Path;
   }
   StringRef getSerializedDiagnosticsPath() const {
-    return FrontendOpts.SerializedDiagnosticsPath;
+    return FrontendOpts.InputsAndOutputs.supplementaryOutputs()
+        .SerializedDiagnosticsPath;
   }
 
   LangOptions &getLangOptions() {
@@ -242,23 +245,9 @@ public:
     return FrontendOpts.ModuleName;
   }
 
-  void addInputFilename(StringRef Filename) {
-    FrontendOpts.Inputs.addInputFilename(Filename);
-  }
-
-  /// Does not take ownership of \p Buf.
-  void addInputBuffer(llvm::MemoryBuffer *Buf) {
-    FrontendOpts.Inputs.addInputBuffer(Buf);
-  }
-
-  void setPrimaryInput(SelectedInput pi) {
-    FrontendOpts.Inputs.setPrimaryInput(pi);
-  }
-
-  void clearInputs() { FrontendOpts.Inputs.clearInputs(); }
 
   StringRef getOutputFilename() const {
-    return FrontendOpts.getSingleOutputFilename();
+    return FrontendOpts.InputsAndOutputs.getSingleOutputFilename();
   }
 
   void setCodeCompletionPoint(llvm::MemoryBuffer *Buf, unsigned Offset) {
@@ -306,8 +295,8 @@ public:
   /// sil-opt, sil-func-extractor, sil-llvm-gen, and sil-nm.
   /// Return value includes the buffer so caller can keep it alive.
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
-  setUpInputForSILTool(StringRef InputFilename, StringRef ModuleNameArg,
-                       bool alwaysSetModuleToMain,
+  setUpInputForSILTool(StringRef inputFilename, StringRef moduleNameArg,
+                       bool alwaysSetModuleToMain, bool bePrimary,
                        serialization::ExtendedValidationInfo &extendedInfo);
   bool hasSerializedAST() {
     return FrontendOpts.InputKind == InputFileKind::IFK_Swift_Library;
@@ -350,16 +339,31 @@ class CompilerInstance {
   enum : unsigned { NO_SUCH_BUFFER = ~0U };
   unsigned MainBufferID = NO_SUCH_BUFFER;
 
-  /// PrimaryBufferID corresponds to PrimaryInput.
-  unsigned PrimaryBufferID = NO_SUCH_BUFFER;
-  bool isWholeModuleCompilation() { return PrimaryBufferID == NO_SUCH_BUFFER; }
+  /// Identifies the set of input buffers in the SourceManager that are
+  /// considered primaries.
+  llvm::SetVector<unsigned> PrimaryBufferIDs;
 
-  SourceFile *PrimarySourceFile = nullptr;
+  /// Identifies the set of SourceFiles that are considered primaries. An
+  /// invariant is that any SourceFile in this set with an associated
+  /// buffer will also have its buffer ID in PrimaryBufferIDs.
+  std::vector<SourceFile *> PrimarySourceFiles;
+
+  /// Return whether there is an entry in PrimaryInputs for buffer \p BufID.
+  bool isPrimaryInput(unsigned BufID) const {
+    return PrimaryBufferIDs.count(BufID) != 0;
+  }
+
+  /// Record in PrimaryBufferIDs the fact that \p BufID is a primary.
+  /// If \p BufID is already in the set, do nothing.
+  void recordPrimaryInputBuffer(unsigned BufID);
+
+  /// Record in PrimarySourceFiles the fact that \p SF is a primary, and
+  /// call recordPrimaryInputBuffer on \p SF's buffer (if it exists).
+  void recordPrimarySourceFile(SourceFile *SF);
+
+  bool isWholeModuleCompilation() { return PrimaryBufferIDs.empty(); }
 
   void createSILModule();
-  void setPrimarySourceFile(SourceFile *SF);
-
-  bool setupForFileAt(unsigned i);
 
 public:
   SourceManager &getSourceMgr() { return SourceMgr; }
@@ -387,7 +391,7 @@ public:
   }
 
   void setReferencedNameTracker(ReferencedNameTracker *tracker) {
-    assert(!PrimarySourceFile && "must be called before performSema()");
+    assert(PrimarySourceFiles.empty() && "must be called before performSema()");
     NameTracker = tracker;
   }
   ReferencedNameTracker *getReferencedNameTracker() {
@@ -429,13 +433,80 @@ public:
     return Invocation.getFrontendOptions().EnableSourceImport;
   }
 
+  /// Gets the set of SourceFiles which are the primary inputs for this
+  /// CompilerInstance.
+  ArrayRef<SourceFile *> getPrimarySourceFiles() {
+    return PrimarySourceFiles;
+  }
+
+  /// Gets the Primary Source File if one exists, otherwise the main
+  /// module. If multiple Primary Source Files exist, fails with an
+  /// assertion.
+  ModuleOrSourceFile getPrimarySourceFileOrMainModule() {
+    if (PrimarySourceFiles.empty())
+      return getMainModule();
+    else
+      return getPrimarySourceFile();
+  }
+
   /// Gets the SourceFile which is the primary input for this CompilerInstance.
-  /// \returns the primary SourceFile, or nullptr if there is no primary input
-  SourceFile *getPrimarySourceFile() { return PrimarySourceFile; }
+  /// \returns the primary SourceFile, or nullptr if there is no primary input;
+  /// if there are _multiple_ primary inputs, fails with an assertion.
+  ///
+  /// FIXME: This should be removed eventually, once there are no longer any
+  /// codepaths that rely on a single primary file.
+  SourceFile *getPrimarySourceFile() {
+    if (PrimarySourceFiles.empty()) {
+      return nullptr;
+    } else {
+      assert(PrimarySourceFiles.size() == 1);
+      return *PrimarySourceFiles.begin();
+    }
+  }
 
   /// \brief Returns true if there was an error during setup.
   bool setup(const CompilerInvocation &Invocation);
 
+private:
+  void setUpLLVMArguments();
+  void setUpDiagnosticOptions();
+  bool setUpModuleLoaders();
+  bool isInputSwift() {
+    return Invocation.getInputKind() == InputFileKind::IFK_Swift;
+  }
+  bool isInSILMode() {
+    return Invocation.getInputKind() == InputFileKind::IFK_SIL;
+  }
+
+  bool setUpInputs();
+  Optional<unsigned> setUpCodeCompletionBuffer();
+
+  /// Set up all state in the CompilerInstance to process the given input file.
+  /// Return true on error.
+  bool setUpForInput(const InputFile &input);
+
+  /// Find a buffer for a given input file and ensure it is recorded in
+  /// SourceMgr, PartialModules, or InputSourceCodeBufferIDs as appropriate.
+  /// Return the buffer ID if it is not already compiled, or None if so.
+  /// Set failed on failure.
+
+  Optional<unsigned> getRecordedBufferID(const InputFile &input, bool &failed);
+
+  /// Given an input file, return a buffer to use for its contents,
+  /// and a buffer for the corresponding module doc file if one exists.
+  /// On failure, return a null pointer for the first element of the returned
+  /// pair.
+  std::pair<std::unique_ptr<llvm::MemoryBuffer>,
+            std::unique_ptr<llvm::MemoryBuffer>>
+  getInputBufferAndModuleDocBufferIfPresent(const InputFile &input);
+
+  /// Try to open the module doc file corresponding to the input parameter.
+  /// Return None for error, nullptr if no such file exists, or the buffer if
+  /// one was found.
+  Optional<std::unique_ptr<llvm::MemoryBuffer>>
+  openModuleDoc(const InputFile &input);
+
+public:
   /// Parses and type-checks all input files.
   void performSema();
 
@@ -445,9 +516,17 @@ public:
   ///
   void performParseOnly(bool EvaluateConditionals = false);
 
-  /// Frees up the ASTContext and SILModule objects that this instance is
-  /// holding on.
-  void freeContextAndSIL();
+private:
+  SourceFile *
+  createSourceFileForMainModule(SourceFileKind FileKind,
+                                SourceFile::ImplicitModuleImportKind ImportKind,
+                                Optional<unsigned> BufferID);
+
+public:
+  void freeASTContext();
+
+  /// Frees up the SILModule that this instance is holding on to.
+  void freeSILModule();
 
 private:
   /// Load stdlib & return true if should continue, i.e. no error
@@ -469,7 +548,7 @@ public: // for static functions in Frontend.cpp
   };
 
 private:
-  void createREPLFile(const ImplicitImports &implicitImports) const;
+  void createREPLFile(const ImplicitImports &implicitImports);
   std::unique_ptr<DelayedParsingCallbacks>
   computeDelayedParsingCallback(bool isPrimary);
 

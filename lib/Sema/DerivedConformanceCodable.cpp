@@ -82,7 +82,7 @@ enum CodableConformanceType {
 /// \param proto The \c ProtocolDecl to check conformance to.
 static CodableConformanceType typeConformsToCodable(TypeChecker &tc,
                                                     DeclContext *context,
-                                                    Type target,
+                                                    Type target, bool isIUO,
                                                     ProtocolDecl *proto) {
   // Some generic types need to be introspected to get at their "true" Codable
   // conformance.
@@ -92,36 +92,9 @@ static CodableConformanceType typeConformsToCodable(TypeChecker &tc,
     target = referenceType->getReferentType();
   }
 
-  if (auto genericType = target->getAs<BoundGenericType>()) {
-    auto *nominalTypeDecl = genericType->getAnyNominal();
-
-    // Implicitly unwrapped optionals need to be unwrapped;
-    // ImplicitlyUnwrappedOptional does not need to conform to Codable directly
-    // -- only its inner type does.
-    if (nominalTypeDecl == tc.Context.getImplicitlyUnwrappedOptionalDecl() ||
-        // FIXME: Remove the following when conditional conformance lands.
-        // Some generic types in the stdlib currently conform to Codable even
-        // when the type they are generic on does not [Optional, Array, Set,
-        // Dictionary].  For synthesizing conformance, we don't want to
-        // consider these types as Codable if the nested type is not Codable.
-        // Look through the generic type parameters of these types recursively
-        // to avoid synthesizing code that will crash at runtime.
-        //
-        // We only want to look through generic params for these types; other
-        // types may validly conform to Codable even if their generic param
-        // types do not.
-        nominalTypeDecl == tc.Context.getOptionalDecl() ||
-        nominalTypeDecl == tc.Context.getArrayDecl() ||
-        nominalTypeDecl == tc.Context.getSetDecl() ||
-        nominalTypeDecl == tc.Context.getDictionaryDecl()) {
-      for (auto paramType : genericType->getGenericArgs()) {
-        if (typeConformsToCodable(tc, context, paramType, proto) != Conforms)
-          return DoesNotConform;
-      }
-
-      return Conforms;
-    }
-  }
+  if (isIUO)
+    return typeConformsToCodable(tc, context, target->getOptionalObjectType(),
+                                 false, proto);
 
   return tc.conformsToProtocol(target, proto, context,
                                ConformanceCheckFlags::Used) ? Conforms
@@ -164,7 +137,9 @@ static CodableConformanceType varConformsToCodable(TypeChecker &tc,
   if (!varDecl->hasType())
     return TypeNotValidated;
 
-  return typeConformsToCodable(tc, context, varDecl->getType(), proto);
+  bool isIUO =
+      varDecl->getAttrs().hasAttribute<ImplicitlyUnwrappedOptionalAttr>();
+  return typeConformsToCodable(tc, context, varDecl->getType(), isIUO, proto);
 }
 
 /// Validates the given CodingKeys enum decl by ensuring its cases are a 1-to-1
@@ -623,15 +598,15 @@ static void deriveBodyEncodable_encode(AbstractFunctionDecl *encodeDecl) {
   // Now need to generate `try container.encode(x, forKey: .x)` for all
   // existing properties. Optional properties get `encodeIfPresent`.
   for (auto *elt : codingKeysEnum->getAllElements()) {
-    // Only ill-formed code would produce multiple results for this lookup.
-    // This would get diagnosed later anyway, so we're free to only look at
-    // the first result here.
-    auto matchingVars = targetDecl->lookupDirect(DeclName(elt->getName()));
+    VarDecl *varDecl;
+    for (auto decl : targetDecl->lookupDirect(DeclName(elt->getName())))
+      if ((varDecl = dyn_cast<VarDecl>(decl)))
+        break;
 
     // self.x
     auto *selfRef = createSelfDeclRef(encodeDecl);
     auto *varExpr = new (C) MemberRefExpr(selfRef, SourceLoc(),
-                                          ConcreteDeclRef(matchingVars[0]),
+                                          ConcreteDeclRef(varDecl),
                                           DeclNameLoc(), /*Implicit=*/true);
 
     // CodingKeys.x
@@ -641,17 +616,15 @@ static void deriveBodyEncodable_encode(AbstractFunctionDecl *encodeDecl) {
 
     // encode(_:forKey:)/encodeIfPresent(_:forKey:)
     auto methodName = C.Id_encode;
-    auto varType = cast<VarDecl>(matchingVars[0])->getType();
+    auto varType = varDecl->getType();
     if (auto referenceType = varType->getAs<ReferenceStorageType>()) {
       // This is a weak/unowned/unmanaged var. Get the inner type before
       // checking optionality.
       varType = referenceType->getReferentType();
     }
 
-    if (varType->getAnyNominal() == C.getOptionalDecl() ||
-        varType->getAnyNominal() == C.getImplicitlyUnwrappedOptionalDecl()) {
+    if (varType->getAnyNominal() == C.getOptionalDecl())
       methodName = C.Id_encodeIfPresent;
-    }
 
     SmallVector<Identifier, 2> argNames{Identifier(), C.Id_forKey};
     DeclName name(C, methodName, argNames);
@@ -766,7 +739,7 @@ static FuncDecl *deriveEncodable_encode(TypeChecker &tc, Decl *parentDecl,
   DeclName name(C, C.Id_encode, params[1]);
   auto *encodeDecl = FuncDecl::create(C, SourceLoc(), StaticSpellingKind::None,
                                       SourceLoc(), name, SourceLoc(),
-                                      /*Throws=*/true, SourceLoc(), SourceLoc(),
+                                      /*Throws=*/true, SourceLoc(),
                                       nullptr, params,
                                       TypeLoc::withoutLoc(returnType),
                                       target);
@@ -893,11 +866,10 @@ static void deriveBodyDecodable_init(AbstractFunctionDecl *initDecl) {
     // Now need to generate `x = try container.decode(Type.self, forKey: .x)`
     // for all existing properties. Optional properties get `decodeIfPresent`.
     for (auto *elt : enumElements) {
-      // Only ill-formed code would produce multiple results for this lookup.
-      // This would get diagnosed later anyway, so we're free to only look at
-      // the first result here.
-      auto matchingVars = targetDecl->lookupDirect(DeclName(elt->getName()));
-      auto *varDecl = cast<VarDecl>(matchingVars[0]);
+      VarDecl *varDecl;
+      for (auto decl : targetDecl->lookupDirect(DeclName(elt->getName())))
+        if ((varDecl = dyn_cast<VarDecl>(decl)))
+          break;
 
       // Don't output a decode statement for a var let with a default value.
       if (varDecl->isLet() && varDecl->getParentInitializer() != nullptr)
@@ -915,8 +887,7 @@ static void deriveBodyDecodable_init(AbstractFunctionDecl *initDecl) {
         varType = referenceType->getReferentType();
       }
 
-      if (varType->getAnyNominal() == C.getOptionalDecl() ||
-          varType->getAnyNominal() == C.getImplicitlyUnwrappedOptionalDecl()) {
+      if (varType->getAnyNominal() == C.getOptionalDecl()) {
         methodName = C.Id_decodeIfPresent;
 
         // The type we request out of decodeIfPresent needs to be unwrapped

@@ -90,7 +90,6 @@ namespace swift {
   class PrecedenceGroupDecl;
   class TupleTypeElt;
   class EnumElementDecl;
-  enum OptionalTypeKind : unsigned;
   class ProtocolDecl;
   class SubstitutableType;
   class SourceManager;
@@ -106,6 +105,10 @@ namespace swift {
   class UnifiedStatsReporter;
 
   enum class KnownProtocolKind : uint8_t;
+
+namespace syntax {
+  class SyntaxArena;
+}
 
 /// \brief The arena in which a particular ASTContext allocation will go.
 enum class AllocationArena {
@@ -380,6 +383,9 @@ public:
                               setVector.size());
   }
 
+  /// Retrive the syntax node memory manager for this context.
+  syntax::SyntaxArena &getSyntaxArena() const;
+
   /// Retrieve the lazy resolver for this context.
   LazyResolver *getLazyResolver() const;
 
@@ -403,23 +409,11 @@ public:
   DECL_CLASS *get##NAME##Decl() const;
 #include "swift/AST/KnownStdlibTypes.def"
 
-  /// Retrieve the declaration of Swift.Optional or ImplicitlyUnwrappedOptional.
-  EnumDecl *getOptionalDecl(OptionalTypeKind kind) const;
-
   /// Retrieve the declaration of Swift.Optional<T>.Some.
   EnumElementDecl *getOptionalSomeDecl() const;
   
   /// Retrieve the declaration of Swift.Optional<T>.None.
   EnumElementDecl *getOptionalNoneDecl() const;
-
-  /// Retrieve the declaration of Swift.ImplicitlyUnwrappedOptional<T>.Some.
-  EnumElementDecl *getImplicitlyUnwrappedOptionalSomeDecl() const;
-
-  /// Retrieve the declaration of Swift.ImplicitlyUnwrappedOptional<T>.None.
-  EnumElementDecl *getImplicitlyUnwrappedOptionalNoneDecl() const;
-
-  EnumElementDecl *getOptionalSomeDecl(OptionalTypeKind kind) const;
-  EnumElementDecl *getOptionalNoneDecl(OptionalTypeKind kind) const;
 
   /// Retrieve the declaration of the "pointee" property of a pointer type.
   VarDecl *getPointerPointeePropertyDecl(PointerTypeKind ptrKind) const;
@@ -482,8 +476,8 @@ public:
   FuncDecl *getEqualIntDecl() const;
 
   /// Retrieve the declaration of
-  /// Swift._mixForSynthesizedHashValue (Int, Int) -> Int.
-  FuncDecl *getMixForSynthesizedHashValueDecl() const;
+  /// Swift._combineHashValues(Int, Int) -> Int.
+  FuncDecl *getCombineHashValuesDecl() const;
 
   /// Retrieve the declaration of Swift._mixInt(Int) -> Int.
   FuncDecl *getMixIntDecl() const;
@@ -751,10 +745,11 @@ public:
   /// \param substitutions The set of substitutions required to produce the
   /// specialized conformance from the generic conformance. This list is
   /// copied so passing a temporary is permitted.
-  SpecializedProtocolConformance *
+  ProtocolConformance *
   getSpecializedConformance(Type type,
                             ProtocolConformance *generic,
-                            SubstitutionList substitutions);
+                            SubstitutionList substitutions,
+                            bool alreadyCheckedCollapsed = false);
 
   /// \brief Produce a specialized conformance, which takes a generic
   /// conformance and substitutions written in terms of the generic
@@ -768,7 +763,7 @@ public:
   /// specialized conformance from the generic conformance. The keys must
   /// be generic parameters, not archetypes, so for example passing in
   /// TypeBase::getContextSubstitutionMap() is OK.
-  SpecializedProtocolConformance *
+  ProtocolConformance *
   getSpecializedConformance(Type type,
                             ProtocolConformance *generic,
                             const SubstitutionMap &substitutions);

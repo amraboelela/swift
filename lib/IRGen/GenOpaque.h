@@ -234,21 +234,6 @@ namespace irgen {
   /// The type must be dynamically known to have extra inhabitant witnesses.
   llvm::Value *emitLoadOfExtraInhabitantCount(IRGenFunction &IGF, SILType T);
 
-  /// Emit a dynamic alloca call to allocate enough memory to hold an object of
-  /// type 'T' and an optional llvm.stackrestore point if 'isInEntryBlock' is
-  /// false.
-  struct DynamicAlloca {
-    llvm::Value *Alloca;
-    llvm::Value *SavedSP;
-    DynamicAlloca(llvm::Value *A, llvm::Value *SP) : Alloca(A), SavedSP(SP) {}
-  };
-  DynamicAlloca emitDynamicAlloca(IRGenFunction &IGF, SILType T,
-                                  bool isInEntryBlock);
-
-  /// Deallocate dynamic alloca's memory if the stack address has an SP restore
-  /// point associated with it.
-  void emitDeallocateDynamicAlloca(IRGenFunction &IGF, StackAddress address);
-
   /// Returns the IsInline flag and the loaded flags value.
   std::pair<llvm::Value *, llvm::Value *>
   emitLoadOfIsInline(IRGenFunction &IGF, llvm::Value *metadata);

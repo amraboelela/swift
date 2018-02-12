@@ -227,6 +227,23 @@ protected:
     B.addRelativeAddress(mangledName);
   }
 
+  /// Add a 32-bit relative offset to a mangled nominal type string
+  /// in the typeref reflection section.
+  void addNominalRef(const NominalTypeDecl *nominal) {
+    IRGenMangler mangler;
+    std::string mangledStr;
+    if (auto proto = dyn_cast<ProtocolDecl>(nominal)) {
+      mangledStr = mangler.mangleBareProtocol(proto);
+    } else {
+      CanType type = nominal->getDeclaredType()->getCanonicalType();
+      mangledStr =
+        mangler.mangleTypeForReflection(type, nominal->getModuleContext(),
+                                        /*isSingleFieldOfBox=*/false);
+    }
+    auto mangledName = IGM.getAddrOfStringForTypeRef(mangledStr);
+    B.addRelativeAddress(mangledName);
+  }
+
   llvm::GlobalVariable *emit(Optional<LinkEntity> entity,
                              const char *section) {
     layout();
@@ -246,7 +263,7 @@ protected:
 
     // Others, such as capture descriptors, do not have a name.
     } else {
-      var = B.finishAndCreateGlobal("\x01l__swift3_reflection_descriptor",
+      var = B.finishAndCreateGlobal("\x01l__swift5_reflection_descriptor",
                                     Alignment(4), /*isConstant*/ true,
                                     llvm::GlobalValue::PrivateLinkage);
     }
@@ -279,9 +296,7 @@ class AssociatedTypeMetadataBuilder : public ReflectionMetadataBuilder {
     auto *M = IGM.getSILModule().getSwiftModule();
 
     addTypeRef(M, Nominal->getDeclaredType()->getCanonicalType());
-
-    auto ProtoTy = Conformance->getProtocol()->getDeclaredType();
-    addTypeRef(M, ProtoTy->getCanonicalType());
+    addNominalRef(Conformance->getProtocol());
 
     B.addInt32(AssociatedTypes.size());
     B.addInt32(AssociatedTypeRecordSize);
@@ -316,6 +331,8 @@ class FieldTypeMetadataBuilder : public ReflectionMetadataBuilder {
                     bool indirect=false) {
     reflection::FieldRecordFlags flags;
     flags.setIsIndirectCase(indirect);
+    if (auto var = dyn_cast<VarDecl>(value))
+      flags.setIsVar(!var->isLet());
 
     B.addInt32(flags.getRawValue());
 
@@ -351,11 +368,12 @@ class FieldTypeMetadataBuilder : public ReflectionMetadataBuilder {
     B.addInt16(fieldRecordSize);
 
     // Imported classes don't need field descriptors
-    if (NTD->hasClangNode()) {
-      assert(isa<ClassDecl>(NTD));
+    if (NTD->hasClangNode() && isa<ClassDecl>(NTD)) {
       B.addInt32(0);
       return;
     }
+
+    assert(!NTD->hasClangNode() || isa<StructDecl>(NTD));
 
     auto properties = NTD->getStoredProperties();
     B.addInt32(std::distance(properties.begin(), properties.end()));
@@ -418,12 +436,12 @@ class FieldTypeMetadataBuilder : public ReflectionMetadataBuilder {
   void layout() override {
     if (NTD->hasClangNode() &&
         !isa<ClassDecl>(NTD) &&
+        !isa<StructDecl>(NTD) &&
         !isa<ProtocolDecl>(NTD))
       return;
 
     PrettyStackTraceDecl DebugStack("emitting field type metadata", NTD);
-    auto type = NTD->getDeclaredType()->getCanonicalType();
-    addTypeRef(NTD->getModuleContext(), type);
+    addNominalRef(NTD);
 
     auto *CD = dyn_cast<ClassDecl>(NTD);
     if (CD && CD->getSuperclass()) {
@@ -766,15 +784,15 @@ static std::string getReflectionSectionName(IRGenModule &IGM,
   case llvm::Triple::COFF:
     assert(FourCC.size() <= 4 &&
            "COFF section name length must be <= 8 characters");
-    OS << ".sw3" << FourCC;
+    OS << ".sw5" << FourCC << "$B";
     break;
   case llvm::Triple::ELF:
-    OS << ".swift3_" << LongName;
+    OS << "swift5_" << LongName;
     break;
   case llvm::Triple::MachO:
     assert(LongName.size() <= 7 &&
            "Mach-O section name length must be <= 16 characters");
-    OS << "__TEXT,__swift3_" << LongName << ", regular, no_dead_strip";
+    OS << "__TEXT,__swift5_" << LongName << ", regular, no_dead_strip";
     break;
   case llvm::Triple::Wasm:
     llvm_unreachable("web assembly object format is not supported.");
@@ -924,6 +942,9 @@ void IRGenModule::emitBuiltinReflectionMetadata() {
 
   for (auto PD : ImportedProtocols)
     emitFieldMetadataRecord(PD);
+
+  for (auto SD : ImportedStructs)
+    emitFieldMetadataRecord(SD);
 
   for (auto builtinType : BuiltinTypes)
     emitBuiltinTypeMetadataRecord(builtinType);

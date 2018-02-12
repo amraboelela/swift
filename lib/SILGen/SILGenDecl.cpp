@@ -1342,7 +1342,8 @@ void SILGenModule::emitExternalWitnessTable(ProtocolConformance *c) {
 
 void SILGenModule::emitExternalDefinition(Decl *d) {
   switch (d->getKind()) {
-  case DeclKind::Func: {
+  case DeclKind::Func:
+  case DeclKind::Accessor: {
     emitFunction(cast<FuncDecl>(d));
     break;
   }
@@ -1381,6 +1382,7 @@ void SILGenModule::emitExternalDefinition(Decl *d) {
     break;
 
   case DeclKind::IfConfig:
+  case DeclKind::PoundDiagnostic:
   case DeclKind::Extension:
   case DeclKind::PatternBinding:
   case DeclKind::EnumCase:

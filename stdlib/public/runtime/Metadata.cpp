@@ -137,23 +137,24 @@ static GenericMetadataCache &unsafeGetInitializedCache(GenericMetadata *metadata
 ClassMetadata *
 swift::swift_allocateGenericClassMetadata(GenericMetadata *pattern,
                                           const void *arguments,
-                                          ClassMetadata *superclass) {
+                                          ClassMetadata *superclass,
+                                          size_t numImmediateMembers) {
   void * const *argumentsAsArray = reinterpret_cast<void * const *>(arguments);
   size_t numGenericArguments = pattern->NumKeyArguments;
 
-  // Right now, we only worry about there being a difference in prefix matter.
-  size_t metadataSize = pattern->MetadataSize;
-  size_t prefixSize = pattern->AddressPoint;
-  size_t extraPrefixSize = 0;
+  size_t metadataSize;
   if (superclass && superclass->isTypeMetadata()) {
-    if (superclass->getClassAddressPoint() > prefixSize) {
-      extraPrefixSize = (superclass->getClassAddressPoint() - prefixSize);
-      prefixSize += extraPrefixSize;
-      metadataSize += extraPrefixSize;
-    }
+    assert(superclass->getClassAddressPoint() <= pattern->AddressPoint);
+
+    metadataSize = (superclass->getClassSize() -
+                    superclass->getClassAddressPoint() +
+                    pattern->AddressPoint +
+                    numImmediateMembers * sizeof(void *));
+    assert(pattern->TemplateSize <= metadataSize);
+  } else {
+    metadataSize = (pattern->TemplateSize +
+                    numImmediateMembers * sizeof(void *));
   }
-  assert(metadataSize == pattern->MetadataSize + extraPrefixSize);
-  assert(prefixSize == pattern->AddressPoint + extraPrefixSize);
 
   char *bytes = GenericCacheEntry::allocate(
                               unsafeGetInitializedCache(pattern).getAllocator(),
@@ -161,37 +162,33 @@ swift::swift_allocateGenericClassMetadata(GenericMetadata *pattern,
                               numGenericArguments,
                               metadataSize)->getData<char>();
 
-  // Copy any extra prefix bytes in from the superclass.
-  if (extraPrefixSize) {
-    memcpy(bytes, (const char*) superclass - prefixSize, extraPrefixSize);
-    bytes += extraPrefixSize;
-  }
-
   // Copy in the metadata template.
-  memcpy(bytes, pattern->getMetadataTemplate(), pattern->MetadataSize);
+  memcpy(bytes, pattern->getMetadataTemplate(), pattern->TemplateSize);
+
+  // Zero out the rest of the metadata.
+  memset(bytes + pattern->TemplateSize, 0,
+         metadataSize - pattern->TemplateSize);
 
   // Okay, move to the address point.
-  bytes += pattern->AddressPoint;
-  ClassMetadata *metadata = reinterpret_cast<ClassMetadata*>(bytes);
+  ClassMetadata *metadata =
+      reinterpret_cast<ClassMetadata *>(bytes + pattern->AddressPoint);
+  auto patternBytes =
+    reinterpret_cast<const char*>(pattern->getMetadataTemplate()) +
+    pattern->AddressPoint;
+  auto patternMetadata = reinterpret_cast<const ClassMetadata*>(patternBytes);
   assert(metadata->isTypeMetadata());
-  
+
   // Overwrite the superclass field.
   metadata->SuperClass = superclass;
   // Adjust the relative reference to the nominal type descriptor.
   if (!metadata->isArtificialSubclass()) {
-    auto patternBytes =
-      reinterpret_cast<const char*>(pattern->getMetadataTemplate()) +
-      pattern->AddressPoint;
-    metadata->setDescription(
-        reinterpret_cast<const ClassMetadata*>(patternBytes)->getDescription());
+    metadata->setDescription(patternMetadata->getDescription());
   }
 
-  // Adjust the class object extents.
-  if (extraPrefixSize) {
-    metadata->setClassSize(metadata->getClassSize() + extraPrefixSize);
-    metadata->setClassAddressPoint(prefixSize);
-  }
-  assert(metadata->getClassAddressPoint() == prefixSize);
+  // The pattern might have private prefix matter prior to the start
+  // of metadata.
+  assert(metadata->getClassAddressPoint() <= pattern->AddressPoint);
+  metadata->setClassSize(metadataSize);
 
   return metadata;
 }
@@ -206,10 +203,10 @@ swift::swift_allocateGenericValueMetadata(GenericMetadata *pattern,
     GenericCacheEntry::allocate(
                               unsafeGetInitializedCache(pattern).getAllocator(),
                               argumentsAsArray, numGenericArguments,
-                              pattern->MetadataSize)->getData<char>();
+                              pattern->TemplateSize)->getData<char>();
 
   // Copy in the metadata template.
-  memcpy(bytes, pattern->getMetadataTemplate(), pattern->MetadataSize);
+  memcpy(bytes, pattern->getMetadataTemplate(), pattern->TemplateSize);
 
   // Okay, move to the address point.
   bytes += pattern->AddressPoint;
@@ -228,8 +225,7 @@ swift::swift_allocateGenericValueMetadata(GenericMetadata *pattern,
 
 /// The primary entrypoint.
 const Metadata *swift::swift_getGenericMetadata(GenericMetadata *pattern,
-                                                const void *arguments)
-    SWIFT_CC(RegisterPreservingCC_IMPL) {
+                                                const void *arguments) {
   auto genericArgs = (const void * const *) arguments;
   size_t numGenericArgs = pattern->NumKeyArguments;
 
@@ -329,13 +325,6 @@ public:
     const uint32_t *ParameterFlags;
     const Metadata *Result;
 
-    Key(FunctionTypeFlags flags,
-        const Metadata *const *params,
-        const uint32_t *paramFlags,
-        const Metadata *result)
-      : Flags(flags), Parameters(params), ParameterFlags(paramFlags),
-        Result(result) {}
-
     FunctionTypeFlags getFlags() const { return Flags; }
     const Metadata *getParameter(unsigned index) const {
       assert(index < Flags.getNumParameters());
@@ -354,13 +343,13 @@ public:
     }
   };
 
-  FunctionCacheEntry(Key key);
+  FunctionCacheEntry(const Key &key);
 
   intptr_t getKeyIntValueForDump() {
     return 0; // No single meaningful value here.
   }
 
-  int compareWithKey(Key key) const {
+  int compareWithKey(const Key &key) const {
     auto keyFlags = key.getFlags();
     if (auto result = compareIntegers(keyFlags.getIntValue(),
                                       Data.Flags.getIntValue()))
@@ -382,7 +371,7 @@ public:
 
     return 0;
   }
-  static size_t getExtraAllocationSize(Key key) {
+  static size_t getExtraAllocationSize(const Key &key) {
     return getExtraAllocationSize(key.Flags);
   }
 
@@ -390,14 +379,12 @@ public:
     return getExtraAllocationSize(Data.Flags);
   }
 
-  static size_t getExtraAllocationSize(const FunctionTypeFlags flags) {
+  static size_t getExtraAllocationSize(const FunctionTypeFlags &flags) {
     const auto numParams = flags.getNumParameters();
     auto size = numParams * sizeof(FunctionTypeMetadata::Parameter);
     if (flags.hasParameterFlags())
       size += numParams * sizeof(uint32_t);
-
-    const auto alignment = sizeof(void *);
-    return (size + alignment - 1) & ~(alignment - 1);
+    return roundUpToAlignment(size, sizeof(void *));
   }
 };
 
@@ -405,6 +392,14 @@ public:
 
 /// The uniquing structure for function type metadata.
 static SimpleGlobalCache<FunctionCacheEntry> FunctionTypes;
+
+const FunctionTypeMetadata *
+swift::swift_getFunctionTypeMetadata0(FunctionTypeFlags flags,
+                                      const Metadata *result) {
+  assert(flags.getNumParameters() == 0
+         && "wrong number of arguments in function metadata flags?!");
+  return swift_getFunctionTypeMetadata(flags, nullptr, nullptr, result);
+}
 
 const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata1(FunctionTypeFlags flags,
@@ -417,21 +412,6 @@ swift::swift_getFunctionTypeMetadata1(FunctionTypeFlags flags,
 }
 
 const FunctionTypeMetadata *
-swift::swift_getFunctionTypeMetadata1WithFlags(FunctionTypeFlags flags,
-                                               const Metadata *arg0,
-                                               ParameterFlags flags0,
-                                               const Metadata *result) {
-  assert(flags.getNumParameters() == 1
-         && "wrong number of arguments in function metadata flags?!");
-  const Metadata *parameters[] = { arg0 };
-  const uint32_t parameterFlags[] = { flags0.getIntValue() };
-  return swift_getFunctionTypeMetadata(flags,
-                                       parameters,
-                                       parameterFlags,
-                                       result);
-}
-
-const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata2(FunctionTypeFlags flags,
                                       const Metadata *arg0,
                                       const Metadata *arg1,
@@ -440,26 +420,6 @@ swift::swift_getFunctionTypeMetadata2(FunctionTypeFlags flags,
          && "wrong number of arguments in function metadata flags?!");
   const Metadata *parameters[] = { arg0, arg1 };
   return swift_getFunctionTypeMetadata(flags, parameters, nullptr, result);
-}
-
-const FunctionTypeMetadata *
-swift::swift_getFunctionTypeMetadata2WithFlags(FunctionTypeFlags flags,
-                                               const Metadata *arg0,
-                                               ParameterFlags flags0,
-                                               const Metadata *arg1,
-                                               ParameterFlags flags1,
-                                               const Metadata *result) {
-  assert(flags.getNumParameters() == 2
-         && "wrong number of arguments in function metadata flags?!");
-  const Metadata *parameters[] = { arg0, arg1 };
-  const uint32_t parameterFlags[] = {
-    flags0.getIntValue(),
-    flags1.getIntValue()
-  };
-  return swift_getFunctionTypeMetadata(flags,
-                                       parameters,
-                                       parameterFlags,
-                                       result);
 }
 
 const FunctionTypeMetadata *
@@ -475,29 +435,6 @@ swift::swift_getFunctionTypeMetadata3(FunctionTypeFlags flags,
 }
 
 const FunctionTypeMetadata *
-swift::swift_getFunctionTypeMetadata3WithFlags(FunctionTypeFlags flags,
-                                               const Metadata *arg0,
-                                               ParameterFlags flags0,
-                                               const Metadata *arg1,
-                                               ParameterFlags flags1,
-                                               const Metadata *arg2,
-                                               ParameterFlags flags2,
-                                               const Metadata *result) {
-  assert(flags.getNumParameters() == 3
-         && "wrong number of arguments in function metadata flags?!");
-  const Metadata *parameters[] = { arg0, arg1, arg2 };
-  const uint32_t parameterFlags[] = {
-    flags0.getIntValue(),
-    flags1.getIntValue(),
-    flags2.getIntValue()
-  };
-  return swift_getFunctionTypeMetadata(flags,
-                                       parameters,
-                                       parameterFlags,
-                                       result);
-}
-
-const FunctionTypeMetadata *
 swift::swift_getFunctionTypeMetadata(FunctionTypeFlags flags,
                                      const Metadata *const *parameters,
                                      const uint32_t *parameterFlags,
@@ -506,7 +443,7 @@ swift::swift_getFunctionTypeMetadata(FunctionTypeFlags flags,
   return &FunctionTypes.getOrInsert(key).first->Data;
 }
 
-FunctionCacheEntry::FunctionCacheEntry(Key key) {
+FunctionCacheEntry::FunctionCacheEntry(const Key &key) {
   auto flags = key.getFlags();
 
   // Pick a value witness table appropriate to the function convention.
@@ -514,7 +451,11 @@ FunctionCacheEntry::FunctionCacheEntry(Key key) {
   // so they share a value witness table.
   switch (flags.getConvention()) {
   case FunctionMetadataConvention::Swift:
-    Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
+    if (!flags.isEscaping()) {
+      Data.ValueWitnesses = &VALUE_WITNESS_SYM(NOESCAPE_FUNCTION_MANGLING);
+    } else {
+      Data.ValueWitnesses = &VALUE_WITNESS_SYM(FUNCTION_MANGLING);
+    }
     break;
 
   case FunctionMetadataConvention::Thin:
@@ -654,8 +595,8 @@ static OpaqueValue *tuple_allocateBuffer(ValueBuffer *buffer,
   if (IsInline)
     return reinterpret_cast<OpaqueValue*>(buffer);
   BoxPair refAndValueAddr(swift_allocBox(metatype));
-  *reinterpret_cast<HeapObject **>(buffer) = refAndValueAddr.first;
-  return refAndValueAddr.second;
+  *reinterpret_cast<HeapObject **>(buffer) = refAndValueAddr.object;
+  return refAndValueAddr.buffer;
 }
 
 /// Generic tuple value witness for 'destroy'.
@@ -952,17 +893,47 @@ void performBasicLayout(BasicLayout &layout,
 } // end anonymous namespace
 
 const TupleTypeMetadata *
-swift::swift_getTupleTypeMetadata(size_t numElements,
+swift::swift_getTupleTypeMetadata(TupleTypeFlags flags,
                                   const Metadata * const *elements,
                                   const char *labels,
                                   const ValueWitnessTable *proposedWitnesses) {
+  auto numElements = flags.getNumElements();
+
   // Bypass the cache for the empty tuple. We might reasonably get called
   // by generic code, like a demangler that produces type objects.
   if (numElements == 0) return &METADATA_SYM(EMPTY_TUPLE_MANGLING);
 
   // Search the cache.
   TupleCacheEntry::Key key = { numElements, elements, labels };
-  return &TupleTypes.getOrInsert(key, proposedWitnesses).first->Data;
+
+  // If we have constant labels, directly check the cache.
+  if (!flags.hasNonConstantLabels())
+    return &TupleTypes.getOrInsert(key, proposedWitnesses).first->Data;
+
+  // If we have non-constant labels, we can't simply record the result.
+  // Look for an existing result, first.
+  if (auto found = TupleTypes.find(key))
+    return &found->Data;
+
+  // Allocate a copy of the labels string within the tuple type allocator.
+  size_t labelsLen = strlen(labels);
+  size_t labelsAllocSize = roundUpToAlignment(labelsLen + 1, sizeof(void*));
+  char *newLabels =
+    (char *)TupleTypes.getAllocator().Allocate(labelsAllocSize, alignof(char));
+  strcpy(newLabels, labels);
+  key.Labels = newLabels;
+
+  // Update the metadata cache.
+  auto result = TupleTypes.getOrInsert(key, proposedWitnesses);
+
+  // If we didn't manage to perform the insertion, free the memory associated
+  // with the copy of the labels: nobody else can reference it.
+  if (!result.second) {
+    TupleTypes.getAllocator().Deallocate(newLabels, labelsAllocSize);
+  }
+
+  // Done.
+  return &result.first->Data;
 }
 
 TupleCacheEntry::TupleCacheEntry(const Key &key,
@@ -1042,7 +1013,8 @@ swift::swift_getTupleTypeMetadata2(const Metadata *elt0, const Metadata *elt1,
                                    const char *labels,
                                    const ValueWitnessTable *proposedWitnesses) {
   const Metadata *elts[] = { elt0, elt1 };
-  return swift_getTupleTypeMetadata(2, elts, labels, proposedWitnesses);
+  return swift_getTupleTypeMetadata(TupleTypeFlags().withNumElements(2),
+                                    elts, labels, proposedWitnesses);
 }
 
 const TupleTypeMetadata *
@@ -1051,7 +1023,60 @@ swift::swift_getTupleTypeMetadata3(const Metadata *elt0, const Metadata *elt1,
                                    const char *labels,
                                    const ValueWitnessTable *proposedWitnesses) {
   const Metadata *elts[] = { elt0, elt1, elt2 };
-  return swift_getTupleTypeMetadata(3, elts, labels, proposedWitnesses);
+  return swift_getTupleTypeMetadata(TupleTypeFlags().withNumElements(3),
+                                    elts, labels, proposedWitnesses);
+}
+
+/***************************************************************************/
+/*** Nominal type descriptors **********************************************/
+/***************************************************************************/
+bool swift::equalContexts(const ContextDescriptor *a,
+                          const ContextDescriptor *b)
+{
+  // Fast path: pointer equality.
+  if (a == b) return true;
+
+  // If either context is null, we're done.
+  if (a == nullptr || b == nullptr)
+    return false;
+
+  // If either descriptor is known to be unique, we're done.
+  if (a->isUnique() || b->isUnique()) return false;
+  
+  // Do the kinds match?
+  if (a->getKind() != b->getKind()) return false;
+  
+  // Do the parents match?
+  if (!equalContexts(a->Parent.get(), b->Parent.get()))
+    return false;
+  
+  // Compare kind-specific details.
+  switch (auto kind = a->getKind()) {
+  case ContextDescriptorKind::Module: {
+    // Modules with the same name are equivalent.
+    auto moduleA = cast<ModuleContextDescriptor>(a);
+    auto moduleB = cast<ModuleContextDescriptor>(b);
+    return strcmp(moduleA->Name.get(), moduleB->Name.get()) == 0;
+  }
+  
+  case ContextDescriptorKind::Extension:
+  case ContextDescriptorKind::Anonymous:
+    // These context kinds are always unique.
+    return false;
+  
+  default:
+    // Types in the same context with the same name are equivalent.
+    if (kind >= ContextDescriptorKind::Type_First
+        && kind <= ContextDescriptorKind::Type_Last) {
+      auto typeA = cast<TypeContextDescriptor>(a);
+      auto typeB = cast<TypeContextDescriptor>(b);
+      return strcmp(typeA->Name.get(), typeB->Name.get()) == 0;
+    }
+    
+    // Otherwise, this runtime doesn't know anything about this context kind.
+    // Conservatively return false.
+    return false;
+  }
 }
 
 /***************************************************************************/
@@ -1282,17 +1307,49 @@ void swift::installCommonValueWitnesses(ValueWitnessTable *vwtable) {
 /*** Structs ***************************************************************/
 /***************************************************************************/
 
+static ValueWitnessTable *getMutableVWTableForInit(StructMetadata *self,
+                                                   StructLayoutFlags flags,
+                                                   bool hasExtraInhabitants) {
+  auto oldTable = self->getValueWitnesses();
+
+  // If we can alter the existing table in-place, do so.
+  if (isValueWitnessTableMutable(flags))
+    return const_cast<ValueWitnessTable*>(oldTable);
+
+  // Otherwise, allocate permanent memory for it and copy the existing table.
+  ValueWitnessTable *newTable;
+  if (hasExtraInhabitants) {
+    void *memory = allocateMetadata(sizeof(ExtraInhabitantsValueWitnessTable),
+                                    alignof(ExtraInhabitantsValueWitnessTable));
+    newTable = new (memory) ExtraInhabitantsValueWitnessTable(
+              *static_cast<const ExtraInhabitantsValueWitnessTable*>(oldTable));
+  } else {
+    void *memory = allocateMetadata(sizeof(ValueWitnessTable),
+                                    alignof(ValueWitnessTable));
+    newTable = new (memory) ValueWitnessTable(*oldTable);
+  }
+  self->setValueWitnesses(newTable);
+
+  return newTable;
+}
+
 /// Initialize the value witness table and struct field offset vector for a
 /// struct, using the "Universal" layout strategy.
-void swift::swift_initStructMetadata_UniversalStrategy(size_t numFields,
+void swift::swift_initStructMetadata(StructMetadata *structType,
+                                     StructLayoutFlags layoutFlags,
+                                     size_t numFields,
                                      const TypeLayout * const *fieldTypes,
-                                     size_t *fieldOffsets,
-                                     ValueWitnessTable *vwtable) {
+                                     size_t *fieldOffsets) {
   auto layout = BasicLayout::initialForValueType();
   performBasicLayout(layout, fieldTypes, numFields,
     [&](size_t i, const TypeLayout *fieldType, size_t offset) {
       assignUnlessEqual(fieldOffsets[i], offset);
     });
+
+  bool hasExtraInhabitants = fieldTypes[0]->flags.hasExtraInhabitants();
+
+  auto vwtable =
+    getMutableVWTableForInit(structType, layoutFlags, hasExtraInhabitants);
 
   vwtable->size = layout.size;
   vwtable->flags = layout.flags;
@@ -1300,7 +1357,7 @@ void swift::swift_initStructMetadata_UniversalStrategy(size_t numFields,
   
   // We have extra inhabitants if the first element does.
   // FIXME: generalize this.
-  if (fieldTypes[0]->flags.hasExtraInhabitants()) {
+  if (hasExtraInhabitants) {
     vwtable->flags = vwtable->flags.withExtraInhabitants(true);
     auto xiVWT = cast<ExtraInhabitantsValueWitnessTable>(vwtable);
     xiVWT->extraInhabitantFlags = fieldTypes[0]->getExtraInhabitantFlags();
@@ -1399,75 +1456,32 @@ static void _swift_initGenericClassObjCName(ClassMetadata *theClass) {
 
 /// Initialize the invariant superclass components of a class metadata,
 /// such as the generic type arguments, field offsets, and so on.
-///
-/// This may also relocate the metadata object if it wasn't allocated
-/// with enough space.
-static ClassMetadata *_swift_initializeSuperclass(ClassMetadata *theClass,
-                                                  bool copyFieldOffsetVectors) {
+static void _swift_initializeSuperclass(ClassMetadata *theClass) {
 #if SWIFT_OBJC_INTEROP
   // If the class is generic, we need to give it a name for Objective-C.
-  if (theClass->getDescription()->GenericParams.isGeneric())
+  if (theClass->getDescription()->isGeneric())
     _swift_initGenericClassObjCName(theClass);
 #endif
 
   const ClassMetadata *theSuperclass = theClass->SuperClass;
 
-  // Relocate the metadata if necessary.
-  //
-  // For now, we assume that relocation is only required when the parent
-  // class has prefix matter we didn't know about.  This isn't consistent
-  // with general class resilience, however.
-  //
-  // FIXME: This part isn't used right now.
-  if (theSuperclass && theSuperclass->isTypeMetadata()) {
-    auto superAP = theSuperclass->getClassAddressPoint();
-    auto oldClassAP = theClass->getClassAddressPoint();
-    if (superAP > oldClassAP) {
-      size_t extraPrefixSize = superAP - oldClassAP;
-      size_t oldClassSize = theClass->getClassSize();
-
-      // Allocate a new metadata object.
-      auto rawNewClass = (char*) malloc(extraPrefixSize + oldClassSize);
-      auto rawOldClass = (const char*) theClass;
-      auto rawSuperclass = (const char*) theSuperclass;
-
-      // Copy the extra prefix from the superclass.
-      memcpy((void**) (rawNewClass),
-             (void* const *) (rawSuperclass - superAP),
-             extraPrefixSize);
-      // Copy the rest of the data from the derived class.
-      memcpy((void**) (rawNewClass + extraPrefixSize),
-             (void* const *) (rawOldClass - oldClassAP),
-             oldClassSize);
-
-      // Update the class extents on the new metadata object.
-      theClass = reinterpret_cast<ClassMetadata*>(rawNewClass + oldClassAP);
-      theClass->setClassAddressPoint(superAP);
-      theClass->setClassSize(extraPrefixSize + oldClassSize);
-
-      // The previous metadata should be global data, so we have no real
-      // choice but to drop it on the floor.
-    }
-  }
-
   // Copy the class's immediate methods from the nominal type descriptor
   // to the class metadata.
   {
     const auto *description = theClass->getDescription();
-    auto &genericParams = description->GenericParams;
-
     auto *classWords = reinterpret_cast<void **>(theClass);
 
-    if (genericParams.Flags.hasVTable()) {
+    if (description->hasVTable()) {
       auto *vtable = description->getVTableDescriptor();
       for (unsigned i = 0, e = vtable->VTableSize; i < e; ++i) {
-        classWords[vtable->VTableOffset + i] = vtable->getMethod(i);
+        classWords[vtable->getVTableOffset(theClass) + i]
+          = description->getMethod(i);
       }
     }
   }
 
   if (theSuperclass == nullptr)
-    return theClass;
+    return;
 
   // If any ancestor classes have generic parameters, field offset vectors
   // or virtual methods, inherit them.
@@ -1479,28 +1493,28 @@ static ClassMetadata *_swift_initializeSuperclass(ClassMetadata *theClass,
   auto *superWords = reinterpret_cast<const uintptr_t *>(theSuperclass);
   while (ancestor && ancestor->isTypeMetadata()) {
     const auto *description = ancestor->getDescription();
-    auto &genericParams = description->GenericParams;
 
     // Copy the generic requirements.
-    if (genericParams.hasGenericRequirements()) {
-      unsigned numParamWords = genericParams.NumGenericRequirements;
-      memcpy(classWords + genericParams.Offset,
-             superWords + genericParams.Offset,
-             numParamWords * sizeof(uintptr_t));
+    if (description->isGeneric()
+        && description->getGenericContextHeader().hasArguments()) {
+      memcpy(classWords + description->getGenericArgumentOffset(ancestor),
+             superWords + description->getGenericArgumentOffset(ancestor),
+             description->getGenericContextHeader().getNumArguments() *
+               sizeof(uintptr_t));
     }
 
     // Copy the vtable entries.
-    if (genericParams.Flags.hasVTable()) {
+    if (description->hasVTable()) {
       auto *vtable = description->getVTableDescriptor();
-      memcpy(classWords + vtable->VTableOffset,
-             superWords + vtable->VTableOffset,
+      memcpy(classWords + vtable->getVTableOffset(ancestor),
+             superWords + vtable->getVTableOffset(ancestor),
              vtable->VTableSize * sizeof(uintptr_t));
     }
 
     // Copy the field offsets.
-    if (copyFieldOffsetVectors &&
-        description->Class.hasFieldOffsetVector()) {
-      unsigned fieldOffsetVector = description->Class.FieldOffsetVectorOffset;
+    if (description->Class.hasFieldOffsetVector()) {
+      unsigned fieldOffsetVector =
+        description->Class.getFieldOffsetVectorOffset(ancestor);
       memcpy(classWords + fieldOffsetVector,
              superWords + fieldOffsetVector,
              description->Class.NumFields * sizeof(uintptr_t));
@@ -1516,8 +1530,6 @@ static ClassMetadata *_swift_initializeSuperclass(ClassMetadata *theClass,
     = (const ClassMetadata *)object_getClass(id_const_cast(theSuperclass));
   theMetaclass->SuperClass = theSuperMetaclass;
 #endif
-
-  return theClass;
 }
 
 #if SWIFT_OBJC_INTEROP
@@ -1528,14 +1540,52 @@ static MetadataAllocator &getResilientMetadataAllocator() {
 }
 #endif
 
+ClassMetadata *
+swift::swift_relocateClassMetadata(ClassMetadata *self,
+                                   size_t templateSize,
+                                   size_t numImmediateMembers) {
+  const ClassMetadata *superclass = self->SuperClass;
+
+  size_t metadataSize;
+  if (superclass && superclass->isTypeMetadata()) {
+    metadataSize = (superclass->getClassSize() -
+                    superclass->getClassAddressPoint() +
+                    self->getClassAddressPoint() +
+                    numImmediateMembers * sizeof(void *));
+  } else {
+    metadataSize = (templateSize +
+                    numImmediateMembers * sizeof(void *));
+  }
+
+  if (templateSize < metadataSize) {
+    auto rawNewClass = (char*) malloc(metadataSize);
+    auto rawOldClass = (const char*) self;
+    rawOldClass -= self->getClassAddressPoint();
+
+    memcpy(rawNewClass, rawOldClass, templateSize);
+    memset(rawNewClass + templateSize, 0,
+           metadataSize - templateSize);
+
+    rawNewClass += self->getClassAddressPoint();
+    auto *newClass = (ClassMetadata *) rawNewClass;
+    newClass->setClassSize(metadataSize);
+
+    assert(newClass->isTypeMetadata());
+
+    return newClass;
+  }
+
+  return self;
+}
+
 /// Initialize the field offset vector for a dependent-layout class, using the
 /// "Universal" layout strategy.
-ClassMetadata *
+void
 swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
                                                  size_t numFields,
                                            const TypeLayout * const *fieldTypes,
                                                  size_t *fieldOffsets) {
-  self = _swift_initializeSuperclass(self, /*copyFieldOffsetVectors=*/true);
+  _swift_initializeSuperclass(self);
 
   // Start layout by appending to a standard heap object header.
   size_t size, alignMask;
@@ -1707,8 +1757,6 @@ swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
     }
   }
 #endif
-
-  return self;
 }
 
 /***************************************************************************/
@@ -2342,19 +2390,39 @@ ExistentialTypeMetadata::getWitnessTable(const OpaqueValue *container,
   return witnessTables[i];
 }
 
+#ifndef NDEBUG
+/// Determine whether any of the given protocols is class-bound.
+static bool anyProtocolIsClassBound(
+                                size_t numProtocols,
+                                const ProtocolDescriptor * const *protocols) {
+  for (unsigned i = 0; i != numProtocols; ++i) {
+    if (protocols[i]->Flags.getClassConstraint()
+          == ProtocolClassConstraint::Class)
+      return true;
+  }
+
+  return false;
+}
+#endif
+
 /// \brief Fetch a uniqued metadata for an existential type. The array
 /// referenced by \c protocols will be sorted in-place.
 const ExistentialTypeMetadata *
-swift::swift_getExistentialTypeMetadata(ProtocolClassConstraint classConstraint,
-                                        const Metadata *superclassConstraint,
-                                        size_t numProtocols,
-                                        const ProtocolDescriptor **protocols)
-    SWIFT_CC(RegisterPreservingCC_IMPL) {
+swift::swift_getExistentialTypeMetadata(
+                                  ProtocolClassConstraint classConstraint,
+                                  const Metadata *superclassConstraint,
+                                  size_t numProtocols,
+                                  const ProtocolDescriptor * const *protocols) {
 
   // We entrust that the compiler emitting the call to
   // swift_getExistentialTypeMetadata always sorts the `protocols` array using
   // a globally stable ordering that's consistent across modules.
 
+  // Ensure that the "class constraint" bit is set whenever we have a
+  // superclass or a one of the protocols is class-bound.
+  assert(classConstraint == ProtocolClassConstraint::Class ||
+         (!superclassConstraint &&
+          !anyProtocolIsClassBound(numProtocols, protocols)));
   ExistentialCacheEntry::Key key = {
     superclassConstraint, classConstraint, numProtocols, protocols
   };
@@ -2479,14 +2547,15 @@ static Lazy<ForeignTypeState> ForeignTypes;
 const ForeignTypeMetadata *
 swift::swift_getForeignTypeMetadata(ForeignTypeMetadata *nonUnique) {
   // Fast path: check the invasive cache.
-  if (auto unique = nonUnique->getCachedUniqueMetadata()) {
-    return unique;
+  auto cache = nonUnique->getCacheValue();
+  if (cache.isInitialized()) {
+    return cache.getCachedUniqueMetadata();
   }
 
   // Okay, check the global map.
   auto &foreignTypes = ForeignTypes.get();
   GlobalString key(nonUnique->getName());
-  bool hasInit = nonUnique->hasInitializationFunction();
+  bool hasInit = cache.hasInitializationFunction();
 
   const ForeignTypeMetadata *uniqueMetadata;
   bool inserted;
@@ -2607,8 +2676,8 @@ template <> OpaqueValue *Metadata::allocateBoxForExistentialIn(ValueBuffer *buff
 
   // Allocate the box.
   BoxPair refAndValueAddr(swift_allocBox(this));
-  buffer->PrivateData[0] = refAndValueAddr.first;
-  return refAndValueAddr.second;
+  buffer->PrivateData[0] = refAndValueAddr.object;
+  return refAndValueAddr.buffer;
 }
 
 template <> OpaqueValue *Metadata::allocateBufferIn(ValueBuffer *buffer) const {
@@ -2665,6 +2734,28 @@ void _swift_debug_verifyTypeLayoutAttribute(Metadata *type,
 }
 #endif
 
+StringRef swift::getStringForMetadataKind(MetadataKind kind) {
+  switch (kind) {
+#define METADATAKIND(NAME, VALUE) \
+    case MetadataKind::NAME: \
+      return #NAME;
+#include "swift/ABI/MetadataKind.def"
+  }
+
+  swift_runtime_unreachable("Unhandled metadata kind?!");
+}
+
+#ifndef NDEBUG
+template <> void Metadata::dump() const {
+  printf("TargetMetadata.\n");
+  printf("Kind: %s.\n", getStringForMetadataKind(getKind()).data());
+  printf("Value Witnesses: %p.\n", getValueWitnesses());
+  printf("Class Object: %p.\n", getClassObject());
+  printf("Type Context Description: %p.\n", getTypeContextDescriptor());
+  printf("Generic Args: %p.\n", getGenericArgs());
+}
+#endif
+
 /***************************************************************************/
 /*** Protocol witness tables ***********************************************/
 /***************************************************************************/
@@ -2718,7 +2809,8 @@ static bool doesNotRequireInstantiation(GenericWitnessTable *genericTable) {
   if (genericTable->Instantiator.isNull() &&
       genericTable->WitnessTablePrivateSizeInWords == 0 &&
       genericTable->WitnessTableSizeInWords ==
-        genericTable->Protocol->NumRequirements) {
+        (genericTable->Protocol->NumRequirements +
+           WitnessTableFirstRequirementOffset)) {
     return true;
   }
 
@@ -2739,11 +2831,12 @@ allocateWitnessTable(GenericWitnessTable *genericTable,
 
   // The number of mandatory requirements, i.e. requirements lacking
   // default implementations.
-  size_t numMandatoryRequirements = protocol->NumMandatoryRequirements;
-  assert(numPatternWitnesses >= numMandatoryRequirements);
+  assert(numPatternWitnesses >= protocol->NumMandatoryRequirements +
+                                    WitnessTableFirstRequirementOffset);
 
   // The total number of requirements.
-  size_t numRequirements = protocol->NumRequirements;
+  size_t numRequirements =
+    protocol->NumRequirements + WitnessTableFirstRequirementOffset;
   assert(numPatternWitnesses <= numRequirements);
 
   // Number of bytes for any private storage used by the conformance itself.
@@ -2776,7 +2869,9 @@ allocateWitnessTable(GenericWitnessTable *genericTable,
 
   // Fill in any default requirements.
   for (size_t i = numPatternWitnesses, e = numRequirements; i < e; ++i) {
-    void *defaultImpl = requirements[i].DefaultImplementation.get();
+    size_t requirementIndex = i - WitnessTableFirstRequirementOffset;
+    void *defaultImpl =
+      requirements[requirementIndex].DefaultImplementation.get();
     assert(defaultImpl &&
            "no default implementation for missing requirement");
     table[i] = defaultImpl;
@@ -2787,7 +2882,7 @@ allocateWitnessTable(GenericWitnessTable *genericTable,
 
 const WitnessTable *swift::swift_getGenericWitnessTable(
     GenericWitnessTable *genericTable, const Metadata *type,
-    void *const *instantiationArgs) SWIFT_CC(RegisterPreservingCC_IMPL) {
+    void *const *instantiationArgs) {
   if (doesNotRequireInstantiation(genericTable)) {
     return genericTable->Pattern;
   }
@@ -2817,8 +2912,6 @@ const WitnessTable *swift::swift_getGenericWitnessTable(
 
   return entry->get(genericTable);
 }
-
-uint64_t swift::RelativeDirectPointerNullPtr = 0;
 
 /***************************************************************************/
 /*** Allocator implementation **********************************************/
@@ -2915,3 +3008,6 @@ void MetadataAllocator::Deallocate(const void *allocation, size_t size) {
                                                  std::memory_order_relaxed);
 }
 
+void *swift::allocateMetadata(size_t size, size_t alignment) {
+  return MetadataAllocator().Allocate(size, alignment);
+}

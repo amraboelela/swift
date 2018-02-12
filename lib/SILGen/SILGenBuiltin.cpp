@@ -718,11 +718,10 @@ static ManagedValue emitBuiltinCastReferenceFromBridgeObject(
     SILValue result = SILUndef::get(destType, SGF.SGM.M);
     return ManagedValue::forUnmanaged(result);
   }
-  
-  SILValue result = SGF.B.createBridgeObjectToRef(loc, args[0].forward(SGF),
-                                                  destType);
-  return SGF.emitManagedRValueWithCleanup(result);
+
+  return SGF.B.createBridgeObjectToRef(loc, args[0], destType);
 }
+
 static ManagedValue emitBuiltinCastBitPatternFromBridgeObject(
                                                   SILGenFunction &SGF,
                                                   SILLocation loc,
@@ -737,6 +736,19 @@ static ManagedValue emitBuiltinCastBitPatternFromBridgeObject(
                                                    wordType);
   return ManagedValue::forUnmanaged(result);
 }
+
+static ManagedValue emitBuiltinClassifyBridgeObject(SILGenFunction &SGF,
+                                                    SILLocation loc,
+                                                    SubstitutionList subs,
+                                                    ArrayRef<ManagedValue> args,
+                                                    SGFContext C) {
+  assert(args.size() == 1 && "classify should have one argument");
+  assert(subs.empty() && "classify should not have subs");
+
+  SILValue result = SGF.B.createClassifyBridgeObject(loc, args[0].getValue());
+  return ManagedValue::forUnmanaged(result);
+}
+
 
 // This should only accept as an operand type single-refcounted-pointer types,
 // class existentials, or single-payload enums (optional). Type checking must be

@@ -202,6 +202,11 @@ Type CompleteGenericTypeResolver::resolveDependentMemberType(
     if (auto proto =
           concrete->getDeclContext()
             ->getAsProtocolOrProtocolExtensionContext()) {
+      // Fast path: if there are no type parameters in the concrete type, just
+      // return it.
+      if (!concrete->getDeclaredInterfaceType()->hasTypeParameter())
+        return concrete->getDeclaredInterfaceType();
+
       tc.validateDecl(proto);
       auto subMap = SubstitutionMap::getProtocolSubstitutions(
                       proto, baseTy, ProtocolConformanceRef(proto));
@@ -262,7 +267,7 @@ void TypeChecker::checkGenericParamList(GenericSignatureBuilder *builder,
             isa<AbstractFunctionDecl>(lookupDC) ||
             isa<SubscriptDecl>(lookupDC)) &&
            "not a proper generic parameter context?");
-    options = TR_GenericSignature;
+    options = TypeResolutionFlags::GenericSignature;
   }    
 
   // First, add the generic parameters to the generic signature builder.
@@ -352,6 +357,50 @@ void TypeChecker::validateRequirements(
         isErrorResult(builder->addRequirement(&req, dc->getParentModule())))
       req.setInvalid();
   }
+}
+
+std::string
+TypeChecker::gatherGenericParamBindingsText(
+                              ArrayRef<Type> types,
+                              TypeArrayView<GenericTypeParamType> genericParams,
+                              TypeSubstitutionFn substitutions) {
+  llvm::SmallPtrSet<GenericTypeParamType *, 2> knownGenericParams;
+  for (auto type : types) {
+    if (type.isNull()) continue;
+
+    type.visit([&](Type type) {
+      if (auto gp = type->getAs<GenericTypeParamType>()) {
+        knownGenericParams.insert(
+            gp->getCanonicalType()->castTo<GenericTypeParamType>());
+      }
+    });
+  }
+
+  if (knownGenericParams.empty())
+    return "";
+
+  SmallString<128> result;
+  for (auto gp : genericParams) {
+    auto canonGP = gp->getCanonicalType()->castTo<GenericTypeParamType>();
+    if (!knownGenericParams.count(canonGP))
+      continue;
+
+    if (result.empty())
+      result += " [with ";
+    else
+      result += ", ";
+    result += gp->getName().str();
+    result += " = ";
+
+    auto type = substitutions(canonGP);
+    if (!type)
+      return "";
+
+    result += type.getString();
+  }
+
+  result += "]";
+  return result.str().str();
 }
 
 void
@@ -471,9 +520,9 @@ static bool checkGenericFuncSignature(TypeChecker &tc,
   if (auto fn = dyn_cast<FuncDecl>(func)) {
     if (!fn->getBodyResultTypeLoc().isNull()) {
       // Check the result type of the function.
-      TypeResolutionOptions options = TR_AllowIUO;
+      TypeResolutionOptions options = TypeResolutionFlags::AllowIUO;
       if (fn->hasDynamicSelf())
-        options |= TR_DynamicSelfResult;
+        options |= TypeResolutionFlags::DynamicSelfResult;
 
       if (tc.validateType(fn->getBodyResultTypeLoc(), fn, options, &resolver)) {
         badType = true;
@@ -494,9 +543,10 @@ static bool checkGenericFuncSignature(TypeChecker &tc,
     // If this is a materializeForSet, infer requirements from the
     // storage type instead, since it's not part of the accessor's
     // type signature.
-    if (fn->getAccessorKind() == AccessorKind::IsMaterializeForSet) {
+    auto accessor = dyn_cast<AccessorDecl>(fn);
+    if (accessor && accessor->isMaterializeForSet()) {
       if (builder) {
-        auto *storage = fn->getAccessorStorageDecl();
+        auto *storage = accessor->getStorage();
         if (auto *subscriptDecl = dyn_cast<SubscriptDecl>(storage)) {
           auto source =
             GenericSignatureBuilder::FloatingRequirementSource::forInferred(
@@ -827,7 +877,14 @@ void TypeChecker::configureInterfaceType(AbstractFunctionDecl *func,
 
     // Adjust result type for failability.
     if (ctor->getFailability() != OTK_None)
-      funcTy = OptionalType::get(ctor->getFailability(), funcTy);
+      funcTy = OptionalType::get(funcTy);
+
+    // Set the IUO attribute on the decl if this was declared with !.
+    if (ctor->getFailability() == OTK_ImplicitlyUnwrappedOptional) {
+      auto *forceAttr =
+          new (Context) ImplicitlyUnwrappedOptionalAttr(/* implicit= */ true);
+      ctor->getAttrs().add(forceAttr);
+    }
 
     initFuncTy = funcTy;
   } else {
@@ -899,9 +956,8 @@ void TypeChecker::configureInterfaceType(AbstractFunctionDecl *func,
     cast<ConstructorDecl>(func)->setInitializerInterfaceType(initFuncTy);
 
   // We get bogus errors here with generic subscript materializeForSet.
-  if (!isa<FuncDecl>(func) ||
-      cast<FuncDecl>(func)->getAccessorKind() !=
-        AccessorKind::IsMaterializeForSet)
+  if (!isa<AccessorDecl>(func) ||
+      !cast<AccessorDecl>(func)->isMaterializeForSet())
     checkReferencedGenericParams(func, sig, *this);
 }
 
@@ -931,7 +987,7 @@ static bool checkGenericSubscriptSignature(TypeChecker &tc,
 
   // Check the element type.
   badType |= tc.validateType(subscript->getElementTypeLoc(), subscript,
-                             TR_AllowIUO, &resolver);
+                             TypeResolutionFlags::AllowIUO, &resolver);
 
   // Infer requirements from it.
   if (genericParams && builder) {
@@ -946,9 +1002,7 @@ static bool checkGenericSubscriptSignature(TypeChecker &tc,
 
   // Check the indices.
   auto params = subscript->getIndices();
-
-  TypeResolutionOptions options;
-  options |= TR_SubscriptParameters;
+  TypeResolutionOptions options = TypeResolutionFlags::SubscriptParameters;
 
   badType |= tc.typeCheckParameterList(params, subscript,
                                        options,
@@ -1216,7 +1270,9 @@ void TypeChecker::validateGenericTypeSignature(GenericTypeDecl *typeDecl) {
 
 RequirementCheckResult TypeChecker::checkGenericArguments(
     DeclContext *dc, SourceLoc loc, SourceLoc noteLoc, Type owner,
-    GenericSignature *genericSig, TypeSubstitutionFn substitutions,
+    TypeArrayView<GenericTypeParamType> genericParams,
+    ArrayRef<Requirement> requirements,
+    TypeSubstitutionFn substitutions,
     LookupConformanceFn conformances,
     UnsatisfiedDependency *unsatisfiedDependency,
     ConformanceCheckOptions conformanceOptions,
@@ -1224,13 +1280,16 @@ RequirementCheckResult TypeChecker::checkGenericArguments(
     SubstOptions options) {
   bool valid = true;
 
+  // We handle any conditional requirements ourselves.
+  conformanceOptions |= ConformanceCheckFlags::SkipConditionalRequirements;
+
   struct RequirementSet {
     ArrayRef<Requirement> Requirements;
     SmallVector<ParentConditionalConformance, 4> Parents;
   };
 
   SmallVector<RequirementSet, 8> pendingReqs;
-  pendingReqs.push_back({genericSig->getRequirements(), {}});
+  pendingReqs.push_back({requirements, {}});
 
   while (!pendingReqs.empty()) {
     auto current = pendingReqs.pop_back_val();
@@ -1255,6 +1314,13 @@ RequirementCheckResult TypeChecker::checkGenericArguments(
       if (kind != RequirementKind::Layout) {
         rawSecondType = rawReq.getSecondType();
         secondType = req.getSecondType();
+      }
+
+      // Don't do further checking on error types.
+      if (firstType->hasError() || (secondType && secondType->hasError())) {
+        // Another requirement will fail later; just continue.
+        valid = false;
+        continue;
       }
 
       bool requirementFailure = false;
@@ -1316,12 +1382,16 @@ RequirementCheckResult TypeChecker::checkGenericArguments(
         break;
       }
 
-      case RequirementKind::Layout: {
-        // TODO: Statically check if a the first type
-        // conforms to the layout constraint, once we
-        // support such static checks.
-        continue;
-      }
+      case RequirementKind::Layout:
+        // TODO: Statically check other layout constraints, once they can
+        // be spelled in Swift.
+        if (req.getLayoutConstraint()->isClass() &&
+            !firstType->satisfiesClassConstraint()) {
+          diagnostic = diag::type_is_not_a_class;
+          diagnosticNote = diag::anyobject_requirement;
+          requirementFailure = true;
+        }
+        break;
 
       case RequirementKind::Superclass:
         // Superclass requirements.
@@ -1352,9 +1422,15 @@ RequirementCheckResult TypeChecker::checkGenericArguments(
       if (loc.isValid()) {
         // FIXME: Poor source-location information.
         diagnose(loc, diagnostic, owner, firstType, secondType);
+
+        std::string genericParamBindingsText;
+        if (!genericParams.empty()) {
+          genericParamBindingsText =
+            gatherGenericParamBindingsText(
+              {rawFirstType, rawSecondType}, genericParams, substitutions);
+        }
         diagnose(noteLoc, diagnosticNote, rawFirstType, rawSecondType,
-                 genericSig->gatherGenericParamBindingsText(
-                     {rawFirstType, rawSecondType}, substitutions));
+                 genericParamBindingsText);
 
         ParentConditionalConformance::diagnoseConformanceStack(Diags, noteLoc,
                                                                current.Parents);

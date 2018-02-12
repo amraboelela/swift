@@ -255,6 +255,10 @@ function(_add_variant_c_compile_flags)
   else()
     list(APPEND result "-DNDEBUG")
   endif()
+  
+  if(SWIFT_ENABLE_RUNTIME_FUNCTION_COUNTERS)
+    list(APPEND result "-DSWIFT_ENABLE_RUNTIME_FUNCTION_COUNTERS")
+  endif()
 
   if(CFLAGS_ANALYZE_CODE_COVERAGE)
     list(APPEND result "-fprofile-instr-generate"
@@ -311,6 +315,14 @@ function(_add_variant_swift_compile_flags
 
   if(enable_assertions)
     list(APPEND result "-D" "INTERNAL_CHECKS_ENABLED")
+  endif()
+
+  if (SWIFT_ENABLE_GUARANTEED_NORMAL_ARGUMENTS)
+    list(APPEND result "-Xfrontend" "-enable-guaranteed-normal-arguments")
+  endif()
+  
+  if(SWIFT_ENABLE_RUNTIME_FUNCTION_COUNTERS)
+    list(APPEND result "-D" "SWIFT_ENABLE_RUNTIME_FUNCTION_COUNTERS")
   endif()
 
   set("${result_var_name}" "${result}" PARENT_SCOPE)
@@ -392,14 +404,15 @@ function(_add_variant_link_flags)
   endif()
 
   if(NOT SWIFT_COMPILER_IS_MSVC_LIKE)
-    if(SWIFT_ENABLE_GOLD_LINKER AND
-       "${SWIFT_SDK_${LFLAGS_SDK}_OBJECT_FORMAT}" STREQUAL "ELF")
-      list(APPEND result "-fuse-ld=gold")
-    endif()
-    if(SWIFT_ENABLE_LLD_LINKER OR
+    find_program(LDLLD_PATH "ld.lld")
+    # Strangely, macOS finds lld and then can't find it when using -fuse-ld=
+    if((SWIFT_ENABLE_LLD_LINKER AND LDLLD_PATH AND NOT APPLE) OR
        ("${LFLAGS_SDK}" STREQUAL "WINDOWS" AND
         NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "WINDOWS"))
       list(APPEND result "-fuse-ld=lld")
+    elseif(SWIFT_ENABLE_GOLD_LINKER AND
+       "${SWIFT_SDK_${LFLAGS_SDK}_OBJECT_FORMAT}" STREQUAL "ELF")
+      list(APPEND result "-fuse-ld=gold")
     endif()
   endif()
 
@@ -607,7 +620,7 @@ function(_add_swift_library_single target name)
   set(SWIFTLIB_SINGLE_options
       SHARED STATIC OBJECT_LIBRARY IS_STDLIB IS_STDLIB_CORE IS_SDK_OVERLAY
       TARGET_LIBRARY FORCE_BUILD_FOR_HOST_SDK
-      API_NOTES_NON_OVERLAY DONT_EMBED_BITCODE FORCE_BUILD_OPTIMIZED)
+      API_NOTES_NON_OVERLAY DONT_EMBED_BITCODE FORCE_BUILD_OPTIMIZED NOSWIFTRT)
   cmake_parse_arguments(SWIFTLIB_SINGLE
     "${SWIFTLIB_SINGLE_options}"
     "MODULE_TARGET;SDK;ARCHITECTURE;INSTALL_IN_COMPONENT;DEPLOYMENT_VERSION_OSX;DEPLOYMENT_VERSION_IOS;DEPLOYMENT_VERSION_TVOS;DEPLOYMENT_VERSION_WATCHOS"
@@ -716,19 +729,6 @@ function(_add_swift_library_single target name)
     set(SWIFTLIB_SINGLE_API_NOTES "${module_name}")
   endif()
 
-  # On platforms that use ELF binaries we add markers for metadata sections in
-  # the shared libraries using these object files.  This wouldn't be necessary
-  # if the link was done by the swift binary: rdar://problem/19007002
-  if(SWIFTLIB_SINGLE_TARGET_LIBRARY AND
-     "${SWIFT_SDK_${SWIFTLIB_SINGLE_SDK}_OBJECT_FORMAT}" STREQUAL "ELF")
-    if("${libkind}" STREQUAL "SHARED")
-      set(arch_subdir "${SWIFTLIB_DIR}/${SWIFTLIB_SINGLE_SUBDIR}")
-
-      set(SWIFT_SECTIONS_OBJECT_BEGIN "${arch_subdir}/swift_begin.o")
-      set(SWIFT_SECTIONS_OBJECT_END   "${arch_subdir}/swift_end.o")
-    endif()
-  endif()
-
   if("${SWIFTLIB_SINGLE_SDK}" STREQUAL "WINDOWS")
     swift_windows_include_for_arch(${SWIFTLIB_SINGLE_ARCHITECTURE} SWIFTLIB_INCLUDE)
     swift_windows_generate_sdk_vfs_overlay(SWIFTLIB_SINGLE_VFS_OVERLAY_FLAGS)
@@ -828,12 +828,27 @@ function(_add_swift_library_single target name)
   endif()
 
   add_library("${target}" ${libkind}
-      ${SWIFT_SECTIONS_OBJECT_BEGIN}
-      ${SWIFTLIB_SINGLE_SOURCES}
-      ${SWIFTLIB_SINGLE_EXTERNAL_SOURCES}
-      ${INCORPORATED_OBJECT_LIBRARIES_EXPRESSIONS}
-      ${SWIFTLIB_SINGLE_XCODE_WORKAROUND_SOURCES}
-      ${SWIFT_SECTIONS_OBJECT_END})
+              ${SWIFTLIB_SINGLE_SOURCES}
+              ${SWIFTLIB_SINGLE_EXTERNAL_SOURCES}
+              ${INCORPORATED_OBJECT_LIBRARIES_EXPRESSIONS}
+              ${SWIFTLIB_SINGLE_XCODE_WORKAROUND_SOURCES})
+  if(("${SWIFT_SDK_${SWIFTLIB_SINGLE_SDK}_OBJECT_FORMAT}" STREQUAL "ELF" OR
+      "${SWIFT_SDK_${SWIFTLIB_SINGLE_SDK}_OBJECT_FORMAT}" STREQUAL "COFF") AND
+     SWIFTLIB_TARGET_LIBRARY)
+    if("${libkind}" STREQUAL "SHARED" AND NOT SWIFTLIB_SINGLE_NOSWIFTRT)
+      # TODO(compnerd) switch to the generator expression when cmake is upgraded
+      # to a version which supports it.
+      # target_sources(${target}
+      #                PRIVATE
+      #                  $<TARGET_OBJECTS:swiftImageRegistrationObject${SWIFT_SDK_${SWIFTLIB_SINGLE_SDK}_OBJECT_FORMAT}-${SWIFT_SDK_${SWIFTLIB_SINGLE_SDK}_LIB_SUBDIR}-${SWIFTLIB_SINGLE_ARCHITECTURE}>)
+      target_sources(${target}
+                     PRIVATE
+                       "${SWIFTLIB_DIR}/${SWIFTLIB_SINGLE_SUBDIR}/swiftrt${CMAKE_C_OUTPUT_EXTENSION}")
+      set_source_files_properties("${SWIFTLIB_DIR}/${SWIFTLIB_SINGLE_SUBDIR}/swiftrt${CMAKE_C_OUTPUT_EXTENSION}"
+                                  PROPERTIES
+                                    GENERATED 1)
+    endif()
+  endif()
   _set_target_prefix_and_suffix("${target}" "${libkind}" "${SWIFTLIB_SINGLE_SDK}")
 
   if(SWIFTLIB_SINGLE_TARGET_LIBRARY)
@@ -854,6 +869,9 @@ function(_add_swift_library_single target name)
   if("${SWIFTLIB_SINGLE_SDK}" STREQUAL "WINDOWS")
     swift_windows_include_for_arch(${SWIFTLIB_SINGLE_ARCHITECTURE} SWIFTLIB_INCLUDE)
     target_include_directories("${target}" SYSTEM PRIVATE ${SWIFTLIB_INCLUDE})
+    set_target_properties(${target}
+                          PROPERTIES
+                            CXX_STANDARD 14)
   endif()
 
   if("${SWIFTLIB_SINGLE_SDK}" STREQUAL "WINDOWS" AND NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
@@ -870,17 +888,6 @@ function(_add_swift_library_single target name)
       add_dependencies(${target}_IMPLIB ${${target}_IMPORT_LIBRARY})
     endif()
     set_property(TARGET "${target}" PROPERTY NO_SONAME ON)
-  endif()
-
-  # The section metadata objects are generated sources, and we need to tell CMake
-  # not to expect to find them prior to their generation.
-  if(SWIFTLIB_SINGLE_TARGET_LIBRARY AND
-     "${SWIFT_SDK_${SWIFTLIB_SINGLE_SDK}_OBJECT_FORMAT}" STREQUAL "ELF")
-    if("${libkind}" STREQUAL "SHARED")
-      set_source_files_properties(${SWIFT_SECTIONS_OBJECT_BEGIN} PROPERTIES GENERATED 1)
-      set_source_files_properties(${SWIFT_SECTIONS_OBJECT_END} PROPERTIES GENERATED 1)
-      add_dependencies("${target}" section_magic)
-    endif()
   endif()
 
   llvm_update_compile_flags(${target})
@@ -1363,7 +1370,8 @@ function(add_swift_library name)
   set(SWIFTLIB_options
       SHARED STATIC OBJECT_LIBRARY IS_STDLIB IS_STDLIB_CORE IS_SDK_OVERLAY
       TARGET_LIBRARY FORCE_BUILD_FOR_HOST_SDK
-      API_NOTES_NON_OVERLAY DONT_EMBED_BITCODE HAS_SWIFT_CONTENT FORCE_BUILD_OPTIMIZED)
+      API_NOTES_NON_OVERLAY DONT_EMBED_BITCODE HAS_SWIFT_CONTENT
+      FORCE_BUILD_OPTIMIZED NOSWIFTRT)
   cmake_parse_arguments(SWIFTLIB
     "${SWIFTLIB_options}"
     "INSTALL_IN_COMPONENT;DEPLOYMENT_VERSION_OSX;DEPLOYMENT_VERSION_IOS;DEPLOYMENT_VERSION_TVOS;DEPLOYMENT_VERSION_WATCHOS"
@@ -1636,6 +1644,7 @@ function(add_swift_library name)
           ${SWIFTLIB_TARGET_LIBRARY_keyword}
           ${SWIFTLIB_FORCE_BUILD_FOR_HOST_SDK_keyword}
           ${SWIFTLIB_FORCE_BUILD_OPTIMIZED_keyword}
+          ${SWIFTLIB_NOSWIFTRT_keyword}
           INSTALL_IN_COMPONENT "${SWIFTLIB_INSTALL_IN_COMPONENT}"
           DEPLOYMENT_VERSION_OSX "${SWIFTLIB_DEPLOYMENT_VERSION_OSX}"
           DEPLOYMENT_VERSION_IOS "${SWIFTLIB_DEPLOYMENT_VERSION_IOS}"
@@ -1692,12 +1701,14 @@ function(add_swift_library name)
           set(codesign_arg CODESIGN)
         endif()
         precondition(THIN_INPUT_TARGETS)
-        _add_swift_lipo_target(
-            SDK ${sdk}
-            TARGET ${lipo_target}
-            OUTPUT ${UNIVERSAL_LIBRARY_NAME}
-            ${codesign_arg}
-            ${THIN_INPUT_TARGETS})
+        _add_swift_lipo_target(SDK
+                                 ${sdk}
+                               TARGET
+                                 ${lipo_target}
+                               OUTPUT
+                                 ${UNIVERSAL_LIBRARY_NAME}
+                               ${codesign_arg}
+                               ${THIN_INPUT_TARGETS})
 
         # Cache universal libraries for dependency purposes
         set(UNIVERSAL_LIBRARY_NAMES_${SWIFT_SDK_${sdk}_LIB_SUBDIR}
@@ -1743,11 +1754,13 @@ function(add_swift_library name)
               "${name}-${SWIFT_SDK_${sdk}_LIB_SUBDIR}-static")
           set(UNIVERSAL_LIBRARY_NAME
               "${SWIFTSTATICLIB_DIR}/${SWIFT_SDK_${sdk}_LIB_SUBDIR}/${CMAKE_STATIC_LIBRARY_PREFIX}${name}${CMAKE_STATIC_LIBRARY_SUFFIX}")
-          _add_swift_lipo_target(
-              SDK ${sdk}
-              TARGET ${lipo_target_static}
-              OUTPUT "${UNIVERSAL_LIBRARY_NAME}"
-              ${THIN_INPUT_TARGETS_STATIC})
+          _add_swift_lipo_target(SDK
+                                   ${sdk}
+                                 TARGET
+                                   ${lipo_target_static}
+                                 OUTPUT
+                                   "${UNIVERSAL_LIBRARY_NAME}"
+                                 ${THIN_INPUT_TARGETS_STATIC})
           swift_install_in_component("${SWIFTLIB_INSTALL_IN_COMPONENT}"
               FILES "${UNIVERSAL_LIBRARY_NAME}"
               DESTINATION "lib${LLVM_LIBDIR_SUFFIX}/swift_static/${resource_dir_sdk_subdir}"
@@ -1760,14 +1773,18 @@ function(add_swift_library name)
         # Add Swift standard library targets as dependencies to the top-level
         # convenience target.
         if(SWIFTLIB_TARGET_LIBRARY)
+          set(FILTERED_UNITTESTS
+                swiftStdlibCollectionUnittest
+                swiftStdlibUnicodeUnittest)
+
           foreach(arch ${SWIFT_SDK_${sdk}_ARCHITECTURES})
             set(VARIANT_SUFFIX "-${SWIFT_SDK_${sdk}_LIB_SUBDIR}-${arch}")
-            if(TARGET "swift-stdlib${VARIANT_SUFFIX}" AND TARGET "swift-test-stdlib${VARIANT_SUFFIX}")
+            if(TARGET "swift-stdlib${VARIANT_SUFFIX}" AND
+               TARGET "swift-test-stdlib${VARIANT_SUFFIX}")
               add_dependencies("swift-stdlib${VARIANT_SUFFIX}"
                   ${lipo_target}
                   ${lipo_target_static})
-              if((NOT "${name}" STREQUAL "swiftStdlibCollectionUnittest") AND
-                 (NOT "${name}" STREQUAL "swiftStdlibUnicodeUnittest"))
+              if(NOT "${name}" IN_LIST FILTERED_UNITTESTS)
                 add_dependencies("swift-test-stdlib${VARIANT_SUFFIX}"
                     ${lipo_target}
                     ${lipo_target_static})

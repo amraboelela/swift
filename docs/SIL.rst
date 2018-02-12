@@ -1269,7 +1269,7 @@ composed of literals. The static initializer is represented as a list of
 literal and aggregate instructions where the last instruction is the top-level
 value of the static initializer::
 
-  sil_global hidden @_T04test3varSiv : $Int {
+  sil_global hidden @$S4test3varSiv : $Int {
     %0 = integer_literal $Builtin.Int64, 27
     %initval = struct $Int (%0 : $Builtin.Int64)
   }
@@ -2311,6 +2311,7 @@ mark_uninitialized
   sil-instruction ::= 'mark_uninitialized' '[' mu_kind ']' sil-operand
   mu_kind ::= 'var'
   mu_kind ::= 'rootself'
+  mu_kind ::= 'crossmodulerootself'
   mu_kind ::= 'derivedself'
   mu_kind ::= 'derivedselfonly'
   mu_kind ::= 'delegatingself'
@@ -2328,6 +2329,9 @@ the mark_uninitialized instruction refers to:
 
 - ``var``: designates the start of a normal variable live range
 - ``rootself``: designates ``self`` in a struct, enum, or root class
+- ``crossmodulerootself``: same as ``rootself``, but in a case where it's not
+    really safe to treat ``self`` as a root because the original module might add
+    more stored properties. This is only used for Swift 4 compatibility.
 - ``derivedself``: designates ``self`` in a derived (non-root) class
 - ``derivedselfonly``: designates ``self`` in a derived (non-root) class whose stored properties have already been initialized
 - ``delegatingself``: designates ``self`` on a struct, enum, or class in a delegating constructor (one that calls self.init)
@@ -4603,6 +4607,21 @@ in the following ways:
 The function types may also differ in attributes, except that the
 ``convention`` attribute cannot be changed.
 
+convert_escape_to_noescape
+```````````````````````````
+::
+
+  sil-instruction ::= 'convert_escape_to_noescape' sil-operand 'to' sil-type
+  %1 = convert_escape_to_noescape %0 : $T -> U to $@noescape T' -> U'
+  // %0 must be of a function type $T -> U ABI-compatible with $T' -> U'
+  //   (see convert_function)
+  // %1 will be of the trivial type $@noescape T -> U
+
+Converts an escaping (non-trivial) function type to an ``@noescape`` trivial
+function type. Something must guarantee the lifetime of the input ``%0`` for the
+duration of the use ``%1``.
+
+
 thin_function_to_pointer
 ````````````````````````
 
@@ -4612,6 +4631,19 @@ pointer_to_thin_function
 ````````````````````````
 
 TODO
+
+classify_bridge_object
+``````````````````````
+::
+
+  sil-instruction ::= 'classify_bridge_object' sil-operand
+
+  %1 = classify_bridge_object %0 : $Builtin.BridgeObject
+  // %1 will be of type (Builtin.Int1, Builtin.Int1)
+
+Decodes the bit representation of the specified ``Builtin.BridgeObject`` value,
+returning two bits: the first indicates whether the object is an Objective-C
+object, the second indicates whether it is an Objective-C tagged pointer value.
 
 ref_to_bridge_object
 ````````````````````

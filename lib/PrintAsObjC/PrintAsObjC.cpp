@@ -243,9 +243,8 @@ private:
       auto VD = dyn_cast<ValueDecl>(member);
       if (!VD || !shouldInclude(VD) || isa<TypeDecl>(VD))
         continue;
-      if (auto FD = dyn_cast<FuncDecl>(VD))
-        if (FD->isAccessor())
-          continue;
+      if (isa<AccessorDecl>(VD))
+        continue;
       if (!AllowDelayed && delayedMembers.count(VD)) {
         os << "// '" << VD->getFullName() << "' below\n";
         continue;
@@ -299,6 +298,26 @@ private:
       }
     }
     if (includeQuotes) os << '"';
+  }
+
+  // For a given Decl and Type, if the type is not an optional return
+  // the type and OTK_None as the optionality. If the type is
+  // optional, return the underlying object type, and an optionality
+  // that is based on the type but overridden by the
+  // ImplicitlyUnwrappedOptionalAttr on the decl.
+  static std::pair<Type, OptionalTypeKind>
+  getObjectTypeAndOptionality(const Decl *D, Type ty) {
+    OptionalTypeKind kind;
+    if (auto objTy =
+            ty->getReferenceStorageReferent()->getOptionalObjectType()) {
+      kind = OTK_Optional;
+      if (D->getAttrs().hasAttribute<ImplicitlyUnwrappedOptionalAttr>())
+        kind = OTK_ImplicitlyUnwrappedOptional;
+
+      return {objTy, kind};
+    }
+
+    return {ty, OTK_None};
   }
 
   // Ignore other declarations.
@@ -434,7 +453,11 @@ private:
         (clangParam && isNSUInteger(clangParam->getType()))) {
       os << "NSUInteger";
     } else {
-      print(param->getInterfaceType(), OTK_None, Identifier(), IsFunctionParam);
+      OptionalTypeKind kind;
+      Type objTy;
+      std::tie(objTy, kind) =
+          getObjectTypeAndOptionality(param, param->getInterfaceType());
+      print(objTy, kind, Identifier(), IsFunctionParam);
     }
     os << ")";
 
@@ -500,6 +523,12 @@ private:
       return M.getASTContext().TheEmptyTupleType;
     return result;
   }
+
+  /// Returns true if \p sel is the no-argument selector 'init'.
+  static bool selectorIsInit(ObjCSelector sel) {
+    return sel.getNumArgs() == 0 &&
+           sel.getSelectorPieces().front().str() == "init";
+  }
                                           
   void printAbstractFunctionAsMethod(AbstractFunctionDecl *AFD,
                                      bool isClassMethod,
@@ -535,10 +564,12 @@ private:
                          NullabilityPrintKind::ContextSensitive);
       } else {
         auto func = cast<FuncDecl>(AFD);
-        OptionalTypeKind optionalKind;
-        (void)func->getResultInterfaceType()
-            ->getAnyOptionalObjectType(optionalKind);
-        printNullability(optionalKind,
+        OptionalTypeKind kind;
+        Type objTy;
+        std::tie(objTy, kind) =
+          getObjectTypeAndOptionality(func, func->getResultInterfaceType());
+
+        printNullability(kind,
                          NullabilityPrintKind::ContextSensitive);
       }
 
@@ -549,7 +580,10 @@ private:
     } else if (clangMethod && isNSUInteger(clangMethod->getReturnType())) {
       os << "NSUInteger";
     } else {
-      print(resultTy, OTK_None);
+      OptionalTypeKind kind;
+      Type objTy;
+      std::tie(objTy, kind) = getObjectTypeAndOptionality(AFD, resultTy);
+      print(objTy, kind);
     }
 
     os << ")";
@@ -605,6 +639,7 @@ private:
 
     bool skipAvailability = false;
     bool makeNewUnavailable = false;
+    bool makeNewExplicitlyAvailable = false;
     // Swift designated initializers are Objective-C designated initializers.
     if (auto ctor = dyn_cast<ConstructorDecl>(AFD)) {
       if (ctor->hasStubImplementation()
@@ -614,12 +649,34 @@ private:
         os << " SWIFT_UNAVAILABLE";
         skipAvailability = true;
         // If -init is unavailable, then +new should be, too:
-        const bool selectorIsInit = selector.getNumArgs() == 0 && selectorPieces.front().str() == "init";
-        makeNewUnavailable = selectorIsInit;
-      } else if (ctor->isDesignatedInit() &&
-          !isa<ProtocolDecl>(ctor->getDeclContext())) {
-        os << " OBJC_DESIGNATED_INITIALIZER";
+        makeNewUnavailable = selectorIsInit(selector);
+      } else {
+        if (ctor->isDesignatedInit() &&
+            !isa<ProtocolDecl>(ctor->getDeclContext())) {
+          os << " OBJC_DESIGNATED_INITIALIZER";
+        }
+
+        // If -init is newly available, +new should be as well if the class
+        // inherits from NSObject.
+        if (selectorIsInit(selector) && !ctor->getOverriddenDecl()) {
+          auto container = ctor->getDeclContext();
+          auto *classDecl = container->getAsClassOrClassExtensionContext();
+          if (!classDecl) {
+            assert(container->getAsProtocolOrProtocolExtensionContext());
+          } else {
+            while (classDecl->hasSuperclass()) {
+              classDecl = classDecl->getSuperclassDecl();
+              assert(classDecl &&
+                     "shouldn't PrintAsObjC with invalid superclasses");
+            }
+            if (classDecl->hasClangNode() &&
+                classDecl->getNameStr() == "NSObject") {
+              makeNewExplicitlyAvailable = true;
+            }
+          }
+        }
       }
+
       if (!looksLikeInitMethod(AFD->getObjCSelector())) {
         os << " SWIFT_METHOD_FAMILY(init)";
       }
@@ -639,9 +696,8 @@ private:
       printAvailability(AFD);
     }
 
-    if (isa<FuncDecl>(AFD) && cast<FuncDecl>(AFD)->isAccessor()) {
-      printSwift3ObjCDeprecatedInference(
-                              cast<FuncDecl>(AFD)->getAccessorStorageDecl());
+    if (auto accessor = dyn_cast<AccessorDecl>(AFD)) {
+      printSwift3ObjCDeprecatedInference(accessor->getStorage());
     } else {
       printSwift3ObjCDeprecatedInference(AFD);
     }
@@ -649,7 +705,17 @@ private:
     os << ";\n";
 
     if (makeNewUnavailable) {
-        os << "+ (nonnull instancetype)new SWIFT_UNAVAILABLE;\n";
+      assert(!makeNewExplicitlyAvailable);
+      // Downgrade this to a warning in pre-Swift-5 mode. This isn't perfect
+      // because it's a diagnostic inflicted on /clients/, but it's close
+      // enough. It really is invalid to call +new when -init is unavailable.
+      StringRef annotationName = "SWIFT_UNAVAILABLE_MSG";
+      if (!M.getASTContext().isSwiftVersionAtLeast(5))
+        annotationName = "SWIFT_DEPRECATED_MSG";
+      os << "+ (nonnull instancetype)new " << annotationName
+         << "(\"-init is unavailable\");\n";
+    } else if (makeNewExplicitlyAvailable) {
+      os << "+ (nonnull instancetype)new;\n";
     }
   }
 
@@ -665,8 +731,12 @@ private:
     // The result type may be a partial function type we need to close
     // up later.
     PrintMultiPartType multiPart(*this);
-    visitPart(resultTy, OTK_None);
-    
+
+    OptionalTypeKind kind;
+    Type objTy;
+    std::tie(objTy, kind) = getObjectTypeAndOptionality(FD, resultTy);
+    visitPart(objTy, kind);
+
     assert(FD->getAttrs().hasAttribute<CDeclAttr>()
            && "not a cdecl function");
     
@@ -677,10 +747,13 @@ private:
     if (params->size()) {
       interleave(*params,
                  [&](const ParamDecl *param) {
-                   print(param->getInterfaceType(), OTK_None, param->getName(),
-                         IsFunctionParam);
+                   OptionalTypeKind kind;
+                   Type objTy;
+                   std::tie(objTy, kind) = getObjectTypeAndOptionality(
+                       param, param->getInterfaceType());
+                   print(objTy, kind, param->getName(), IsFunctionParam);
                  },
-                 [&]{ os << ", "; });
+                 [&] { os << ", "; });
     } else {
       os << "void";
     }
@@ -890,7 +963,7 @@ private:
   }
 
   bool maybePrintIBOutletCollection(Type ty) {
-    if (auto unwrapped = ty->getAnyOptionalObjectType())
+    if (auto unwrapped = ty->getOptionalObjectType())
       ty = unwrapped;
 
     auto genericTy = ty->getAs<BoundGenericStructType>();
@@ -950,7 +1023,7 @@ private:
     // allowing that object to disappear.
     Type ty = VD->getInterfaceType();
     if (auto weakTy = ty->getAs<WeakStorageType>()) {
-      auto innerTy = weakTy->getReferentType()->getAnyOptionalObjectType();
+      auto innerTy = weakTy->getReferentType()->getOptionalObjectType();
       auto innerClass = innerTy->getClassOrBoundGenericClass();
       if ((innerClass &&
            innerClass->getForeignClassKind()!=ClassDecl::ForeignKind::CFType) ||
@@ -963,9 +1036,10 @@ private:
       os << ", unsafe_unretained";
     } else {
       Type copyTy = ty;
-      OptionalTypeKind optionalType;
-      if (auto unwrappedTy = copyTy->getAnyOptionalObjectType(optionalType))
+      bool isOptional;
+      if (auto unwrappedTy = copyTy->getOptionalObjectType(isOptional))
         copyTy = unwrappedTy;
+
       auto nominal = copyTy->getNominalOrBoundGenericNominal();
       if (nominal && isa<StructDecl>(nominal)) {
         if (nominal == ctx.getArrayDecl() ||
@@ -980,8 +1054,8 @@ private:
           // Don't print unsafe_unretained twice.
           if (auto boundTy = copyTy->getAs<BoundGenericType>()) {
             ty = boundTy->getGenericArgs().front();
-            if (optionalType != OTK_None)
-              ty = OptionalType::get(optionalType, ty);
+            if (isOptional)
+              ty = OptionalType::get(ty);
           }
         }
       } else if (auto fnTy = copyTy->getAs<FunctionType>()) {
@@ -1037,7 +1111,10 @@ private:
       if (hasReservedName)
         os << "_";
     } else {
-      print(ty, OTK_None, objCName);
+      OptionalTypeKind kind;
+      Type objTy;
+      std::tie(objTy, kind) = getObjectTypeAndOptionality(VD, ty);
+      print(objTy, kind, objCName);
     }
 
     printSwift3ObjCDeprecatedInference(VD);
@@ -1594,9 +1671,8 @@ private:
                               optionalKind))
       return;
 
-    OptionalTypeKind innerOptionalKind;
-    if (auto underlying = BGT->getAnyOptionalObjectType(innerOptionalKind)) {
-      visitPart(underlying, innerOptionalKind);
+    if (auto underlying = BGT->getOptionalObjectType()) {
+      visitPart(underlying, OTK_Optional);
     } else
       visitType(BGT, optionalKind);
   }
@@ -1785,11 +1861,6 @@ private:
     visitPart(SST->getSinglyDesugaredType(), optionalKind);
   }
 
-  void visitDictionaryType(DictionaryType *DT, 
-                           Optional<OptionalTypeKind> optionalKind) {
-    visitPart(DT->getSinglyDesugaredType(), optionalKind);
-  }
-
   void visitDynamicSelfType(DynamicSelfType *DST, 
                             Optional<OptionalTypeKind> optionalKind) {
     printNullability(optionalKind, NullabilityPrintKind::ContextSensitive);
@@ -1840,7 +1911,7 @@ public:
     PrettyStackTraceType trace(M.getASTContext(), "printing", ty);
 
     if (isFuncParam)
-      if (auto fnTy = ty->lookThroughAllAnyOptionalTypes()
+      if (auto fnTy = ty->lookThroughAllOptionalTypes()
                         ->getAs<AnyFunctionType>())
         if (fnTy->isNoEscape())
           os << "SWIFT_NOESCAPE ";
@@ -1922,10 +1993,6 @@ class ReferencedTypeFinder : public TypeVisitor<ReferencedTypeFinder> {
     visit(sugar->getSinglyDesugaredType());
   }
 
-  void visitDictionaryType(DictionaryType *DT) {
-    visit(DT->getSinglyDesugaredType());
-  }
-
   void visitProtocolCompositionType(ProtocolCompositionType *composition) {
     auto layout = composition->getExistentialLayout();
     if (layout.superclass)
@@ -1995,7 +2062,7 @@ using SmallSetVector =
 template <typename T>
 struct PointerLikeComparator {
   using Traits = llvm::PointerLikeTypeTraits<T>;
-  bool operator()(T lhs, T rhs) {
+  bool operator()(T lhs, T rhs) const {
     return std::less<void*>()(Traits::getAsVoidPointer(lhs),
                               Traits::getAsVoidPointer(rhs));
   }

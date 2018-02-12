@@ -91,6 +91,10 @@ static void addMandatoryOptPipeline(SILPassPipelinePlan &P,
   P.addOwnershipModelEliminator();
   P.addMandatoryInlining();
   P.addPredictableMemoryOptimizations();
+
+  // Diagnostic ConstantPropagation must be rerun on deserialized functions
+  // because it is sensitive to the assert configuration.
+  // Consequently, certain optimization passes beyond this point will also rerun.
   P.addDiagnosticConstantPropagation();
   P.addGuaranteedARCOpts();
   P.addDiagnoseUnreachable();
@@ -404,6 +408,9 @@ static void addLowLevelPassPipeline(SILPassPipelinePlan &P) {
   P.addReleaseDevirtualizer();
 
   addSSAPasses(P, OptimizationLevelKind::LowLevel);
+
+  P.addDeadObjectElimination();
+  P.addObjectOutliner();
   P.addDeadStoreElimination();
 
   // We've done a lot of optimizations on this function, attempt to FSO.

@@ -48,6 +48,10 @@ Action(llvm::cl::desc("kind:"), llvm::cl::init(RefactoringKind::None),
                       "simplify-long-number", "Perform simplify long number literal refactoring"),
            clEnumValN(RefactoringKind::ConvertStringsConcatenationToInterpolation,
                       "strings-concatenation-to-interpolation", "Perform strings concatenation to interpolation refactoring"),
+           clEnumValN(RefactoringKind::ExpandTernaryExpr,
+                     "expand-ternary-expr", "Perform expand ternary expression"),
+           clEnumValN(RefactoringKind::ConvertToTernaryExpr,
+                      "convert-to-ternary-expr", "Perform convert to ternary expression"),
            clEnumValN(RefactoringKind::ExtractFunction,
                       "extract-function", "Perform extract function refactoring"),
            clEnumValN(RefactoringKind::MoveMembersToExtension,
@@ -229,12 +233,13 @@ int main(int argc, char *argv[]) {
   Invocation.setMainExecutablePath(
     llvm::sys::fs::getMainExecutable(argv[0],
     reinterpret_cast<void *>(&anchorForGetMainExecutable)));
-  Invocation.addInputFilename(options::SourceFilename);
+  Invocation.getFrontendOptions().InputsAndOutputs.addInputFile(
+      options::SourceFilename);
   Invocation.getLangOptions().AttachCommentsToDecls = true;
   Invocation.getLangOptions().KeepSyntaxInfoInSourceFile = true;
 
   for (auto FileName : options::InputFilenames)
-    Invocation.addInputFilename(FileName);
+    Invocation.getFrontendOptions().InputsAndOutputs.addInputFile(FileName);
   Invocation.setModuleName(options::ModuleName);
   CompilerInstance CI;
   // Display diagnostics to stderr.

@@ -250,9 +250,7 @@ SILFunction *CapturePropagation::specializeConstClosure(PartialApplyInst *PAI,
   // expressed as literals. So its callee signature will be the same as its
   // return signature.
   auto NewFTy = getPartialApplyInterfaceResultType(PAI);
-  NewFTy = Lowering::adjustFunctionType(
-      NewFTy, SILFunctionType::Representation::Thin,
-      OrigF->getModule().getOptions().EnableGuaranteedClosureContexts);
+  NewFTy = NewFTy->getWithRepresentation(SILFunctionType::Representation::Thin);
 
   GenericEnvironment *GenericEnv = nullptr;
   if (NewFTy->getGenericSignature())
@@ -263,7 +261,7 @@ SILFunction *CapturePropagation::specializeConstClosure(PartialApplyInst *PAI,
       OrigF->getEntryCount(), OrigF->isThunk(), OrigF->getClassSubclassScope(),
       OrigF->getInlineStrategy(), OrigF->getEffectsKind(),
       /*InsertBefore*/ OrigF, OrigF->getDebugScope());
-  if (OrigF->hasUnqualifiedOwnership()) {
+  if (!OrigF->hasQualifiedOwnership()) {
     NewF->setUnqualifiedOwnership();
   }
   DEBUG(llvm::dbgs() << "  Specialize callee as ";

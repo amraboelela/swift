@@ -64,7 +64,6 @@ DictionaryTestSuite.test("AssociatedTypes") {
     iteratorType: DictionaryIterator<MinimalHashableValue, OpaqueValue<Int>>.self,
     subSequenceType: Slice<Collection>.self,
     indexType: DictionaryIndex<MinimalHashableValue, OpaqueValue<Int>>.self,
-    indexDistanceType: Int.self,
     indicesType: DefaultIndices<Collection>.self)
 }
 
@@ -75,6 +74,13 @@ DictionaryTestSuite.test("sizeof") {
 #else
   expectEqual(8, MemoryLayout.size(ofValue: dict))
 #endif
+}
+
+DictionaryTestSuite.test("Index.Hashable") {
+  let d = [1: "meow", 2: "meow", 3: "meow"]
+  let e = Dictionary(uniqueKeysWithValues: zip(d.indices, d))
+  expectEqual(d.count, e.count)
+  expectNotNil(e[d.startIndex])
 }
 
 DictionaryTestSuite.test("valueDestruction") {
@@ -117,6 +123,14 @@ func getCOWFastDictionary() -> Dictionary<Int, Int> {
   d[10] = 1010
   d[20] = 1020
   d[30] = 1030
+  return d
+}
+
+func getCOWFastDictionaryWithCOWValues() -> Dictionary<Int, TestValueCOWTy> {
+  var d = Dictionary<Int, TestValueCOWTy>(minimumCapacity: 10)
+  d[10] = TestValueCOWTy(1010)
+  d[20] = TestValueCOWTy(1020)
+  d[30] = TestValueCOWTy(1030)
   return d
 }
 
@@ -216,8 +230,6 @@ DictionaryTestSuite.test("COW.Slow.SubscriptWithIndexDoesNotReallocate") {
 
 
 DictionaryTestSuite.test("COW.Fast.SubscriptWithKeyDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
   var d = getCOWFastDictionary()
   var identity1 = d._rawIdentifier()
@@ -273,8 +285,6 @@ DictionaryTestSuite.test("COW.Fast.SubscriptWithKeyDoesNotReallocate")
 }
 
 DictionaryTestSuite.test("COW.Slow.SubscriptWithKeyDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
 
   var d = getCOWSlowDictionary()
@@ -485,8 +495,6 @@ DictionaryTestSuite.test("COW.Slow.AddDoesNotReallocate") {
 }
 
 DictionaryTestSuite.test("COW.Fast.MergeSequenceDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
 
   do {
@@ -610,8 +618,6 @@ DictionaryTestSuite.test("COW.Fast.MergeSequenceDoesNotReallocate")
 }
 
 DictionaryTestSuite.test("COW.Fast.MergeDictionaryDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
 
   do {
@@ -805,6 +811,32 @@ DictionaryTestSuite.test("COW.Fast.DefaultedSubscriptDoesNotReallocate") {
   }
 }
 
+DictionaryTestSuite.test("COW.Fast.DefaultedSubscriptDoesNotCopyValue") {
+  do {
+    var d = getCOWFastDictionaryWithCOWValues()
+    let identityValue30 = d[30]!.baseAddress
+
+    // Increment the value without having to reallocate the underlying Base
+    // instance, as uniquely referenced.
+    d[30, default: TestValueCOWTy()].value += 1
+    assert(identityValue30 == d[30]!.baseAddress)
+    assert(d[30]!.value == 1031)
+
+    let value40 = TestValueCOWTy()
+    let identityValue40 = value40.baseAddress
+
+    // Increment the value, reallocating the underlying Base, as not uniquely
+    // referenced.
+    d[40, default: value40].value += 1
+    assert(identityValue40 != d[40]!.baseAddress)
+    assert(d[40]!.value == 1)
+
+    // Keep variables alive.
+    _fixLifetime(d)
+    _fixLifetime(value40)
+  }
+}
+
 DictionaryTestSuite.test("COW.Fast.IndexForKeyDoesNotReallocate") {
   var d = getCOWFastDictionary()
   var identity1 = d._rawIdentifier()
@@ -881,8 +913,6 @@ DictionaryTestSuite.test("COW.Slow.IndexForKeyDoesNotReallocate") {
 
 
 DictionaryTestSuite.test("COW.Fast.RemoveAtDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
   do {
     var d = getCOWFastDictionary()
@@ -927,8 +957,6 @@ DictionaryTestSuite.test("COW.Fast.RemoveAtDoesNotReallocate")
 }
 
 DictionaryTestSuite.test("COW.Slow.RemoveAtDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
   do {
     var d = getCOWSlowDictionary()
@@ -972,8 +1000,6 @@ DictionaryTestSuite.test("COW.Slow.RemoveAtDoesNotReallocate")
 
 
 DictionaryTestSuite.test("COW.Fast.RemoveValueForKeyDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
   do {
     var d1 = getCOWFastDictionary()
@@ -1013,8 +1039,6 @@ DictionaryTestSuite.test("COW.Fast.RemoveValueForKeyDoesNotReallocate")
 }
 
 DictionaryTestSuite.test("COW.Slow.RemoveValueForKeyDoesNotReallocate")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
   do {
     var d1 = getCOWSlowDictionary()
@@ -1057,7 +1081,7 @@ DictionaryTestSuite.test("COW.Slow.RemoveValueForKeyDoesNotReallocate")
 DictionaryTestSuite.test("COW.Fast.RemoveAllDoesNotReallocate") {
   do {
     var d = getCOWFastDictionary()
-    let originalCapacity = d._variantBuffer.asNative.capacity
+    let originalCapacity = d.capacity
     assert(d.count == 3)
     assert(d[10]! == 1010)
 
@@ -1065,7 +1089,7 @@ DictionaryTestSuite.test("COW.Fast.RemoveAllDoesNotReallocate") {
     // We cannot assert that identity changed, since the new buffer of smaller
     // size can be allocated at the same address as the old one.
     var identity1 = d._rawIdentifier()
-    assert(d._variantBuffer.asNative.capacity < originalCapacity)
+    assert(d.capacity < originalCapacity)
     assert(d.count == 0)
     assert(d[10] == nil)
 
@@ -1078,19 +1102,19 @@ DictionaryTestSuite.test("COW.Fast.RemoveAllDoesNotReallocate") {
   do {
     var d = getCOWFastDictionary()
     var identity1 = d._rawIdentifier()
-    let originalCapacity = d._variantBuffer.asNative.capacity
+    let originalCapacity = d.capacity
     assert(d.count == 3)
     assert(d[10]! == 1010)
 
     d.removeAll(keepingCapacity: true)
     assert(identity1 == d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity == originalCapacity)
+    assert(d.capacity == originalCapacity)
     assert(d.count == 0)
     assert(d[10] == nil)
 
     d.removeAll(keepingCapacity: true)
     assert(identity1 == d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity == originalCapacity)
+    assert(d.capacity == originalCapacity)
     assert(d.count == 0)
     assert(d[10] == nil)
   }
@@ -1119,7 +1143,7 @@ DictionaryTestSuite.test("COW.Fast.RemoveAllDoesNotReallocate") {
   do {
     var d1 = getCOWFastDictionary()
     var identity1 = d1._rawIdentifier()
-    let originalCapacity = d1._variantBuffer.asNative.capacity
+    let originalCapacity = d1.capacity
     assert(d1.count == 3)
     assert(d1[10] == 1010)
 
@@ -1130,7 +1154,7 @@ DictionaryTestSuite.test("COW.Fast.RemoveAllDoesNotReallocate") {
     assert(identity2 != identity1)
     assert(d1.count == 3)
     assert(d1[10]! == 1010)
-    assert(d2._variantBuffer.asNative.capacity == originalCapacity)
+    assert(d2.capacity == originalCapacity)
     assert(d2.count == 0)
     assert(d2[10] == nil)
 
@@ -1143,7 +1167,7 @@ DictionaryTestSuite.test("COW.Fast.RemoveAllDoesNotReallocate") {
 DictionaryTestSuite.test("COW.Slow.RemoveAllDoesNotReallocate") {
   do {
     var d = getCOWSlowDictionary()
-    let originalCapacity = d._variantBuffer.asNative.capacity
+    let originalCapacity = d.capacity
     assert(d.count == 3)
     assert(d[TestKeyTy(10)]!.value == 1010)
 
@@ -1151,7 +1175,7 @@ DictionaryTestSuite.test("COW.Slow.RemoveAllDoesNotReallocate") {
     // We cannot assert that identity changed, since the new buffer of smaller
     // size can be allocated at the same address as the old one.
     var identity1 = d._rawIdentifier()
-    assert(d._variantBuffer.asNative.capacity < originalCapacity)
+    assert(d.capacity < originalCapacity)
     assert(d.count == 0)
     assert(d[TestKeyTy(10)] == nil)
 
@@ -1164,19 +1188,19 @@ DictionaryTestSuite.test("COW.Slow.RemoveAllDoesNotReallocate") {
   do {
     var d = getCOWSlowDictionary()
     var identity1 = d._rawIdentifier()
-    let originalCapacity = d._variantBuffer.asNative.capacity
+    let originalCapacity = d.capacity
     assert(d.count == 3)
     assert(d[TestKeyTy(10)]!.value == 1010)
 
     d.removeAll(keepingCapacity: true)
     assert(identity1 == d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity == originalCapacity)
+    assert(d.capacity == originalCapacity)
     assert(d.count == 0)
     assert(d[TestKeyTy(10)] == nil)
 
     d.removeAll(keepingCapacity: true)
     assert(identity1 == d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity == originalCapacity)
+    assert(d.capacity == originalCapacity)
     assert(d.count == 0)
     assert(d[TestKeyTy(10)] == nil)
   }
@@ -1205,7 +1229,7 @@ DictionaryTestSuite.test("COW.Slow.RemoveAllDoesNotReallocate") {
   do {
     var d1 = getCOWSlowDictionary()
     var identity1 = d1._rawIdentifier()
-    let originalCapacity = d1._variantBuffer.asNative.capacity
+    let originalCapacity = d1.capacity
     assert(d1.count == 3)
     assert(d1[TestKeyTy(10)]!.value == 1010)
 
@@ -1216,7 +1240,7 @@ DictionaryTestSuite.test("COW.Slow.RemoveAllDoesNotReallocate") {
     assert(identity2 != identity1)
     assert(d1.count == 3)
     assert(d1[TestKeyTy(10)]!.value == 1010)
-    assert(d2._variantBuffer.asNative.capacity == originalCapacity)
+    assert(d2.capacity == originalCapacity)
     assert(d2.count == 0)
     assert(d2[TestKeyTy(10)] == nil)
 
@@ -1699,6 +1723,29 @@ DictionaryTestSuite.test("mapValues(_:)") {
   }
 }
 
+DictionaryTestSuite.test("capacity/init(minimumCapacity:)") {
+  let d0 = Dictionary<String, Int>(minimumCapacity: 0)
+  expectGE(d0.capacity, 0)
+
+  let d1 = Dictionary<String, Int>(minimumCapacity: 1)
+  expectGE(d1.capacity, 1)
+
+  let d3 = Dictionary<String, Int>(minimumCapacity: 3)
+  expectGE(d3.capacity, 3)
+
+  let d4 = Dictionary<String, Int>(minimumCapacity: 4)
+  expectGE(d4.capacity, 4)
+
+  let d10 = Dictionary<String, Int>(minimumCapacity: 10)
+  expectGE(d10.capacity, 10)
+
+  let d100 = Dictionary<String, Int>(minimumCapacity: 100)
+  expectGE(d100.capacity, 100)
+
+  let d1024 = Dictionary<String, Int>(minimumCapacity: 1024)
+  expectGE(d1024.capacity, 1024)
+}
+
 DictionaryTestSuite.test("capacity/reserveCapacity(_:)") {
   var d1 = [10: 1010, 20: 1020, 30: 1030]
   expectEqual(3, d1.capacity)
@@ -1983,10 +2030,9 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.DictionaryIsCopied") {
 
 
 DictionaryTestSuite.test("BridgedFromObjC.Verbatim.NSDictionaryIsRetained") {
-  var nsd: NSDictionary = autoreleasepool {
+  var nsd: NSDictionary =
     NSDictionary(dictionary:
       getAsNSDictionary([10: 1010, 20: 1020, 30: 1030]))
-  }
 
   var d: [NSObject : AnyObject] = convertNSDictionaryToDictionary(nsd)
 
@@ -2002,10 +2048,9 @@ DictionaryTestSuite.test("BridgedFromObjC.Verbatim.NSDictionaryIsRetained") {
 }
 
 DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.NSDictionaryIsCopied") {
-  var nsd: NSDictionary = autoreleasepool {
+  var nsd: NSDictionary =
     NSDictionary(dictionary:
       getAsNSDictionary([10: 1010, 20: 1020, 30: 1030]))
-  }
 
   var d: [TestBridgedKeyTy : TestBridgedValueTy] =
     convertNSDictionaryToDictionary(nsd)
@@ -2290,8 +2335,12 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.SubscriptWithKey") {
 
   // Insert a new key-value pair.
   d[TestBridgedKeyTy(40)] = TestBridgedValueTy(2040)
+
   var identity2 = d._rawIdentifier()
-  assert(identity1 != identity2)
+  // Storage identity may or may not change depending on allocation behavior.
+  // (d is eagerly bridged to a regular uniquely referenced native Dictionary.)
+  //assert(identity1 != identity2)
+
   assert(isNativeDictionary(d))
   assert(d.count == 4)
 
@@ -2379,7 +2428,9 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.UpdateValueForKey") {
         d.updateValue(TestBridgedValueTy(2040), forKey: TestBridgedKeyTy(40))
     assert(oldValue == nil)
     var identity2 = d._rawIdentifier()
-    assert(identity1 != identity2)
+    // Storage identity may or may not change depending on allocation behavior.
+    // (d is eagerly bridged to a regular uniquely referenced native Dictionary.)
+    //assert(identity1 != identity2)
     assert(isNativeDictionary(d))
     assert(d.count == 4)
 
@@ -2431,8 +2482,6 @@ DictionaryTestSuite.test("BridgedFromObjC.Verbatim.RemoveAt") {
 }
 
 DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.RemoveAt")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
   var d = getBridgedNonverbatimDictionary()
   var identity1 = d._rawIdentifier()
@@ -2513,8 +2562,6 @@ DictionaryTestSuite.test("BridgedFromObjC.Verbatim.RemoveValueForKey") {
 }
 
 DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.RemoveValueForKey")
-  .xfail(.custom({ _isStdlibDebugConfiguration() },
-                 reason: "rdar://33358110"))
   .code {
   do {
     var d = getBridgedNonverbatimDictionary()
@@ -2597,7 +2644,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Verbatim.RemoveAll") {
 
     d.removeAll()
     assert(identity1 != d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity < originalCapacity)
+    assert(d.capacity < originalCapacity)
     assert(d.count == 0)
     assert(d[TestObjCKeyTy(10)] == nil)
   }
@@ -2612,7 +2659,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Verbatim.RemoveAll") {
 
     d.removeAll(keepingCapacity: true)
     assert(identity1 != d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity >= originalCapacity)
+    assert(d.capacity >= originalCapacity)
     assert(d.count == 0)
     assert(d[TestObjCKeyTy(10)] == nil)
   }
@@ -2632,7 +2679,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Verbatim.RemoveAll") {
     assert(identity2 != identity1)
     assert(d1.count == 3)
     assert((d1[TestObjCKeyTy(10)] as! TestObjCValueTy).value == 1010)
-    assert(d2._variantBuffer.asNative.capacity < originalCapacity)
+    assert(d2.capacity < originalCapacity)
     assert(d2.count == 0)
     assert(d2[TestObjCKeyTy(10)] == nil)
   }
@@ -2652,7 +2699,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Verbatim.RemoveAll") {
     assert(identity2 != identity1)
     assert(d1.count == 3)
     assert((d1[TestObjCKeyTy(10)] as! TestObjCValueTy).value == 1010)
-    assert(d2._variantBuffer.asNative.capacity >= originalCapacity)
+    assert(d2.capacity >= originalCapacity)
     assert(d2.count == 0)
     assert(d2[TestObjCKeyTy(10)] == nil)
   }
@@ -2680,7 +2727,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.RemoveAll") {
 
     d.removeAll()
     assert(identity1 != d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity < originalCapacity)
+    assert(d.capacity < originalCapacity)
     assert(d.count == 0)
     assert(d[TestBridgedKeyTy(10)] == nil)
   }
@@ -2695,7 +2742,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.RemoveAll") {
 
     d.removeAll(keepingCapacity: true)
     assert(identity1 == d._rawIdentifier())
-    assert(d._variantBuffer.asNative.capacity >= originalCapacity)
+    assert(d.capacity >= originalCapacity)
     assert(d.count == 0)
     assert(d[TestBridgedKeyTy(10)] == nil)
   }
@@ -2715,7 +2762,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.RemoveAll") {
     assert(identity2 != identity1)
     assert(d1.count == 3)
     assert(d1[TestBridgedKeyTy(10)]!.value == 1010)
-    assert(d2._variantBuffer.asNative.capacity < originalCapacity)
+    assert(d2.capacity < originalCapacity)
     assert(d2.count == 0)
     assert(d2[TestBridgedKeyTy(10)] == nil)
   }
@@ -2735,7 +2782,7 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.RemoveAll") {
     assert(identity2 != identity1)
     assert(d1.count == 3)
     assert(d1[TestBridgedKeyTy(10)]!.value == 1010)
-    assert(d2._variantBuffer.asNative.capacity >= originalCapacity)
+    assert(d2.capacity >= originalCapacity)
     assert(d2.count == 0)
     assert(d2[TestBridgedKeyTy(10)] == nil)
   }
@@ -3105,6 +3152,26 @@ DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.ArrayOfDictionaries") {
   }
 }
 
+DictionaryTestSuite.test("BridgedFromObjC.Nonverbatim.StringEqualityMismatch") {
+  // NSString's isEqual(_:) implementation is stricter than Swift's String, so
+  // Dictionary values bridged over from Objective-C may have duplicate keys.
+  // rdar://problem/35995647
+  let cafe1 = "Cafe\u{301}" as NSString
+  let cafe2 = "Café" as NSString
+
+  let nsd = NSMutableDictionary()
+  nsd.setObject(42, forKey: cafe1)
+  nsd.setObject(23, forKey: cafe2)
+  expectEqual(2, nsd.count)
+  expectTrue((42 as NSNumber).isEqual(nsd.object(forKey: cafe1)))
+  expectTrue((23 as NSNumber).isEqual(nsd.object(forKey: cafe2)))
+
+  let d = convertNSDictionaryToDictionary(nsd) as [String: Int]
+  expectEqual(1, d.count)
+  expectEqual(d["Cafe\u{301}"], d["Café"])
+  let v = d["Café"]
+  expectTrue(v == 42 || v == 23)
+}
 
 //===---
 // Dictionary -> NSDictionary bridging tests.
@@ -3212,9 +3279,7 @@ DictionaryTestSuite.test("BridgedToObjC.Verbatim.KeyEnumerator.FastEnumeration.U
     { ($0 as! TestObjCKeyTy).value },
     { ($0 as! TestObjCValueTy).value })
 
-  let autoreleased  = _isDebugAssertConfiguration() ?
-    (0, 0) : (3, 3)
-  expectAutoreleasedKeysAndValues(opt: autoreleased, unopt: (3, 3))
+  expectAutoreleasedKeysAndValues(unopt: (3, 3))
 }
 
 DictionaryTestSuite.test("BridgedToObjC.Verbatim.KeyEnumerator.FastEnumeration.UseFromObjC") {
@@ -3226,9 +3291,7 @@ DictionaryTestSuite.test("BridgedToObjC.Verbatim.KeyEnumerator.FastEnumeration.U
     { ($0 as! TestObjCKeyTy).value },
     { ($0 as! TestObjCValueTy).value })
 
-  let autoreleased  = _isDebugAssertConfiguration() ?
-    (0, 0) : (3, 3)
-  expectAutoreleasedKeysAndValues(opt: autoreleased, unopt: (3, 3))
+  expectAutoreleasedKeysAndValues(unopt: (3, 3))
 }
 
 DictionaryTestSuite.test("BridgedToObjC.Verbatim.KeyEnumerator.FastEnumeration_Empty") {
@@ -3313,9 +3376,7 @@ DictionaryTestSuite.test("BridgedToObjC.Custom.KeyEnumerator.FastEnumeration.Use
     { ($0 as! TestObjCKeyTy).value },
     { ($0 as! TestObjCValueTy).value })
 
-  let autoreleased  = _isDebugAssertConfiguration() ?
-    (0, 0) : (3, 3)
-  expectAutoreleasedKeysAndValues(opt: autoreleased, unopt: (3, 3))
+  expectAutoreleasedKeysAndValues(unopt: (3, 3))
 }
 
 DictionaryTestSuite.test("BridgedToObjC.Custom.KeyEnumerator.FastEnumeration.UseFromSwift.Partial") {
@@ -3341,9 +3402,7 @@ DictionaryTestSuite.test("BridgedToObjC.Custom.KeyEnumerator.FastEnumeration.Use
     { ($0 as! TestObjCKeyTy).value },
     { ($0 as! TestObjCValueTy).value })
 
-  let autoreleased  = _isDebugAssertConfiguration() ?
-    (0, 0) : (3, 3)
-  expectAutoreleasedKeysAndValues(opt: autoreleased, unopt: (3, 3))
+  expectAutoreleasedKeysAndValues(unopt: (3, 3))
 }
 
 DictionaryTestSuite.test("BridgedToObjC.Custom.FastEnumeration.UseFromSwift") {

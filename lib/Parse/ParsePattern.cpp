@@ -14,14 +14,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "swift/Parse/CodeCompletionCallbacks.h"
 #include "swift/Parse/Parser.h"
+
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/Initializer.h"
 #include "swift/Basic/StringExtras.h"
+#include "swift/Parse/CodeCompletionCallbacks.h"
+#include "swift/Parse/SyntaxParsingContext.h"
 #include "swift/Syntax/SyntaxFactory.h"
 #include "swift/Syntax/TokenSyntax.h"
-#include "swift/Syntax/SyntaxParsingContext.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/SaveAndRestore.h"
@@ -66,6 +67,8 @@ static ParserStatus parseDefaultArgument(Parser &P,
                                    unsigned argIndex,
                                    Expr *&init,
                                  Parser::ParameterContextKind paramContext) {
+  SyntaxParsingContext DefaultArgContext(P.SyntaxContext,
+                                         SyntaxKind::InitializerClause);
   SourceLoc equalLoc = P.consumeToken(tok::equal);
 
   // Enter a fresh default-argument context with a meaningless parent.
@@ -152,12 +155,17 @@ Parser::parseParameterClause(SourceLoc &leftParenLoc,
                              ParameterContextKind paramContext) {
   assert(params.empty() && leftParenLoc.isInvalid() &&
          rightParenLoc.isInvalid() && "Must start with empty state");
+  SyntaxParsingContext ParamClauseCtx(SyntaxContext, SyntaxKind::ParameterClause);
 
   // Consume the starting '(';
   leftParenLoc = consumeToken(tok::l_paren);
 
   // Trivial case: empty parameter list.
   if (Tok.is(tok::r_paren)) {
+    {
+      SyntaxParsingContext EmptyPLContext(SyntaxContext,
+                                          SyntaxKind::FunctionParameterList);
+    }
     rightParenLoc = consumeToken(tok::r_paren);
     return ParserStatus();
   }
@@ -167,7 +175,7 @@ Parser::parseParameterClause(SourceLoc &leftParenLoc,
   return parseList(tok::r_paren, leftParenLoc, rightParenLoc,
                       /*AllowSepAfterLast=*/false,
                       diag::expected_rparen_parameter,
-                      SyntaxKind::Unknown,
+                      SyntaxKind::FunctionParameterList,
                       [&]() -> ParserStatus {
     ParsedParameter param;
     ParserStatus status;
@@ -669,6 +677,7 @@ Parser::parseFunctionSignature(Identifier SimpleName,
                                SourceLoc &throwsLoc,
                                bool &rethrows,
                                TypeRepr *&retType) {
+  SyntaxParsingContext SigContext(SyntaxContext, SyntaxKind::FunctionSignature);
   SmallVector<Identifier, 4> NamePieces;
   ParserStatus Status;
 
@@ -714,6 +723,7 @@ Parser::parseFunctionSignature(Identifier SimpleName,
 
   // If there's a trailing arrow, parse the rest as the result type.
   if (Tok.isAny(tok::arrow, tok::colon)) {
+    SyntaxParsingContext ReturnCtx(SyntaxContext, SyntaxKind::ReturnClause);
     if (!consumeIf(tok::arrow, arrowLoc)) {
       // FixIt ':' to '->'.
       diagnose(Tok, diag::func_decl_expected_arrow)
@@ -768,6 +778,7 @@ ParserResult<Pattern> Parser::parseTypedPattern() {
   
   // Now parse an optional type annotation.
   if (Tok.is(tok::colon)) {
+    SyntaxParsingContext TypeAnnoCtx(SyntaxContext, SyntaxKind::TypeAnnotation);
     SourceLoc colonLoc = consumeToken(tok::colon);
     
     if (result.isNull())  // Recover by creating AnyPattern.
@@ -832,14 +843,17 @@ ParserResult<Pattern> Parser::parseTypedPattern() {
 ///   pattern ::= 'let' pattern
 ///
 ParserResult<Pattern> Parser::parsePattern() {
+  SyntaxParsingContext PatternCtx(SyntaxContext, SyntaxContextKind::Pattern);
   switch (Tok.getKind()) {
   case tok::l_paren:
     return parsePatternTuple();
     
   case tok::kw__:
+    PatternCtx.setCreateSyntax(SyntaxKind::WildcardPattern);
     return makeParserResult(new (Context) AnyPattern(consumeToken(tok::kw__)));
     
   case tok::identifier: {
+    PatternCtx.setCreateSyntax(SyntaxKind::IdentifierPattern);
     Identifier name;
     SourceLoc loc = consumeIdentifier(&name);
     bool isLet = (InVarOrLetPattern != IVOLP_InVar);
@@ -862,6 +876,7 @@ ParserResult<Pattern> Parser::parsePattern() {
     
   case tok::kw_var:
   case tok::kw_let: {
+    PatternCtx.setCreateSyntax(SyntaxKind::ValueBindingPattern);
     bool isLet = Tok.is(tok::kw_let);
     SourceLoc varLoc = consumeToken();
     
@@ -944,6 +959,8 @@ Parser::parsePatternTupleElement() {
 ///   pattern-tuple-body:
 ///     pattern-tuple-element (',' pattern-tuple-body)*
 ParserResult<Pattern> Parser::parsePatternTuple() {
+  SyntaxParsingContext TuplePatternCtxt(SyntaxContext,
+                                        SyntaxKind::TuplePattern);
   StructureMarkerRAII ParsingPatternTuple(*this, Tok);
   SourceLoc LPLoc = consumeToken(tok::l_paren);
   SourceLoc RPLoc;
@@ -954,7 +971,7 @@ ParserResult<Pattern> Parser::parsePatternTuple() {
     parseList(tok::r_paren, LPLoc, RPLoc,
               /*AllowSepAfterLast=*/false,
               diag::expected_rparen_tuple_pattern_list,
-              SyntaxKind::Unknown,
+              SyntaxKind::TuplePatternElementList,
               [&] () -> ParserStatus {
     // Parse the pattern tuple element.
     ParserStatus EltStatus;
@@ -982,10 +999,13 @@ ParserResult<Pattern> Parser::parsePatternTuple() {
 ParserResult<Pattern> Parser::
 parseOptionalPatternTypeAnnotation(ParserResult<Pattern> result,
                                    bool isOptional) {
+  if (!Tok.is(tok::colon))
+    return result;
 
   // Parse an optional type annotation.
-  if (!consumeIf(tok::colon))
-    return result;
+  SyntaxParsingContext TypeAnnotationCtxt(SyntaxContext,
+                                          SyntaxKind::TypeAnnotation);
+  consumeToken(tok::colon);
 
   Pattern *P;
   if (result.isNull())
@@ -1020,9 +1040,11 @@ ParserResult<Pattern> Parser::parseMatchingPattern(bool isExprBasic) {
   // parse pattern nodes for productions shared by pattern and expression
   // grammar. For short-term ease of initial implementation, we always go
   // through the expr parser for ambiguous productions.
+  SyntaxParsingContext PatternCtx(SyntaxContext, SyntaxContextKind::Pattern);
 
   // Parse productions that can only be patterns.
   if (Tok.isAny(tok::kw_var, tok::kw_let)) {
+    PatternCtx.setCreateSyntax(SyntaxKind::ValueBindingPattern);
     assert(Tok.isAny(tok::kw_let, tok::kw_var) && "expects var or let");
     bool isLet = Tok.is(tok::kw_let);
     SourceLoc varLoc = consumeToken();
@@ -1032,6 +1054,7 @@ ParserResult<Pattern> Parser::parseMatchingPattern(bool isExprBasic) {
   
   // matching-pattern ::= 'is' type
   if (Tok.is(tok::kw_is)) {
+    PatternCtx.setCreateSyntax(SyntaxKind::IsTypePattern);
     SourceLoc isLoc = consumeToken(tok::kw_is);
     ParserResult<TypeRepr> castType = parseType();
     if (castType.isNull() || castType.hasCodeCompletion())
@@ -1050,7 +1073,14 @@ ParserResult<Pattern> Parser::parseMatchingPattern(bool isExprBasic) {
     return makeParserCodeCompletionStatus();
   if (subExpr.isNull())
     return nullptr;
-  
+
+  if (SyntaxContext->isEnabled()) {
+    if (auto UPES = PatternCtx.popIf<UnresolvedPatternExprSyntax>()) {
+      PatternCtx.addSyntax(UPES->getPattern());
+    } else {
+      PatternCtx.setCreateSyntax(SyntaxKind::ExpressionPattern);
+    }
+  }
   // The most common case here is to parse something that was a lexically
   // obvious pattern, which will come back wrapped in an immediate
   // UnresolvedPatternExpr.  Transform this now to simplify later code.
@@ -1136,5 +1166,3 @@ bool Parser::canParseTypedPattern() {
     return canParseType();
   return true;
 }
-
-

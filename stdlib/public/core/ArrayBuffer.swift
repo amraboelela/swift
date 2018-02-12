@@ -120,7 +120,16 @@ extension _ArrayBuffer {
     if !_isClassOrObjCExistential(Element.self) {
       return _storage.isUniquelyReferenced_native_noSpareBits()
     }
-    return _storage.isUniquelyReferencedNative() && _isNative
+
+    // This is a performance optimization. This code used to be:
+    //
+    //   return _storage.isUniquelyReferencedNative() && _isNative.
+    //
+    // SR-6437
+    if !_storage.isUniquelyReferencedNative() {
+      return false
+    }
+    return _isNative
   }
 
   /// Returns `true` iff this buffer's storage is either
@@ -131,7 +140,16 @@ extension _ArrayBuffer {
     if !_isClassOrObjCExistential(Element.self) {
       return _storage.isUniquelyReferencedOrPinned_native_noSpareBits()
     }
-    return _storage.isUniquelyReferencedOrPinnedNative() && _isNative
+
+    // This is a performance optimization. This code used to be:
+    //
+    //   return _storage.isUniquelyReferencedOrPinnedNative() && _isNative.
+    //
+    // SR-6437
+    if !_storage.isUniquelyReferencedOrPinnedNative() {
+      return false
+    }
+    return _isNative
   }
 
   /// Convert to an NSArray.
@@ -217,7 +235,7 @@ extension _ArrayBuffer {
       // Could be sped up, e.g. by using
       // enumerateObjectsAtIndexes:options:usingBlock: in the
       // non-native case.
-      for i in CountableRange(subRange) {
+      for i in subRange.lowerBound ..< subRange.upperBound {
         _typeCheckSlowPath(i)
       }
     }
@@ -252,7 +270,7 @@ extension _ArrayBuffer {
     
     // Make another pass to retain the copied objects
     var result = target
-    for _ in CountableRange(bounds) {
+    for _ in bounds {
       result.initialize(to: result.pointee)
       result += 1
     }
@@ -281,8 +299,7 @@ extension _ArrayBuffer {
       // Look for contiguous storage in the NSArray
       let nonNative = self._nonNative
       let cocoa = _CocoaArrayWrapper(nonNative)
-      let cocoaStorageBaseAddress =
-        cocoa.contiguousStorage(Range(self.indices))
+      let cocoaStorageBaseAddress = cocoa.contiguousStorage(self.indices)
 
       if let cocoaStorageBaseAddress = cocoaStorageBaseAddress {
         let basePtr = UnsafeMutableRawPointer(cocoaStorageBaseAddress)
@@ -535,7 +552,7 @@ extension _ArrayBuffer {
     return count
   }
 
-  internal typealias Indices = CountableRange<Int>
+  internal typealias Indices = Range<Int>
 
   //===--- private --------------------------------------------------------===//
   internal typealias Storage = _ContiguousArrayStorage<Element>

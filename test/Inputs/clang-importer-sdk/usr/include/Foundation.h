@@ -10,6 +10,7 @@
 
 #define NS_DESIGNATED_INITIALIZER __attribute__((objc_designated_initializer))
 
+#define NS_NOESCAPE CF_NOESCAPE
 
 typedef struct objc_object { void *isa; } *id;
 
@@ -1140,3 +1141,6 @@ void install_global_event_handler(_Nullable event_handler handler);
          forKeyPath: (NSString*) keyPath
          context: (void*) options;
 @end
+
+__nullable id returnNullableId(void);
+void takeNullableId(__nullable id);

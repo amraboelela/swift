@@ -88,6 +88,17 @@ public:
                                        SILType substFnTy, SubstitutionList subs,
                                        ArrayRef<SILValue> args,
                                        SILType closureTy);
+  ManagedValue createPartialApply(SILLocation loc, SILValue fn,
+                                  SILType substFnTy, SubstitutionList subs,
+                                  ArrayRef<ManagedValue> args,
+                                  SILType closureTy);
+  ManagedValue createPartialApply(SILLocation loc, ManagedValue fn,
+                                  SILType substFnTy, SubstitutionList subs,
+                                  ArrayRef<ManagedValue> args,
+                                  SILType closureTy) {
+    return createPartialApply(loc, fn.getValue(), substFnTy, subs, args,
+                              closureTy);
+  }
 
   BuiltinInst *createBuiltin(SILLocation loc, Identifier name, SILType resultTy,
                              SubstitutionList subs, ArrayRef<SILValue> args);
@@ -191,6 +202,9 @@ public:
                         bool objc, ArrayRef<SILType> elementTypes,
                         ArrayRef<ManagedValue> elementCountOperands);
 
+  using SILBuilder::createTuple;
+  ManagedValue createTuple(SILLocation loc, SILType type,
+                           ArrayRef<ManagedValue> elements);
   using SILBuilder::createTupleExtract;
   ManagedValue createTupleExtract(SILLocation loc, ManagedValue value,
                                   unsigned index, SILType type);
@@ -299,9 +313,26 @@ public:
   ManagedValue createOpenExistentialBoxValue(SILLocation loc,
                                           ManagedValue original, SILType type);
 
+  using SILBuilder::createOpenExistentialMetatype;
+  ManagedValue createOpenExistentialMetatype(SILLocation loc,
+                                             ManagedValue value,
+                                             SILType openedType);
+
+  /// Convert a @convention(block) value to AnyObject.
+  ManagedValue createBlockToAnyObject(SILLocation loc, ManagedValue block,
+                                      SILType type);
+
   using SILBuilder::createOptionalSome;
   ManagedValue createOptionalSome(SILLocation Loc, ManagedValue Arg);
   ManagedValue createManagedOptionalNone(SILLocation Loc, SILType Type);
+
+  // TODO: Rename this to createFunctionRef once all calls to createFunctionRef
+  // are removed.
+  ManagedValue createManagedFunctionRef(SILLocation loc, SILFunction *f);
+
+  using SILBuilder::createConvertFunction;
+  ManagedValue createConvertFunction(SILLocation loc, ManagedValue fn,
+                                     SILType resultTy);
 
   /// Forward \p value into \p address.
   ///
@@ -323,6 +354,17 @@ public:
   using SILBuilder::createValueMetatype;
   ManagedValue createValueMetatype(SILLocation loc, SILType metatype,
                                    ManagedValue base);
+
+  using SILBuilder::createBridgeObjectToRef;
+  ManagedValue createBridgeObjectToRef(SILLocation loc, ManagedValue mv,
+                                       SILType destType);
+
+  using SILBuilder::createBranch;
+  BranchInst *createBranch(SILLocation Loc, SILBasicBlock *TargetBlock,
+                           ArrayRef<ManagedValue> Args);
+
+  using SILBuilder::createReturn;
+  ReturnInst *createReturn(SILLocation Loc, ManagedValue ReturnValue);
 };
 
 class SwitchCaseFullExpr;

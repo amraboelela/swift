@@ -19,20 +19,17 @@
 #include "swift/AST/Decl.h"
 #include "swift/AST/Initializer.h"
 #include "swift/AST/DeclContext.h"
+
 using namespace swift;
+using FragileFunctionKind = TypeChecker::FragileFunctionKind;
 
-enum FragileFunctionKind : unsigned {
-  Transparent,
-  InlineAlways,
-  Inlineable,
-  DefaultArgument
-};
-
-FragileFunctionKind getFragileFunctionKind(const DeclContext *DC) {
+FragileFunctionKind TypeChecker::getFragileFunctionKind(const DeclContext *DC) {
   for (; DC->isLocalContext(); DC = DC->getParent()) {
-    if (auto *DAI = dyn_cast<DefaultArgumentInitializer>(DC))
-      if (DAI->getResilienceExpansion() == ResilienceExpansion::Minimal)
-        return FragileFunctionKind::DefaultArgument;
+    if (isa<DefaultArgumentInitializer>(DC))
+      return FragileFunctionKind::DefaultArgument;
+
+    if (isa<PatternBindingInitializer>(DC))
+      return FragileFunctionKind::PropertyInitializer;
 
     if (auto *AFD = dyn_cast<AbstractFunctionDecl>(DC)) {
       // If the function is a nested function, we will serialize its body if
@@ -54,10 +51,9 @@ FragileFunctionKind getFragileFunctionKind(const DeclContext *DC) {
 
       // If a property or subscript is @_inlineable, the accessors are
       // @_inlineable also.
-      if (auto FD = dyn_cast<FuncDecl>(AFD))
-        if (auto *ASD = FD->getAccessorStorageDecl())
-          if (ASD->getAttrs().getAttribute<InlineableAttr>())
-            return FragileFunctionKind::Inlineable;
+      if (auto accessor = dyn_cast<AccessorDecl>(AFD))
+        if (accessor->getStorage()->getAttrs().getAttribute<InlineableAttr>())
+          return FragileFunctionKind::Inlineable;
     }
   }
 
@@ -69,7 +65,8 @@ void TypeChecker::diagnoseInlineableLocalType(const NominalTypeDecl *NTD) {
   auto expansion = DC->getResilienceExpansion();
   if (expansion == ResilienceExpansion::Minimal) {
     diagnose(NTD, diag::local_type_in_inlineable_function,
-             NTD->getFullName(), getFragileFunctionKind(DC));
+             NTD->getFullName(),
+             static_cast<unsigned>(getFragileFunctionKind(DC)));
   }
 }
 
@@ -117,7 +114,7 @@ bool TypeChecker::diagnoseInlineableDeclRef(SourceLoc loc,
   diagnose(loc, diag::resilience_decl_unavailable,
            D->getDescriptiveKind(), D->getFullName(),
            D->getFormalAccessScope().accessLevelForDiagnostics(),
-           getFragileFunctionKind(DC));
+           static_cast<unsigned>(getFragileFunctionKind(DC)));
 
   bool isDefaultArgument = false;
   while (DC->isLocalContext()) {
@@ -140,39 +137,3 @@ bool TypeChecker::diagnoseInlineableDeclRef(SourceLoc loc,
   return true;
 }
 
-void TypeChecker::diagnoseResilientConstructor(ConstructorDecl *ctor) {
-  auto nominalDecl = ctor->getDeclContext()
-    ->getAsNominalTypeOrNominalTypeExtensionContext();
-
-  // These restrictions only apply to concrete types, and not protocol
-  // extensions.
-  if (isa<ProtocolDecl>(nominalDecl))
-    return;
-
-  bool isDelegating =
-      (ctor->getDelegatingOrChainedInitKind(&Diags) ==
-       ConstructorDecl::BodyInitKind::Delegating);
-
-  if (!isDelegating &&
-      !nominalDecl->hasFixedLayout(ctor->getParentModule(),
-                                   ctor->getResilienceExpansion())) {
-    if (ctor->getResilienceExpansion() == ResilienceExpansion::Minimal) {
-      // An @_inlineable designated initializer defined in a resilient type
-      // cannot initialize stored properties directly, and must chain to
-      // another initializer.
-      diagnose(ctor->getLoc(),
-               isa<ClassDecl>(nominalDecl)
-                 ? diag::class_designated_init_inlineable_resilient
-                 : diag::designated_init_inlineable_resilient,
-               nominalDecl->getDeclaredInterfaceType(),
-               getFragileFunctionKind(ctor));
-    } else {
-      // A designated initializer defined on an extension of a resilient
-      // type from a different resilience domain cannot initialize stored
-      // properties directly, and must chain to another initializer.
-      diagnose(ctor->getLoc(),
-               diag::designated_init_in_extension_resilient,
-               nominalDecl->getDeclaredInterfaceType());
-    }
-  }
-}

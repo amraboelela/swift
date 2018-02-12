@@ -149,9 +149,17 @@ bool CursorInfoResolver::walkToDeclPost(Decl *D) {
 }
 
 bool CursorInfoResolver::walkToStmtPre(Stmt *S) {
+  // Getting the character range for the statement, to account for interpolation
+  // strings. The token range for the interpolation string is the whole string,
+  // with begin/end locations pointing at the beginning of the string, so if
+  // there is a token location inside the string, it will seem as if it is out
+  // of the source range, unless we convert to character range.
+
   // FIXME: Even implicit Stmts should have proper ranges that include any
   // non-implicit Stmts (fix Stmts created for lazy vars).
-  if (!S->isImplicit() && !rangeContainsLoc(S->getSourceRange()))
+  if (!S->isImplicit() &&
+      !rangeContainsLoc(Lexer::getCharSourceRangeFromSourceRange(
+          getSourceMgr(), S->getSourceRange())))
     return false;
   return !tryResolve(S);
 }
@@ -184,8 +192,8 @@ bool CursorInfoResolver::walkToExprPre(Expr *E) {
         ContainerType = SAE->getBase()->getType();
       }
     } else if (auto ME = dyn_cast<MemberRefExpr>(E)) {
-      SourceLoc DotLoc = ME->getDotLoc();
-      if (DotLoc.isValid() && DotLoc.getAdvancedLoc(1) == LocToResolve) {
+      SourceLoc MemberLoc = ME->getNameLoc().getBaseNameLoc();
+      if (MemberLoc.isValid() && MemberLoc == LocToResolve) {
         ContainerType = ME->getBase()->getType();
       }
     }
@@ -247,6 +255,14 @@ bool CursorInfoResolver::visitModuleReference(ModuleEntity Mod,
 
 SourceManager &NameMatcher::getSourceMgr() const {
   return SrcFile.getASTContext().SourceMgr;
+}
+
+bool CursorInfoResolver::rangeContainsLoc(SourceRange Range) const {
+  return getSourceMgr().rangeContainsTokenLoc(Range, LocToResolve);
+}
+
+bool CursorInfoResolver::rangeContainsLoc(CharSourceRange Range) const {
+  return Range.contains(LocToResolve);
 }
 
 std::vector<ResolvedLoc> NameMatcher::resolve(ArrayRef<UnresolvedLoc> Locs, ArrayRef<Token> Tokens) {
@@ -319,6 +335,11 @@ bool NameMatcher::walkToDeclPre(Decl *D) {
     }
   }
 
+  // FIXME: Even implicit Decls should have proper ranges if they include any
+  // non-implicit children (fix implicit Decls created for lazy vars).
+  if (D->isImplicit())
+    return !isDone();
+
   if (shouldSkip(D->getSourceRange()))
     return false;
   
@@ -349,7 +370,7 @@ bool NameMatcher::walkToDeclPre(Decl *D) {
     tryResolve(ASTWalker::ParentTy(D), D->getLoc(), LabelRangeType::Param,
                LabelRanges);
   } else if (SubscriptDecl *SD = dyn_cast<SubscriptDecl>(D)) {
-    tryResolve(ASTWalker::ParentTy(D), D->getLoc(), LabelRangeType::Param,
+    tryResolve(ASTWalker::ParentTy(D), D->getLoc(), LabelRangeType::NoncollapsibleParam,
                getLabelRanges(SD->getIndices(), getSourceMgr()));
   } else if (EnumElementDecl *EED = dyn_cast<EnumElementDecl>(D)) {
     if (TupleTypeRepr *TTR = dyn_cast_or_null<TupleTypeRepr>(EED->getArgumentTypeLoc().getTypeRepr())) {
@@ -434,6 +455,25 @@ std::pair<bool, Expr*> NameMatcher::walkToExprPre(Expr *E) {
           tryResolve(ASTWalker::ParentTy(E), nextLoc());
         } while (!shouldSkip(E));
         break;
+      case ExprKind::Subscript: {
+        auto SubExpr = cast<SubscriptExpr>(E);
+        // visit and check in source order
+        if (!SubExpr->getBase()->walk(*this))
+          return {false, nullptr};
+
+        auto Labels = getCallArgLabelRanges(getSourceMgr(), SubExpr->getIndex(),
+                                            LabelRangeEndAt::BeforeElemStart);
+        tryResolve(ASTWalker::ParentTy(E), E->getLoc(), LabelRangeType::CallArg, Labels);
+        if (isDone())
+            break;
+        if (!SubExpr->getIndex()->walk(*this))
+          return {false, nullptr};
+
+        // We already visited the children.
+        if (!walkToExprPost(E))
+          return {false, nullptr};
+        return {false, E};
+      }
       case ExprKind::Tuple: {
         TupleExpr *T = cast<TupleExpr>(E);
         // Handle arg label locations (the index reports property occurrences

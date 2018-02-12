@@ -58,7 +58,7 @@
 // FIXME: %FileCheck %s -check-prefix=PASS_EXPLODE_PATTERN -strict-whitespace < %t.printed.txt
 
 // FIXME: rdar://problem/19648117 Needs splitting objc parts out
-// XFAIL: linux
+// XFAIL: linux, freebsd
 
 import Bar
 import ObjectiveC
@@ -1310,6 +1310,16 @@ public func ParamAttrs3(a : () -> ()) {
 public func ParamAttrs4(a : @escaping () -> ()) {
   a()
 }
+
+// PASS_PRINT_AST: public func ParamAttrs5(a: (@escaping () -> ()) -> ())
+public func ParamAttrs5(a : (@escaping () -> ()) -> ()) {
+}
+
+// PASS_PRINT_AST: public typealias ParamAttrs6 = (@autoclosure () -> ()) -> ()
+public typealias ParamAttrs6 = (@autoclosure () -> ()) -> ()
+
+// PASS_PRINT_AST: public var ParamAttrs7: (@escaping () -> ()) -> ()
+public var ParamAttrs7: (@escaping () -> ()) -> () = { f in f() }
 
 // Setter
 // PASS_PRINT_AST: class FooClassComputed {

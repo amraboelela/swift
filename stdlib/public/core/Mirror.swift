@@ -45,6 +45,7 @@ public struct Mirror {
   /// Note that the effect of this setting goes no deeper than the
   /// nearest descendant class that overrides `customMirror`, which
   /// in turn can determine representation of *its* descendants.
+  @_fixed_layout // FIXME(sil-serialize-all)
   @_versioned // FIXME(sil-serialize-all)
   internal enum _DefaultDescendantRepresentation {
     /// Generate a default mirror for descendant classes that don't
@@ -68,6 +69,7 @@ public struct Mirror {
   /// its mirror represents ancestor classes by initializing the mirror
   /// with an `AncestorRepresentation`. This setting has no effect on mirrors
   /// reflecting value type instances.
+  @_fixed_layout // FIXME(sil-serialize-all)
   public enum AncestorRepresentation {
 
     /// Generates a default mirror for all ancestor classes.
@@ -485,7 +487,7 @@ extension Mirror {
       if case let label as String = e {
         position = children.index { $0.label == label } ?? children.endIndex
       }
-      else if let offset = (e as? Int).map({ Int64($0) }) ?? (e as? Int64) {
+      else if let offset = e as? Int {
         position = children.index(children.startIndex,
           offsetBy: offset,
           limitedBy: children.endIndex) ?? children.endIndex
@@ -563,7 +565,7 @@ internal extension Mirror {
   @_fixed_layout // FIXME(sil-serialize-all)
   @_versioned // FIXME(sil-serialize-all)
   internal struct LegacyChildren : RandomAccessCollection {
-    internal typealias Indices = CountableRange<Int>
+    internal typealias Indices = Range<Int>
     
     @_inlineable // FIXME(sil-serialize-all)
     @_versioned // FIXME(sil-serialize-all)
@@ -869,7 +871,7 @@ public struct DictionaryLiteral<Key, Value> : ExpressibleByDictionaryLiteral {
 /// `Collection` conformance that allows `DictionaryLiteral` to
 /// interoperate with the rest of the standard library.
 extension DictionaryLiteral : RandomAccessCollection {
-  public typealias Indices = CountableRange<Int>
+  public typealias Indices = Range<Int>
   
   /// The position of the first element in a nonempty collection.
   ///

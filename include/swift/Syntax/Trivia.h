@@ -80,11 +80,17 @@
 #define SWIFT_SYNTAX_TRIVIA_H
 
 #include "swift/Basic/OwnedString.h"
+#include "llvm/ADT/FoldingSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <vector>
 
 namespace swift {
+
+namespace json {
+template <class T> struct ObjectTraits;
+}
+
 namespace syntax {
 
 class AbsolutePosition;
@@ -106,6 +112,12 @@ enum class TriviaKind {
   /// A newline '\n' character.
   Newline,
 
+  /// A newline '\r' character.
+  CarriageReturn,
+  
+  /// A newline consists of contiguous '\r' and '\n' characters.
+  CarriageReturnLineFeed,
+
   /// A developer line comment, starting with '//'
   LineComment,
 
@@ -117,6 +129,9 @@ enum class TriviaKind {
 
   /// A documentation block comment, starting with '/**' and ending with '*/.
   DocBlockComment,
+
+  /// Any skipped garbage text.
+  GarbageText,
 
   /// A backtick '`' character, used to escape identifiers.
   Backtick,
@@ -133,58 +148,125 @@ enum class TriviaKind {
 ///
 /// In general, you should deal with the actual Trivia collection instead
 /// of individual pieces whenever possible.
-struct TriviaPiece {
+class TriviaPiece {
   TriviaKind Kind;
   unsigned Count;
   OwnedString Text;
 
-  TriviaPiece(const TriviaKind Kind, const unsigned Count,
-              const OwnedString Text)
-      : Kind(Kind), Count(Count), Text(Text) {}
+  TriviaPiece(const TriviaKind Kind, const OwnedString Text)
+      : Kind(Kind), Count(1), Text(Text) {}
+  TriviaPiece(const TriviaKind Kind, const unsigned Count)
+      : Kind(Kind), Count(Count), Text() {}
 
+  friend struct json::ObjectTraits<TriviaPiece>;
+
+public:
   /// Return a piece of trivia for some number of space characters in a row.
   static TriviaPiece spaces(unsigned Count) {
-    return TriviaPiece {TriviaKind::Space, Count, OwnedString{}};
+    return {TriviaKind::Space, Count};
   }
 
   /// Return a piece of trivia for some number of tab characters in a row.
   static TriviaPiece tabs(unsigned Count) {
-    return TriviaPiece {TriviaKind::Tab, Count, OwnedString{}};
+    return {TriviaKind::Tab, Count};
   }
 
-  /// Return a piece of trivia for some number of newline characters
+  /// Return a piece of trivia for some number of vertical tab characters in a
+  /// row.
+  static TriviaPiece verticalTabs(unsigned Count) {
+    return {TriviaKind::VerticalTab, Count};
+  }
+
+  /// Return a piece of trivia for some number of form-feed characters in a row.
+  static TriviaPiece formfeeds(unsigned Count) {
+    return {TriviaKind::Formfeed, Count};
+  }
+
+  /// Return a piece of trivia for some number of newline (LF) characters
   /// in a row.
   static TriviaPiece newlines(unsigned Count) {
-    return TriviaPiece {TriviaKind::Newline, Count, OwnedString{}};
+    return {TriviaKind::Newline, Count};
+  }
+
+  /// Return a piece of trivia for some number of carriage-return (CR)
+  /// characters in a row.
+  static TriviaPiece carriageReturns(unsigned Count) {
+    return {TriviaKind::CarriageReturn, Count};
+  }
+  
+  /// Return a piece of trivia for some number of two bytes sequence
+  /// consists of CR and LF in a row.
+  static TriviaPiece carriageReturnLineFeeds(unsigned Count) {
+    return {TriviaKind::CarriageReturnLineFeed, Count};
   }
 
   /// Return a piece of trivia for a single line of ('//') developer comment.
   static TriviaPiece lineComment(const OwnedString Text) {
-    return TriviaPiece {TriviaKind::LineComment, 1, Text};
+    return {TriviaKind::LineComment, Text};
   }
 
   /// Return a piece of trivia for a block comment ('/* ... */')
   static TriviaPiece blockComment(const OwnedString Text) {
-    return TriviaPiece {TriviaKind::BlockComment, 1, Text};
+    return {TriviaKind::BlockComment, Text};
   }
 
   /// Return a piece of trivia for a single line of ('///') doc comment.
   static TriviaPiece docLineComment(const OwnedString Text) {
-    return TriviaPiece {TriviaKind::DocLineComment, 1, Text};
+    return {TriviaKind::DocLineComment, Text};
   }
 
   /// Return a piece of trivia for a documentation block comment ('/** ... */')
   static TriviaPiece docBlockComment(const OwnedString Text) {
-    return TriviaPiece {TriviaKind::DocBlockComment, 1, Text};
+    return {TriviaKind::DocBlockComment, Text};
+  }
+
+  /// Return a piece of trivia for any skipped garbage text.
+  static TriviaPiece garbageText(const OwnedString Text) {
+    return {TriviaKind::GarbageText, Text};
   }
 
   /// Return a piece of trivia for a single backtick '`' for escaping
   /// an identifier.
   static TriviaPiece backtick() {
-    return TriviaPiece {TriviaKind::Backtick, 1, OwnedString{}};
+    return {TriviaKind::Backtick, 1};
+  }
+
+  /// Return kind of the trivia.
+  TriviaKind getKind() const { return Kind; }
+
+  /// Return the text of the trivia.
+  StringRef getText() const { return Text.str(); }
+
+  /// Return the text of the trivia.
+  unsigned getCount() const { return Count; }
+
+  /// Return textual length of the trivia.
+  size_t getTextLength() const {
+    switch (Kind) {
+      case TriviaKind::LineComment:
+      case TriviaKind::BlockComment:
+      case TriviaKind::DocBlockComment:
+      case TriviaKind::DocLineComment:
+      case TriviaKind::GarbageText:
+        return Text.size();
+      case TriviaKind::Newline:
+      case TriviaKind::CarriageReturn:
+      case TriviaKind::Space:
+      case TriviaKind::Backtick:
+      case TriviaKind::Tab:
+      case TriviaKind::VerticalTab:
+      case TriviaKind::Formfeed:
+        return Count;
+      case TriviaKind::CarriageReturnLineFeed:
+        return Count * 2;
+    }
   }
 
   void accumulateAbsolutePosition(AbsolutePosition &Pos) const;
+  
+  /// Try to compose this and Next to one TriviaPiece.
+  /// It returns true if it is succeeded.
+  bool trySquash(const TriviaPiece &Next);
 
   /// Print a debug representation of this trivia piece to the provided output
   /// stream and indentation level.
@@ -201,6 +283,29 @@ struct TriviaPiece {
 
   bool operator!=(const TriviaPiece &Other) const {
     return !(*this == Other);
+  }
+
+  void Profile(llvm::FoldingSetNodeID &ID) const {
+    ID.AddInteger(unsigned(Kind));
+    switch (Kind) {
+      case TriviaKind::LineComment:
+      case TriviaKind::BlockComment:
+      case TriviaKind::DocBlockComment:
+      case TriviaKind::DocLineComment:
+      case TriviaKind::GarbageText:
+        ID.AddString(Text.str());
+        break;
+      case TriviaKind::Newline:
+      case TriviaKind::CarriageReturn:
+      case TriviaKind::Space:
+      case TriviaKind::Backtick:
+      case TriviaKind::Tab:
+      case TriviaKind::VerticalTab:
+      case TriviaKind::Formfeed:
+      case TriviaKind::CarriageReturnLineFeed:
+        ID.AddInteger(Count);
+        break;
+    }
   }
 };
 
@@ -229,6 +334,11 @@ struct Trivia {
   /// Add a piece to the beginning of the collection.
   void push_front(const TriviaPiece &Piece) {
     Pieces.insert(Pieces.begin(), Piece);
+  }
+
+  /// Clear pieces.
+  void clear() {
+    Pieces.clear();
   }
 
   /// Return a reference to the first piece.
@@ -264,6 +374,17 @@ struct Trivia {
   size_t size() const {
     return Pieces.size();
   }
+
+  size_t getTextLength() const {
+    size_t Len = 0;
+    for (auto &P : Pieces)
+      Len += P.getTextLength();
+    return Len;
+  }
+  
+  /// Append Next TriviaPiece or compose last TriviaPiece and
+  /// Next TriviaPiece to one last TriviaPiece if it can.
+  void appendOrSquash(const TriviaPiece &Next);
 
   /// Dump a debug representation of this Trivia collection to standard error.
   void dump() const;
@@ -311,7 +432,7 @@ struct Trivia {
     if (Count == 0) {
       return {};
     }
-    return {{ TriviaPiece {TriviaKind::Space, Count, OwnedString{}} }};
+    return {{TriviaPiece::spaces(Count)}};
   }
 
   /// Return a collection of trivia of some number of tab characters in a row.
@@ -319,52 +440,76 @@ struct Trivia {
     if (Count == 0) {
       return {};
     }
-    return {{ TriviaPiece {TriviaKind::Tab, Count, OwnedString{}} }};
+    return {{TriviaPiece::tabs(Count)}};
   }
 
   /// Return a collection of trivia of some number of newline characters
-  // in a row.
+  /// in a row.
   static Trivia newlines(unsigned Count) {
     if (Count == 0) {
       return {};
     }
-    return {{ TriviaPiece {TriviaKind::Newline, Count, OwnedString{}} }};
+    return {{TriviaPiece::newlines(Count)}};
+  }
+
+  /// Return a collection of trivia of some number of carriage-return characters
+  /// in a row.
+  static Trivia carriageReturns(unsigned Count) {
+    if (Count == 0) {
+      return {};
+    }
+    return {{TriviaPiece::carriageReturns(Count)}};
+  }
+  
+  /// Return a collection of trivia of some number of two bytes sequence
+  /// consists of CR and LF in a row.
+  static Trivia carriageReturnLineFeeds(unsigned Count) {
+    if (Count == 0) {
+      return {};
+    }
+    return {{TriviaPiece::carriageReturnLineFeeds(Count)}};
   }
 
   /// Return a collection of trivia with a single line of ('//')
-  // developer comment.
+  /// developer comment.
   static Trivia lineComment(const OwnedString Text) {
     assert(Text.str().startswith("//"));
-    return {{ TriviaPiece {TriviaKind::LineComment, 1, Text} }};
+    return {{TriviaPiece::lineComment(Text)}};
   }
 
   /// Return a collection of trivia with a block comment ('/* ... */')
   static Trivia blockComment(const OwnedString Text) {
     assert(Text.str().startswith("/*"));
     assert(Text.str().endswith("*/"));
-    return {{ TriviaPiece {TriviaKind::BlockComment, 1, Text} }};
+    return {{TriviaPiece::blockComment(Text)}};
   }
 
   /// Return a collection of trivia with a single line of ('///') doc comment.
   static Trivia docLineComment(const OwnedString Text) {
     assert(Text.str().startswith("///"));
-    return {{ TriviaPiece {TriviaKind::DocLineComment, 1, Text} }};
+    return {{TriviaPiece::docLineComment(Text)}};
   }
 
   /// Return a collection of trivia with a documentation block
-  // comment ('/** ... */')
+  /// comment ('/** ... */')
   static Trivia docBlockComment(const OwnedString Text) {
     assert(Text.str().startswith("/**"));
     assert(Text.str().endswith("*/"));
-    return {{ TriviaPiece {TriviaKind::DocBlockComment, 1, Text} }};
+    return {{TriviaPiece::docBlockComment(Text)}};
+  }
+
+  /// Return a collection of trivia with any skipped garbage text.
+  static Trivia garbageText(const OwnedString Text) {
+    assert(Text.size() > 0);
+    return {{TriviaPiece::garbageText(Text)}};
   }
 
   /// Return a piece of trivia for a single backtick '`' for escaping
   /// an identifier.
   static Trivia backtick() {
-    return {{ TriviaPiece {TriviaKind::Backtick, 1, OwnedString{}} }};
+    return {{TriviaPiece::backtick()}};
   }
 };
-}
-}
+} // namespace syntax
+} // namespace swift
 #endif // SWIFT_SYNTAX_TRIVIA_H

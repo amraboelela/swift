@@ -391,8 +391,10 @@ static bool initDocEntityInfo(const Decl *D, const Decl *SynthesizedTarget,
     if (auto *VD = dyn_cast<ValueDecl>(D)) {
       llvm::raw_svector_ostream OS(Info.FullyAnnotatedDecl);
       if (SynthesizedTarget)
-        SwiftLangSupport::printFullyAnnotatedSynthesizedDeclaration(VD,
-          (NominalTypeDecl*)SynthesizedTarget, OS);
+        SwiftLangSupport::printFullyAnnotatedSynthesizedDeclaration(
+            VD, const_cast<NominalTypeDecl *>(
+                    static_cast<const NominalTypeDecl *>(SynthesizedTarget)),
+            OS);
       else
         SwiftLangSupport::printFullyAnnotatedDeclaration(VD, Type(), OS);
     }
@@ -547,7 +549,9 @@ static void reportRelated(ASTContext &Ctx,
     // Otherwise, report the inheritance of the type alias itself.
     passInheritsAndConformancesForValueDecl(TAD, Consumer);
   } else if (const auto *TD = dyn_cast<TypeDecl>(D)) {
-    passInherits(TD->getInherited(), Consumer);
+    llvm::SmallVector<TypeLoc, 4> AllInherits;
+    getInheritedForPrinting(TD, [](const Decl* d) { return true; }, AllInherits);
+    passInherits(AllInherits, Consumer);
     passConforms(TD->getSatisfiedProtocolRequirements(/*Sorted=*/true),
                  Consumer);
   } else if (auto *VD = dyn_cast<ValueDecl>(D)) {
@@ -769,13 +773,14 @@ private:
 
 static bool makeParserAST(CompilerInstance &CI, StringRef Text,
                           CompilerInvocation Invocation) {
-  Invocation.clearInputs();
+  Invocation.getFrontendOptions().InputsAndOutputs.clearInputs();
   Invocation.setModuleName("main");
   Invocation.setInputKind(InputFileKind::IFK_Swift);
 
   std::unique_ptr<llvm::MemoryBuffer> Buf;
   Buf = llvm::MemoryBuffer::getMemBuffer(Text, "<module-interface>");
-  Invocation.addInputBuffer(Buf.get());
+  Invocation.getFrontendOptions().InputsAndOutputs.addInput(
+      InputFile(Buf.get()->getBufferIdentifier(), false, Buf.get()));
   if (CI.setup(Invocation))
     return true;
   CI.performParseOnly();
@@ -1089,8 +1094,8 @@ static bool reportSourceDocInfo(CompilerInvocation Invocation,
 
   EditorDiagConsumer DiagConsumer;
   CI.addDiagnosticConsumer(&DiagConsumer);
-
-  Invocation.addInputBuffer(InputBuf);
+  Invocation.getFrontendOptions().InputsAndOutputs.addInput(
+      InputFile(InputBuf->getBufferIdentifier(), false, InputBuf));
   if (CI.setup(Invocation))
     return true;
   DiagConsumer.setInputBufferIDs(CI.getInputBufferIDs());
@@ -1354,15 +1359,15 @@ SourceFile *SwiftLangSupport::getSyntacticSourceFile(
     CompilerInstance &ParseCI, std::string &Error) {
   CompilerInvocation Invocation;
 
-  bool Failed = getASTManager().initCompilerInvocation(Invocation, Args,
-                                                       ParseCI.getDiags(),
-                                                       StringRef(), Error);
+  bool Failed = getASTManager().initCompilerInvocationNoInputs(
+      Invocation, Args, ParseCI.getDiags(), Error);
   if (Failed) {
     Error = "Compiler invocation init failed";
     return nullptr;
   }
   Invocation.setInputKind(InputFileKind::IFK_Swift);
-  Invocation.addInputBuffer(InputBuf);
+  Invocation.getFrontendOptions().InputsAndOutputs.addInput(
+      InputFile(InputBuf->getBufferIdentifier(), false, InputBuf));
 
   if (ParseCI.setup(Invocation)) {
     Error = "Compiler invocation set up failed";
@@ -1409,14 +1414,14 @@ void SwiftLangSupport::getDocInfo(llvm::MemoryBuffer *InputBuf,
 
   CompilerInvocation Invocation;
   std::string Error;
-  bool Failed = getASTManager().initCompilerInvocation(Invocation, Args,
-                                                       CI.getDiags(),
-                                                       StringRef(),
-                                                       Error);
+  bool Failed = getASTManager().initCompilerInvocationNoInputs(
+      Invocation, Args, CI.getDiags(), Error, /*AllowInputs=*/false);
+
   if (Failed) {
     Consumer.failed(Error);
     return;
   }
+
   Invocation.getClangImporterOptions().ImportForwardDeclarations = true;
 
   if (!ModuleName.empty()) {
@@ -1437,7 +1442,7 @@ findModuleGroups(StringRef ModuleName, ArrayRef<const char *> Args,
                                     StringRef Error)> Receiver) {
   CompilerInvocation Invocation;
   Invocation.getClangImporterOptions().ImportForwardDeclarations = true;
-  Invocation.clearInputs();
+  Invocation.getFrontendOptions().InputsAndOutputs.clearInputs();
 
   CompilerInstance CI;
   // Display diagnostics to stderr.
@@ -1445,8 +1450,8 @@ findModuleGroups(StringRef ModuleName, ArrayRef<const char *> Args,
   CI.addDiagnosticConsumer(&PrintDiags);
   std::vector<StringRef> Groups;
   std::string Error;
-  if (getASTManager().initCompilerInvocation(Invocation, Args, CI.getDiags(),
-                                             StringRef(), Error)) {
+  if (getASTManager().initCompilerInvocationNoInputs(Invocation, Args,
+                                                     CI.getDiags(), Error)) {
     Receiver(Groups, Error);
     return;
   }

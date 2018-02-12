@@ -19,6 +19,7 @@
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/ModuleLoader.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/PrettyStackTrace.h"
 #include "swift/AST/USRGeneration.h"
 #include "swift/Basic/Range.h"
 #include "swift/ClangImporter/ClangImporter.h"
@@ -1114,6 +1115,7 @@ ModuleFile::ModuleFile(
       Name = info.name;
       TargetTriple = info.targetTriple;
       CompatibilityVersion = info.compatibilityVersion;
+      IsSIB = extInfo->isSIB();
 
       hasValidControlBlock = true;
       break;
@@ -1792,17 +1794,17 @@ void ModuleFile::loadObjCMethods(
 }
 
 Optional<TinyPtrVector<ValueDecl *>>
-ModuleFile::loadNamedMembers(const IterableDeclContext *IDC, DeclName N,
+ModuleFile::loadNamedMembers(const IterableDeclContext *IDC, DeclBaseName N,
                              uint64_t contextData) {
+  PrettyStackTraceDecl trace("loading members for", IDC->getDecl());
 
   assert(IDC->wasDeserialized());
+  assert(DeclMemberNames);
 
-  if (!DeclMemberNames)
-    return None;
-
-  auto i = DeclMemberNames->find(N.getBaseName());
+  TinyPtrVector<ValueDecl *> results;
+  auto i = DeclMemberNames->find(N);
   if (i == DeclMemberNames->end())
-    return None;
+    return results;
 
   BitOffset subTableOffset = *i;
   std::unique_ptr<SerializedDeclMembersTable> &subTable =
@@ -1825,7 +1827,6 @@ ModuleFile::loadNamedMembers(const IterableDeclContext *IDC, DeclName N,
   }
 
   assert(subTable);
-  TinyPtrVector<ValueDecl *> results;
   auto j = subTable->find(IDC->getDeclID());
   if (j != subTable->end()) {
     for (DeclID d : *j) {

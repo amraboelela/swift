@@ -11,6 +11,8 @@ set_property(GLOBAL PROPERTY JOB_POOLS local_jobs=${localhost_logical_cores})
 # Put linking in that category
 set_property(GLOBAL PROPERTY JOB_POOL_LINK local_jobs)
 
+ENABLE_LANGUAGE(C)
+
 # First include general CMake utilities.
 include(SwiftUtils)
 include(CheckSymbolExists)
@@ -129,12 +131,12 @@ set(CLANG_COMPILER_VERSION "" CACHE STRING
     "The internal version of the Clang compiler")
 
 # Indicate whether Swift should attempt to use the lld linker.
-set(SWIFT_ENABLE_LLD_LINKER FALSE CACHE BOOL
+set(SWIFT_ENABLE_LLD_LINKER TRUE CACHE BOOL
     "Enable using the lld linker when available")
 
 # Indicate whether Swift should attempt to use the gold linker.
 # This is not used on Darwin.
-set(SWIFT_ENABLE_GOLD_LINKER FALSE CACHE BOOL
+set(SWIFT_ENABLE_GOLD_LINKER TRUE CACHE BOOL
     "Enable using the gold linker when available")
 
 set(SWIFT_SDKS "" CACHE STRING
@@ -205,6 +207,10 @@ option(SWIFT_EMBED_BITCODE_SECTION
 
 option(SWIFT_RUNTIME_CRASH_REPORTER_CLIENT
     "Whether to enable CrashReporter integration"
+    FALSE)
+
+option(SWIFT_DARWIN_ENABLE_STABLE_ABI_BIT
+    "Enable the Swift stable ABI's class marker bit"
     FALSE)
 
 set(SWIFT_DARWIN_XCRUN_TOOLCHAIN "XcodeDefault" CACHE STRING
@@ -290,6 +296,14 @@ option(SWIFT_STDLIB_USE_NONATOMIC_RC
 
 option(SWIFT_STDLIB_ENABLE_SIL_OWNERSHIP
   "Build the standard libraries and overlays with sil ownership enabled."
+  FALSE)
+
+option(SWIFT_ENABLE_GUARANTEED_NORMAL_ARGUMENTS
+  "Build the standard libraries, overlays, and runtime with normal arguments at +0"
+  FALSE)
+
+option(SWIFT_ENABLE_RUNTIME_FUNCTION_COUNTERS
+  "Enable runtime function counters and expose the API."
   FALSE)
 
 #

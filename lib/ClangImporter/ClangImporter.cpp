@@ -83,7 +83,8 @@ namespace {
     void handleImport(const clang::Module *imported) {
       if (!imported)
         return;
-      Impl.DeferredHeaderImports.push_back(imported);
+      Impl.ImportedHeaderExports.push_back(
+          const_cast<clang::Module *>(imported));
     }
 
     void InclusionDirective(clang::SourceLocation HashLoc,
@@ -446,11 +447,6 @@ getNormalInvocationArguments(std::vector<std::string> &invocationArgStrs,
   // Construct the invocation arguments for the current target.
   // Add target-independent options first.
   invocationArgStrs.insert(invocationArgStrs.end(), {
-      // Enable modules
-      "-fmodules",
-      "-Werror=non-modular-include-in-framework-module",
-      "-Xclang", "-fmodule-feature", "-Xclang", "swift",
-
       // Don't emit LLVM IR.
       "-fsyntax-only",
 
@@ -463,6 +459,18 @@ getNormalInvocationArguments(std::vector<std::string> &invocationArgStrs,
 
       SHIMS_INCLUDE_FLAG, searchPathOpts.RuntimeResourcePath,
   });
+
+  // Enable modules.
+  invocationArgStrs.insert(invocationArgStrs.end(), {
+      "-fmodules",
+      "-Xclang", "-fmodule-feature", "-Xclang", "swift"
+  });
+  // Don't enforce strict rules when inside the debugger to work around search
+  // path problems caused by a module existing in both the build/install
+  // directory and the source directory.
+  if (!importerOpts.DebuggerSupport)
+    invocationArgStrs.push_back(
+        "-Werror=non-modular-include-in-framework-module");
 
   if (LangOpts.EnableObjCInterop) {
     invocationArgStrs.insert(invocationArgStrs.end(),
@@ -533,6 +541,18 @@ getNormalInvocationArguments(std::vector<std::string> &invocationArgStrs,
       });
     }
   } else {
+    // Ideally we should turn this on for all Glibc targets that are actually
+    // using Glibc or a libc that respects that flag. This will cause some
+    // source breakage however (specifically with strerror_r()) on Linux
+    // without a workaround.
+    if (triple.isOSFuchsia()) {
+      // Many of the modern libc features are hidden behind feature macros like
+      // _GNU_SOURCE or _XOPEN_SOURCE.
+      invocationArgStrs.insert(invocationArgStrs.end(), {
+        "-D_GNU_SOURCE",
+      });
+    }
+
     // The module map used for Glibc depends on the target we're compiling for,
     // and is not included in the resource directory with the other implicit
     // module maps. It's at {freebsd|linux}/{arch}/glibc.modulemap.
@@ -1459,12 +1479,17 @@ ModuleDecl *ClangImporter::loadModule(
     // invalid, it can't be the same thing twice in a row, and it has to come
     // from an actual buffer, so we make a fake buffer and just use a counter.
     if (!Impl.DummyImportBuffer.isValid()) {
+      clang::SourceLocation includeLoc =
+          srcMgr.getLocForStartOfFile(srcMgr.getMainFileID());
+      // Zero offset is reserved for the bridging header. Increase the offset
+      // so that headers from the bridging header are considered as coming
+      // before headers that are imported from swift code.
+      includeLoc = includeLoc.getLocWithOffset(1);
       Impl.DummyImportBuffer = srcMgr.createFileID(
           llvm::make_unique<ZeroFilledMemoryBuffer>(
               256*1024, StringRef(Implementation::moduleImportBufferName)),
           clang::SrcMgr::C_User,
-          /*LoadedID*/0, /*LoadedOffset*/0,
-          srcMgr.getLocForStartOfFile(srcMgr.getMainFileID()));
+          /*LoadedID*/0, /*LoadedOffset*/0, includeLoc);
     }
     clang::SourceLocation clangImportLoc
       = srcMgr.getLocForStartOfFile(Impl.DummyImportBuffer)
@@ -1572,16 +1597,15 @@ ModuleDecl *ClangImporter::Implementation::finishLoadingClangModule(
 void ClangImporter::Implementation::handleDeferredImports()
 {
   clang::ASTReader &R = *Instance->getModuleManager();
+  llvm::SmallSet<clang::serialization::SubmoduleID, 32> seenSubmodules;
   for (clang::serialization::SubmoduleID ID : PCHImportedSubmodules) {
-    DeferredHeaderImports.push_back(R.getSubmodule(ID));
+    if (!seenSubmodules.insert(ID).second)
+      continue;
+    ImportedHeaderExports.push_back(R.getSubmodule(ID));
   }
   PCHImportedSubmodules.clear();
-  for (const clang::Module *M : DeferredHeaderImports) {
-    ModuleDecl *nativeImported =
-      finishLoadingClangModule(M, /*preferAdapter=*/true);
-    ImportedHeaderExports.push_back({ /*filter=*/{}, nativeImported });
-  }
-  DeferredHeaderImports.clear();
+  for (const clang::Module *M : ImportedHeaderExports)
+    (void)finishLoadingClangModule(M, /*preferAdapter=*/true);
 }
 
 ModuleDecl *ClangImporter::getImportedHeaderModule() const {
@@ -2278,6 +2302,73 @@ void ClangImporter::lookupValue(DeclName name, VisibleDeclConsumer &consumer){
     });
 }
 
+void
+ClangImporter::lookupTypeDecl(StringRef rawName, ClangTypeKind kind,
+                              llvm::function_ref<void(TypeDecl*)> receiver) {
+  clang::DeclarationName clangName(
+      &Impl.Instance->getASTContext().Idents.get(rawName));
+
+  clang::Sema::LookupNameKind lookupKind;
+  switch (kind) {
+  case ClangTypeKind::Typedef:
+    lookupKind = clang::Sema::LookupOrdinaryName;
+    break;
+  case ClangTypeKind::Tag:
+    lookupKind = clang::Sema::LookupTagName;
+    break;
+  case ClangTypeKind::ObjCProtocol:
+    lookupKind = clang::Sema::LookupObjCProtocolName;
+    break;
+  }
+
+  // Perform name lookup into the global scope.
+  auto &sema = Impl.Instance->getSema();
+  clang::LookupResult lookupResult(sema, clangName, clang::SourceLocation(),
+                                   lookupKind);
+  if (sema.LookupName(lookupResult, /*Scope=*/nullptr)) {
+    for (auto clangDecl : lookupResult) {
+      if (!isa<clang::TypeDecl>(clangDecl) &&
+          !isa<clang::ObjCContainerDecl>(clangDecl) &&
+          !isa<clang::ObjCCompatibleAliasDecl>(clangDecl)) {
+        continue;
+      }
+      auto *imported = Impl.importDecl(clangDecl, Impl.CurrentVersion);
+      if (auto *importedType = dyn_cast_or_null<TypeDecl>(imported))
+        receiver(importedType);
+    }
+  }
+}
+
+void ClangImporter::lookupRelatedEntity(
+    StringRef rawName, ClangTypeKind kind, StringRef relatedEntityKind,
+    llvm::function_ref<void(TypeDecl*)> receiver) {
+  using CISTAttr = ClangImporterSynthesizedTypeAttr;
+  if (relatedEntityKind ==
+        CISTAttr::manglingNameForKind(CISTAttr::Kind::NSErrorWrapper) ||
+      relatedEntityKind ==
+        CISTAttr::manglingNameForKind(CISTAttr::Kind::NSErrorWrapperAnon)) {
+    auto underlyingKind = ClangTypeKind::Tag;
+    if (relatedEntityKind ==
+          CISTAttr::manglingNameForKind(CISTAttr::Kind::NSErrorWrapperAnon)) {
+      underlyingKind = ClangTypeKind::Typedef;
+    }
+    lookupTypeDecl(rawName, underlyingKind,
+                   [this, receiver] (const TypeDecl *foundType) {
+      auto *enumDecl =
+          dyn_cast_or_null<clang::EnumDecl>(foundType->getClangDecl());
+      if (!enumDecl)
+        return;
+      if (!Impl.getEnumInfo(enumDecl).isErrorEnum())
+        return;
+      auto *enclosingType =
+          dyn_cast<NominalTypeDecl>(foundType->getDeclContext());
+      if (!enclosingType)
+        return;
+      receiver(enclosingType);
+    });
+  }
+}
+
 void ClangModuleUnit::lookupVisibleDecls(ModuleDecl::AccessPathTy accessPath,
                                          VisibleDeclConsumer &consumer,
                                          NLKind lookupKind) const {
@@ -2924,45 +3015,44 @@ void ClangModuleUnit::getImportedModules(
   if (filter != ModuleDecl::ImportFilter::Public)
     imports.push_back({ModuleDecl::AccessPathTy(), owner.getStdlibModule()});
 
+  SmallVector<clang::Module *, 8> imported;
   if (!clangModule) {
     // This is the special "imported headers" module.
     if (filter != ModuleDecl::ImportFilter::Private) {
-      imports.append(owner.ImportedHeaderExports.begin(),
-                     owner.ImportedHeaderExports.end());
+      imported.append(owner.ImportedHeaderExports.begin(),
+                      owner.ImportedHeaderExports.end());
     }
-    return;
+
+  } else {
+    clangModule->getExportedModules(imported);
+    if (filter != ModuleDecl::ImportFilter::Public) {
+      if (filter == ModuleDecl::ImportFilter::All) {
+        llvm::SmallPtrSet<clang::Module *, 8> knownModules;
+        imported.append(clangModule->Imports.begin(), clangModule->Imports.end());
+        imported.erase(std::remove_if(imported.begin(), imported.end(),
+                                      [&](clang::Module *mod) -> bool {
+                                        return !knownModules.insert(mod).second;
+                                      }),
+                       imported.end());
+      } else {
+        llvm::SmallPtrSet<clang::Module *, 8> knownModules(imported.begin(),
+                                                           imported.end());
+        SmallVector<clang::Module *, 8> privateImports;
+        std::copy_if(clangModule->Imports.begin(), clangModule->Imports.end(),
+                     std::back_inserter(privateImports), [&](clang::Module *mod) {
+                       return knownModules.count(mod) == 0;
+        });
+        imported.swap(privateImports);
+      }
+
+      // FIXME: The parent module isn't exactly a private import, but it is
+      // needed for link dependencies.
+      if (clangModule->Parent)
+        imported.push_back(clangModule->Parent);
+    }
   }
 
   auto topLevelAdapter = getAdapterModule();
-
-  SmallVector<clang::Module *, 8> imported;
-  clangModule->getExportedModules(imported);
-  if (filter != ModuleDecl::ImportFilter::Public) {
-    if (filter == ModuleDecl::ImportFilter::All) {
-      llvm::SmallPtrSet<clang::Module *, 8> knownModules;
-      imported.append(clangModule->Imports.begin(), clangModule->Imports.end());
-      imported.erase(std::remove_if(imported.begin(), imported.end(),
-                                    [&](clang::Module *mod) -> bool {
-                                      return !knownModules.insert(mod).second;
-                                    }),
-                     imported.end());
-    } else {
-      llvm::SmallPtrSet<clang::Module *, 8> knownModules(imported.begin(),
-                                                         imported.end());
-      SmallVector<clang::Module *, 8> privateImports;
-      std::copy_if(clangModule->Imports.begin(), clangModule->Imports.end(),
-                   std::back_inserter(privateImports), [&](clang::Module *mod) {
-                     return knownModules.count(mod) == 0;
-      });
-      imported.swap(privateImports);
-    }
-
-    // FIXME: The parent module isn't exactly a private import, but it is
-    // needed for link dependencies.
-    if (clangModule->Parent)
-      imported.push_back(clangModule->Parent);
-  }
-
   for (auto importMod : imported) {
     auto wrapper = owner.getWrapperForModule(importMod);
 
@@ -2971,11 +3061,12 @@ void ClangModuleUnit::getImportedModules(
       // HACK: Deal with imports of submodules by importing the top-level module
       // as well.
       auto importTopLevel = importMod->getTopLevelModule();
-      if (importTopLevel != importMod &&
-          importTopLevel != clangModule->getTopLevelModule()) {
-        auto topLevelWrapper = owner.getWrapperForModule(importTopLevel);
-        imports.push_back({ ModuleDecl::AccessPathTy(),
-                            topLevelWrapper->getParentModule() });
+      if (importTopLevel != importMod) {
+        if (!clangModule || importTopLevel != clangModule->getTopLevelModule()){
+          auto topLevelWrapper = owner.getWrapperForModule(importTopLevel);
+          imports.push_back({ ModuleDecl::AccessPathTy(),
+                              topLevelWrapper->getParentModule() });
+        }
       }
       actualMod = wrapper->getParentModule();
     } else if (actualMod == topLevelAdapter) {
@@ -2990,13 +3081,6 @@ void ClangModuleUnit::getImportedModules(
 void ClangModuleUnit::getImportedModulesForLookup(
     SmallVectorImpl<ModuleDecl::ImportedModule> &imports) const {
 
-  if (!clangModule) {
-    // This is the special "imported headers" module.
-    imports.append(owner.ImportedHeaderExports.begin(),
-                   owner.ImportedHeaderExports.end());
-    return;
-  }
-
   // Reuse our cached list of imports if we have one.
   if (!importedModulesForLookup.empty()) {
     imports.append(importedModulesForLookup.begin(),
@@ -3005,11 +3089,20 @@ void ClangModuleUnit::getImportedModulesForLookup(
   }
 
   size_t firstImport = imports.size();
-  auto topLevel = clangModule->getTopLevelModule();
-  auto topLevelAdapter = getAdapterModule();
 
   SmallVector<clang::Module *, 8> imported;
-  clangModule->getExportedModules(imported);
+  const clang::Module *topLevel;
+  ModuleDecl *topLevelAdapter = getAdapterModule();
+  if (!clangModule) {
+    // This is the special "imported headers" module.
+    imported.append(owner.ImportedHeaderExports.begin(),
+                    owner.ImportedHeaderExports.end());
+    topLevel = nullptr;
+  } else {
+    clangModule->getExportedModules(imported);
+    topLevel = clangModule->getTopLevelModule();
+  }
+
   if (imported.empty())
     return;
 
@@ -3273,12 +3366,38 @@ void ClangImporter::Implementation::lookupAllObjCMembers(
 
 Optional<TinyPtrVector<ValueDecl *>>
 ClangImporter::Implementation::loadNamedMembers(
-    const IterableDeclContext *IDC, DeclName N, uint64_t contextData) {
+    const IterableDeclContext *IDC, DeclBaseName N, uint64_t contextData) {
 
   auto *D = IDC->getDecl();
   auto *DC = cast<DeclContext>(D);
   auto *CD = D->getClangDecl();
+  auto *CDC = cast<clang::DeclContext>(CD);
   assert(CD && "loadNamedMembers on a Decl without a clangDecl");
+
+  auto *nominal = DC->getAsNominalTypeOrNominalTypeExtensionContext();
+  auto effectiveClangContext = getEffectiveClangContext(nominal);
+
+  // FIXME: The legacy of mirroring protocol members rears its ugly head,
+  // and as a result we have to bail on any @interface or @category that
+  // has a declared protocol conformance.
+  if (auto *ID = dyn_cast<clang::ObjCInterfaceDecl>(CD)) {
+    if (ID->protocol_begin() != ID->protocol_end())
+      return None;
+  }
+  if (auto *CCD = dyn_cast<clang::ObjCCategoryDecl>(CD)) {
+    if (CCD->protocol_begin() != CCD->protocol_end())
+      return None;
+  }
+
+  // Also bail out if there are any global-as-member mappings for this type; we
+  // can support some of them lazily but the full set of idioms seems
+  // prohibitively complex (also they're not stored in by-name lookup, for
+  // reasons unclear).
+  if (forEachLookupTable([&](SwiftLookupTable &table) -> bool {
+        return (table.lookupGlobalsAsMembers(
+                  effectiveClangContext).size() > 0);
+      }))
+    return None;
 
   // There are 3 cases:
   //
@@ -3303,29 +3422,30 @@ ClangImporter::Implementation::loadNamedMembers(
 
   clang::ASTContext &clangCtx = getClangASTContext();
 
+  assert(isa<clang::ObjCContainerDecl>(CD));
+
   TinyPtrVector<ValueDecl *> Members;
-  if (auto *CCD = dyn_cast<clang::ObjCContainerDecl>(CD)) {
-    for (auto entry : table->lookup(SerializedSwiftName(N.getBaseName()), CCD)) {
-      if (!entry.is<clang::NamedDecl *>()) continue;
-      auto member = entry.get<clang::NamedDecl *>();
-      if (!isVisibleClangEntry(clangCtx, member)) continue;
-      SmallVector<Decl*, 4> tmp;
-      insertMembersAndAlternates(member, tmp);
-      for (auto *TD : tmp) {
-        if (auto *V = dyn_cast<ValueDecl>(TD)) {
-          // Skip ValueDecls if they import into different DeclContexts
-          // or under different names than the one we asked about.
-          if (V->getDeclContext() == DC &&
-              V->getFullName().matchesRef(N)) {
-            Members.push_back(V);
-          }
+  for (auto entry : table->lookup(SerializedSwiftName(N),
+                                  effectiveClangContext)) {
+    if (!entry.is<clang::NamedDecl *>()) continue;
+    auto member = entry.get<clang::NamedDecl *>();
+    if (!isVisibleClangEntry(clangCtx, member)) continue;
+
+    // Skip Decls from different clang::DeclContexts
+    if (member->getDeclContext() != CDC) continue;
+
+    SmallVector<Decl*, 4> tmp;
+    insertMembersAndAlternates(member, tmp);
+    for (auto *TD : tmp) {
+      if (auto *V = dyn_cast<ValueDecl>(TD)) {
+        // Skip ValueDecls if they import under different names.
+        if (V->getBaseName() == N) {
+          Members.push_back(V);
         }
       }
     }
-    return Members;
   }
-
-  return None;
+  return Members;
 }
 
 

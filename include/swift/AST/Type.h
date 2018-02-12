@@ -21,10 +21,12 @@
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/STLExtras.h"
 #include "swift/Basic/LLVM.h"
+#include "swift/Basic/ArrayRefView.h"
 #include "swift/AST/LayoutConstraint.h"
 #include "swift/AST/PrintOptions.h"
 #include "swift/AST/TypeAlignments.h"
 #include "swift/Basic/OptionSet.h"
+#include "swift/Basic/Compiler.h"
 #include <functional>
 #include <string>
 
@@ -41,7 +43,6 @@ class ModuleDecl;
 class NominalTypeDecl;
 class GenericTypeDecl;
 class NormalProtocolConformance;
-enum OptionalTypeKind : unsigned;
 class ProtocolConformanceRef;
 class ProtocolDecl;
 class ProtocolType;
@@ -339,6 +340,15 @@ public:
   /// Return the name of the type as a string, for use in diagnostics only.
   std::string getString(const PrintOptions &PO = PrintOptions()) const;
 
+  /// Return the name of the type, adding parens in cases where
+  /// appending or prepending text to the result would cause that text
+  /// to be appended to only a portion of the returned type. For
+  /// example for a function type "Int -> Float", adding text after
+  /// the type would make it appear that it's appended to "Float" as
+  /// opposed to the entire type.
+  std::string
+  getStringAsComponent(const PrintOptions &PO = PrintOptions()) const;
+
   /// Computes the join between two types.
   ///
   /// The join of two types is the most specific type that is a supertype of
@@ -378,8 +388,7 @@ class CanType : public Type {
   static bool isExistentialTypeImpl(CanType type);
   static bool isAnyExistentialTypeImpl(CanType type);
   static bool isObjCExistentialTypeImpl(CanType type);
-  static CanType getAnyOptionalObjectTypeImpl(CanType type,
-                                              OptionalTypeKind &kind);
+  static CanType getOptionalObjectTypeImpl(CanType type, bool &isOptional);
   static CanType getReferenceStorageReferentImpl(CanType type);
   static CanType getWithoutSpecifierTypeImpl(CanType type);
 
@@ -446,13 +455,13 @@ public:
   NominalTypeDecl *getAnyNominal() const;
   GenericTypeDecl *getAnyGeneric() const;
 
-  CanType getAnyOptionalObjectType() const {
-    OptionalTypeKind kind;
-    return getAnyOptionalObjectTypeImpl(*this, kind);
+  CanType getOptionalObjectType() const {
+    bool isOptional;
+    return getOptionalObjectTypeImpl(*this, isOptional);
   }
 
-  CanType getAnyOptionalObjectType(OptionalTypeKind &kind) const {
-    return getAnyOptionalObjectTypeImpl(*this, kind);
+  CanType getOptionalObjectType(bool &isOptional) const {
+    return getOptionalObjectTypeImpl(*this, isOptional);
   }
 
   CanType getReferenceStorageReferent() const {
@@ -536,7 +545,9 @@ template <class X> inline CanTypeWrapper<X> cast_or_null(CanType type) {
   return CanTypeWrapper<X>(cast_or_null<X>(type.getPointer()));
 }
 template <class X> inline CanTypeWrapper<X> dyn_cast(CanType type) {
-  return CanTypeWrapper<X>(dyn_cast<X>(type.getPointer()));
+  auto Ty = type.getPointer();
+  SWIFT_ASSUME(Ty != nullptr);
+  return CanTypeWrapper<X>(dyn_cast<X>(Ty));
 }
 template <class X> inline CanTypeWrapper<X> dyn_cast_or_null(CanType type) {
   return CanTypeWrapper<X>(dyn_cast_or_null<X>(type.getPointer()));
@@ -554,7 +565,9 @@ inline CanTypeWrapper<X> cast(CanTypeWrapper<P> type) {
 }
 template <class X, class P>
 inline CanTypeWrapper<X> dyn_cast(CanTypeWrapper<P> type) {
-  return CanTypeWrapper<X>(dyn_cast<X>(type.getPointer()));
+  auto Ty = type.getPointer();
+  SWIFT_ASSUME(Ty != nullptr);
+  return CanTypeWrapper<X>(dyn_cast<X>(Ty));
 }
 template <class X, class P>
 inline CanTypeWrapper<X> dyn_cast_or_null(CanTypeWrapper<P> type) {
@@ -591,6 +604,18 @@ public:
     return Signature;
   }
 };
+
+template <typename T>
+inline T *staticCastHelper(const Type &Ty) {
+  // The constructor of the ArrayRef<Type> must guarantee this invariant.
+  // XXX -- We use reinterpret_cast instead of static_cast so that files
+  // can avoid including Types.h if they want to.
+  return reinterpret_cast<T*>(Ty.getPointer());
+}
+/// TypeArrayView allows arrays of 'Type' to have a static type.
+template <typename T>
+using TypeArrayView = ArrayRefView<Type, T*, staticCastHelper,
+                                   /*AllowOrigAccess*/true>;
 
 } // end namespace swift
 

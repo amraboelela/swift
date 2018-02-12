@@ -295,6 +295,8 @@ updatePointsTo(CGNode *InitialNode, CGNode *pointsTo) {
       } else {
         Node->pointsTo = pointsTo;
       }
+      // Update use-points if the use-point information is already calculated.
+      pointsTo->mergeUsePoints(Node);
     }
 
     // Add all adjacent nodes to the WorkList.
@@ -1014,9 +1016,22 @@ static bool linkBBArgs(SILBasicBlock *BB) {
   return true;
 }
 
-/// Returns true if the type \p Ty is a reference or transitively contains
+/// Returns true if the type \p Ty is a reference or may transitively contains
 /// a reference, i.e. if it is a "pointer" type.
-static bool isOrContainsReference(SILType Ty, SILModule *Mod) {
+static bool mayContainReference(SILType Ty, SILModule *Mod) {
+  // Opaque types may contain a reference. Speculatively track them too.
+  //
+  // 1. It may be possible to optimize opaque values based on known mutation
+  // points.
+  //
+  // 2. A specialized function may call a generic function passing a conrete
+  // reference type via incomplete specialization.
+  //
+  // 3. A generic function may call a specialized function taking a concrete
+  // reference type via devirtualization.
+  if (Ty.isAddressOnly(*Mod))
+    return true;
+
   if (Ty.hasReferenceSemantics())
     return true;
 
@@ -1025,22 +1040,22 @@ static bool isOrContainsReference(SILType Ty, SILModule *Mod) {
 
   if (auto *Str = Ty.getStructOrBoundGenericStruct()) {
     for (auto *Field : Str->getStoredProperties()) {
-      if (isOrContainsReference(Ty.getFieldType(Field, *Mod), Mod))
+      if (mayContainReference(Ty.getFieldType(Field, *Mod), Mod))
         return true;
     }
     return false;
   }
   if (auto TT = Ty.getAs<TupleType>()) {
     for (unsigned i = 0, e = TT->getNumElements(); i != e; ++i) {
-      if (isOrContainsReference(Ty.getTupleElementType(i), Mod))
+      if (mayContainReference(Ty.getTupleElementType(i), Mod))
         return true;
     }
     return false;
   }
   if (auto En = Ty.getEnumOrBoundGenericEnum()) {
     for (auto *ElemDecl : En->getAllElements()) {
-      if (ElemDecl->hasAssociatedValues() &&
-          isOrContainsReference(Ty.getEnumElementType(ElemDecl, *Mod), Mod))
+      if (ElemDecl->hasAssociatedValues()
+          && mayContainReference(Ty.getEnumElementType(ElemDecl, *Mod), Mod))
         return true;
     }
     return false;
@@ -1054,7 +1069,7 @@ bool EscapeAnalysis::isPointer(ValueBase *V) {
   if (Iter != isPointerCache.end())
     return Iter->second;
 
-  bool IP = (Ty.isAddress() || isOrContainsReference(Ty, M));
+  bool IP = (Ty.isAddress() || mayContainReference(Ty, M));
   isPointerCache[Ty] = IP;
   return IP;
 }
@@ -1176,7 +1191,7 @@ bool EscapeAnalysis::buildConnectionGraphForDestructor(
   // of its payload.
   // TODO: Generalize it. Destructor of an aggregate type is equivalent to calling
   // destructors for its components.
-  while (auto payloadTy = Ty.getAnyOptionalObjectType())
+  while (auto payloadTy = Ty.getOptionalObjectType())
     Ty = payloadTy;
   auto Class = Ty.getClassOrBoundGenericClass();
   if (!Class || !Class->hasDestructor())
@@ -1371,6 +1386,7 @@ void EscapeAnalysis::analyzeInstruction(SILInstruction *I,
     case SILInstructionKind::DeallocRefInst:
     case SILInstructionKind::SetDeallocatingInst:
     case SILInstructionKind::FixLifetimeInst:
+    case SILInstructionKind::ClassifyBridgeObjectInst:
       // These instructions don't have any effect on escaping.
       return;
     case SILInstructionKind::StrongReleaseInst:
@@ -1768,7 +1784,8 @@ bool EscapeAnalysis::mergeCalleeGraph(SILInstruction *AS,
       CallerReturnVal = cast<ApplyInst>(AS);
     }
     CGNode *CallerRetNd = CallerGraph->getNode(CallerReturnVal, this);
-    Callee2CallerMapping.add(RetNd, CallerRetNd);
+    if (CallerRetNd)
+      Callee2CallerMapping.add(RetNd, CallerRetNd);
   }
   return CallerGraph->mergeFrom(CalleeGraph, Callee2CallerMapping);
 }

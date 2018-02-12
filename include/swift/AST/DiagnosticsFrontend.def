@@ -150,9 +150,21 @@ ERROR(error_implicit_output_file_is_directory,none,
   "the implicit output file '%0' is a directory; explicitly specify a filename "
   "using -o", (StringRef))
 
+ERROR(error_if_any_output_files_are_specified_they_all_must_be,none,
+  "if any output files are specified, they all must be", ())
+
 ERROR(error_primary_file_not_found,none,
       "primary file '%0' was not found in file list '%1'",
       (StringRef, StringRef))
+
+ERROR(error_cannot_have_input_files_with_file_list,none,
+"cannot have input files with file list", ())
+
+ERROR(error_cannot_have_primary_files_with_primary_file_list,none,
+"cannot have primary input files with primary file list", ())
+
+ERROR(error_duplicate_input_file,none,
+"duplicate input file '%0'", (StringRef))
 
 ERROR(repl_must_be_initialized,none,
       "variables currently must have an initial value when entered at the "
@@ -177,6 +189,9 @@ ERROR(error_index_failed_status_check,none,
   "failed file status check: %0", (StringRef))
 ERROR(error_index_inputs_more_than_outputs,none,
   "index output filenames do not match input source files", ())
+
+ERROR(error_wrong_number_of_arguments,none,
+"wrong number of '%0' arguments (expected %1, got %2)", (StringRef, int, int))
 
 ERROR(error_formatting_multiple_file_ranges,none,
   "file ranges don't support multiple input files", ())

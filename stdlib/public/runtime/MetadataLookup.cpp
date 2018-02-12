@@ -17,16 +17,22 @@
 #include "swift/Basic/LLVM.h"
 #include "swift/Basic/Lazy.h"
 #include "swift/Demangling/Demangler.h"
+#include "swift/Demangling/TypeDecoder.h"
+#include "swift/Runtime/Casting.h"
 #include "swift/Runtime/Concurrent.h"
 #include "swift/Runtime/HeapObject.h"
 #include "swift/Runtime/Metadata.h"
 #include "swift/Runtime/Mutex.h"
+#include "swift/Strings.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/StringExtras.h"
 #include "Private.h"
 #include "ImageInspection.h"
+#include <functional>
+#include <vector>
 
 using namespace swift;
 using namespace Demangle;
@@ -37,6 +43,7 @@ using namespace Demangle;
 #include <objc/objc.h>
 #endif
 
+#pragma mark Nominal type descriptor cache
 // Type Metadata Cache.
 
 namespace {
@@ -50,18 +57,18 @@ namespace {
     }
   };
 
-  struct TypeMetadataCacheEntry {
+  struct NominalTypeDescriptorCacheEntry {
   private:
     std::string Name;
-    const Metadata *Metadata;
+    const TypeContextDescriptor *Description;
 
   public:
-    TypeMetadataCacheEntry(const llvm::StringRef name,
-                           const ::Metadata *metadata)
-      : Name(name.str()), Metadata(metadata) {}
+    NominalTypeDescriptorCacheEntry(const llvm::StringRef name,
+                                    const TypeContextDescriptor *description)
+      : Name(name.str()), Description(description) {}
 
-    const ::Metadata *getMetadata(void) {
-      return Metadata;
+    const TypeContextDescriptor *getDescription() {
+      return Description;
     }
 
     int compareWithKey(llvm::StringRef aName) const {
@@ -76,7 +83,7 @@ namespace {
 } // end anonymous namespace
 
 struct TypeMetadataState {
-  ConcurrentMap<TypeMetadataCacheEntry> Cache;
+  ConcurrentMap<NominalTypeDescriptorCacheEntry> NominalCache;
   std::vector<TypeMetadataSection> SectionsToScan;
   Mutex SectionsToScanLock;
 
@@ -124,144 +131,777 @@ swift::swift_registerTypeMetadataRecords(const TypeMetadataRecord *begin,
   _registerTypeMetadataRecords(T, begin, end);
 }
 
-// copied from ProtocolConformanceRecord::getCanonicalTypeMetadata()
-template<>
-const Metadata *TypeMetadataRecord::getCanonicalTypeMetadata() const {
-  switch (getTypeKind()) {
-  case TypeMetadataRecordKind::UniqueDirectType:
-    return getDirectType();
-  case TypeMetadataRecordKind::NonuniqueDirectType: {
-    const ForeignTypeMetadata *FMD =
-        static_cast<const ForeignTypeMetadata *>(getDirectType());
-    return swift_getForeignTypeMetadata(const_cast<ForeignTypeMetadata *>(FMD));
-  }
-  case TypeMetadataRecordKind::UniqueDirectClass:
-    if (auto *ClassMetadata =
-          static_cast<const ::ClassMetadata *>(getDirectType())) {
-      return getMetadataForClass(ClassMetadata);
+bool
+swift::_contextDescriptorMatchesMangling(const ContextDescriptor *context,
+                                         Demangle::NodePointer node) {
+  if (node->getKind() == Demangle::Node::Kind::Type)
+    node = node->getChild(0);
+  
+  while (context) {
+    switch (context->getKind()) {
+    case ContextDescriptorKind::Module: {
+      auto module = cast<ModuleContextDescriptor>(context);
+      // Match to a mangled module name.
+      if (node->getKind() != Demangle::Node::Kind::Module)
+        return false;
+      if (!node->getText().equals(module->Name.get()))
+        return false;
+      
+      node = nullptr;
+      break;
     }
-    else
-      return nullptr;
-  default:
-    return nullptr;
+    
+    case ContextDescriptorKind::Extension: {
+      // TODO: Check whether the extension context constraints match.
+      return false;
+    }
+    
+    default:
+      if (auto type = llvm::dyn_cast<TypeContextDescriptor>(context)) {
+        auto flags = type->Flags.getKindSpecificFlags();
+        switch (node->getKind()) {
+        // If the mangled name doesn't indicate a type kind, accept anything.
+        // Otherwise, try to match them up.
+        case Demangle::Node::Kind::OtherNominalType:
+          break;
+        case Demangle::Node::Kind::Structure:
+          if (type->getKind() != ContextDescriptorKind::Struct
+              && !(flags & (uint16_t)TypeContextDescriptorFlags::IsCTag))
+            return false;
+          break;
+        case Demangle::Node::Kind::Class:
+          if (type->getKind() != ContextDescriptorKind::Class)
+            return false;
+          break;
+        case Demangle::Node::Kind::Enum:
+          if (type->getKind() != ContextDescriptorKind::Enum)
+            return false;
+          break;
+        case Demangle::Node::Kind::TypeAlias:
+          if (!(flags & (uint16_t)TypeContextDescriptorFlags::IsCTypedef))
+            return false;
+          break;
+        default:
+          return false;
+        }
+        if (!node->getChild(1)->getText().equals(type->Name.get()))
+          return false;
+        
+        node = node->getChild(0);
+        break;
+      }
+      
+      // We don't know about this kind of context, or it doesn't have a stable
+      // name we can match to.
+      return false;
+    }
+    
+    context = context->Parent;
   }
+  
+  // We should have reached the top of the node tree at the same time we reached
+  // the top of the context tree.
+  if (node)
+    return false;
+  
+  return true;
 }
 
-// returns the type metadata for the type named by typeNode
-const Metadata *
-swift::_matchMetadataByMangledTypeName(const llvm::StringRef typeName,
-                                       const Metadata *metadata,
-                                       const NominalTypeDescriptor *ntd) {
-  if (metadata != nullptr) {
-    assert(ntd == nullptr);
-    ntd = metadata->getNominalTypeDescriptor();
-  }
-
-  if (ntd == nullptr || ntd->Name.get() != typeName)
-    return nullptr;
-
-  // Call the accessor if there is one.
-  if (metadata == nullptr && !ntd->GenericParams.isGeneric()) {
-    if (auto accessFn = ntd->getAccessFunction())
-      metadata = accessFn();
-  }
-
-  return metadata;
-}
-
-// returns the type metadata for the type named by typeName
-static const Metadata *
+// returns the nominal type descriptor for the type named by typeName
+static const TypeContextDescriptor *
 _searchTypeMetadataRecords(const TypeMetadataState &T,
-                           const llvm::StringRef typeName) {
+                           Demangle::NodePointer node) {
   unsigned sectionIdx = 0;
   unsigned endSectionIdx = T.SectionsToScan.size();
-  const Metadata *foundMetadata = nullptr;
-
   for (; sectionIdx < endSectionIdx; ++sectionIdx) {
     auto &section = T.SectionsToScan[sectionIdx];
     for (const auto &record : section) {
-      if (auto metadata = record.getCanonicalTypeMetadata())
-        foundMetadata = _matchMetadataByMangledTypeName(typeName, metadata, nullptr);
-      else if (auto ntd = record.getNominalTypeDescriptor())
-        foundMetadata = _matchMetadataByMangledTypeName(typeName, nullptr, ntd);
-
-      if (foundMetadata != nullptr)
-        return foundMetadata;
+      if (auto ntd = record.getTypeContextDescriptor()) {
+        if (_contextDescriptorMatchesMangling(ntd, node)) {
+          return ntd;
+        }
+      }
     }
   }
 
   return nullptr;
 }
 
-static const Metadata *
-_classByName(const llvm::StringRef typeName) {
-
-  size_t DotPos = typeName.find('.');
-  if (DotPos == llvm::StringRef::npos)
-    return nullptr;
-  if (typeName.find('.', DotPos + 1) != llvm::StringRef::npos)
-    return nullptr;
-
-  Demangle::NodeFactory Factory;
-
-  NodePointer ClassNd = Factory.createNode(Node::Kind::Class);
-  NodePointer ModuleNd = Factory.createNode(Node::Kind::Module,
-                                            typeName.substr(0, DotPos));
-  NodePointer NameNd = Factory.createNode(Node::Kind::Identifier,
-                                          typeName.substr(DotPos + 1));
-  ClassNd->addChild(ModuleNd, Factory);
-  ClassNd->addChild(NameNd, Factory);
-
-  std::string Mangled = mangleNode(ClassNd);
-  StringRef MangledName = Mangled;
-
-  const Metadata *foundMetadata = nullptr;
+static const TypeContextDescriptor *
+_findNominalTypeDescriptor(Demangle::NodePointer node) {
+  const TypeContextDescriptor *foundNominal = nullptr;
   auto &T = TypeMetadataRecords.get();
+
+  auto mangledName = Demangle::mangleNode(node);
 
   // Look for an existing entry.
   // Find the bucket for the metadata entry.
-  if (auto Value = T.Cache.find(MangledName))
-    return Value->getMetadata();
+  if (auto Value = T.NominalCache.find(mangledName))
+    return Value->getDescription();
 
   // Check type metadata records
   T.SectionsToScanLock.withLock([&] {
-    foundMetadata = _searchTypeMetadataRecords(T, MangledName);
+    foundNominal = _searchTypeMetadataRecords(T, node);
   });
 
   // Check protocol conformances table. Note that this has no support for
   // resolving generic types yet.
-  if (!foundMetadata)
-    foundMetadata = _searchConformancesByMangledTypeName(MangledName);
+  if (!foundNominal)
+    foundNominal = _searchConformancesByMangledTypeName(node);
 
-  if (foundMetadata) {
-    T.Cache.getOrInsert(MangledName, foundMetadata);
+  if (foundNominal) {
+    T.NominalCache.getOrInsert(mangledName, foundNominal);
   }
 
-#if SWIFT_OBJC_INTEROP
-  // Check for ObjC class
-  // FIXME does this have any value? any ObjC class with a Swift name
-  // should already be registered as a Swift type.
-  if (foundMetadata == nullptr) {
-    std::string prefixedName("_Tt" + typeName.str());
-    foundMetadata = reinterpret_cast<ClassMetadata *>
-      (objc_lookUpClass(prefixedName.c_str()));
-  }
-#endif
-
-  return foundMetadata;
+  return foundNominal;
 }
 
-/// Return the type metadata for a given name, used in the
-/// implementation of _typeByName().
-///
-/// Currently only top-level classes are supported.
+#pragma mark Protocol descriptor cache
+namespace {
+  struct ProtocolSection {
+    const ProtocolRecord *Begin, *End;
 
-/// \param typeName The name of a class in the form: <module>.<class>
-/// \return Returns the metadata of the type, if found.
-SWIFT_CC(swift)
-SWIFT_RUNTIME_EXPORT
-const Metadata *
-swift_getTypeByName(const char *typeName, size_t typeNameLength) {
-  llvm::StringRef name(typeName, typeNameLength);
-  return _classByName(name);
+    const ProtocolRecord *begin() const {
+      return Begin;
+    }
+    const ProtocolRecord *end() const {
+      return End;
+    }
+  };
+
+  struct ProtocolDescriptorCacheEntry {
+  private:
+    std::string Name;
+    const ProtocolDescriptor *Description;
+
+  public:
+    ProtocolDescriptorCacheEntry(const llvm::StringRef name,
+                                 const ProtocolDescriptor *description)
+      : Name(name.str()), Description(description) {}
+
+    const ProtocolDescriptor *getDescription() {
+      return Description;
+    }
+
+    int compareWithKey(llvm::StringRef aName) const {
+      return aName.compare(Name);
+    }
+
+    template <class... T>
+    static size_t getExtraAllocationSize(T &&... ignored) {
+      return 0;
+    }
+  };
+
+  struct ProtocolMetadataState {
+    ConcurrentMap<ProtocolDescriptorCacheEntry> ProtocolCache;
+    std::vector<ProtocolSection> SectionsToScan;
+    Mutex SectionsToScanLock;
+
+    ProtocolMetadataState() {
+      SectionsToScan.reserve(16);
+      initializeProtocolLookup();
+    }
+  };
+
+  static Lazy<ProtocolMetadataState> Protocols;
+}
+
+static void
+_registerProtocols(ProtocolMetadataState &C,
+                   const ProtocolRecord *begin,
+                   const ProtocolRecord *end) {
+  ScopedLock guard(C.SectionsToScanLock);
+  C.SectionsToScan.push_back(ProtocolSection{begin, end});
+}
+
+void swift::addImageProtocolsBlockCallback(const void *protocols,
+                                           uintptr_t protocolsSize) {
+  assert(protocolsSize % sizeof(ProtocolRecord) == 0 &&
+         "protocols section not a multiple of ProtocolRecord");
+
+  // If we have a section, enqueue the protocols for lookup.
+  auto protocolsBytes = reinterpret_cast<const char *>(protocols);
+  auto recordsBegin
+    = reinterpret_cast<const ProtocolRecord *>(protocols);
+  auto recordsEnd
+    = reinterpret_cast<const ProtocolRecord *>(protocolsBytes + protocolsSize);
+
+  // Conformance cache should always be sufficiently initialized by this point.
+  _registerProtocols(Protocols.unsafeGetAlreadyInitialized(),
+                     recordsBegin, recordsEnd);
+}
+
+void swift::swift_registerProtocols(const ProtocolRecord *begin,
+                                    const ProtocolRecord *end) {
+  auto &C = Protocols.get();
+  _registerProtocols(C, begin, end);
+}
+
+static const ProtocolDescriptor *
+_searchProtocolRecords(const ProtocolMetadataState &C,
+                       const llvm::StringRef protocolName){
+  unsigned sectionIdx = 0;
+  unsigned endSectionIdx = C.SectionsToScan.size();
+  for (; sectionIdx < endSectionIdx; ++sectionIdx) {
+    auto &section = C.SectionsToScan[sectionIdx];
+    for (const auto &record : section) {
+      if (auto protocol = record.Protocol.getPointer()) {
+        // Drop the "S$" prefix from the protocol record. It's not used in
+        // the type itself.
+        StringRef foundProtocolName = protocol->Name;
+        assert(foundProtocolName.startswith("$S"));
+        foundProtocolName = foundProtocolName.drop_front(2);
+        if (foundProtocolName == protocolName)
+          return protocol;
+      }
+    }
+  }
+
+  return nullptr;
+}
+
+static const ProtocolDescriptor *
+_findProtocolDescriptor(llvm::StringRef mangledName) {
+  const ProtocolDescriptor *foundProtocol = nullptr;
+  auto &T = Protocols.get();
+
+  // Look for an existing entry.
+  // Find the bucket for the metadata entry.
+  if (auto Value = T.ProtocolCache.find(mangledName))
+    return Value->getDescription();
+
+  // Check type metadata records
+  T.SectionsToScanLock.withLock([&] {
+    foundProtocol = _searchProtocolRecords(T, mangledName);
+  });
+
+  if (foundProtocol) {
+    T.ProtocolCache.getOrInsert(mangledName, foundProtocol);
+  }
+
+  return foundProtocol;
+}
+
+#pragma mark Metadata lookup via mangled name
+
+#if SWIFT_OBJC_INTEROP
+/// For a mangled node that refers to an Objective-C class or protocol,
+/// return the class or protocol name.
+static Optional<StringRef> getObjCClassOrProtocolName(
+                                           const Demangle::NodePointer &node) {
+  if (node->getKind() != Demangle::Node::Kind::Class &&
+      node->getKind() != Demangle::Node::Kind::Protocol)
+    return None;
+
+  if (node->getNumChildren() != 2)
+    return None;
+
+  // Check whether we have the __ObjC module.
+  auto moduleNode = node->getChild(0);
+  if (moduleNode->getKind() != Demangle::Node::Kind::Module ||
+      moduleNode->getText() != MANGLING_MODULE_OBJC)
+    return None;
+
+  // Check whether we have an identifier.
+  auto nameNode = node->getChild(1);
+  if (nameNode->getKind() != Demangle::Node::Kind::Identifier)
+    return None;
+
+  return nameNode->getText();
+}
+#endif
+
+Optional<unsigned> swift::_depthIndexToFlatIndex(
+                                              unsigned depth, unsigned index,
+                                              ArrayRef<unsigned> paramCounts) {
+  // Out-of-bounds depth.
+  if (depth >= paramCounts.size()) return None;
+
+  // Compute the flat index.
+  unsigned flatIndex = index + (depth == 0 ? 0 : paramCounts[depth - 1]);
+
+  // Out-of-bounds index.
+  if (flatIndex >= paramCounts[depth]) return None;
+
+  return flatIndex;
+}
+
+/// Gather generic parameter counts from a context descriptor.
+///
+/// \returns true if the innermost descriptor is generic.
+bool swift::_gatherGenericParameterCounts(
+                                 const ContextDescriptor *descriptor,
+                                 std::vector<unsigned> &genericParamCounts) {
+  // Once we hit a non-generic descriptor, we're done.
+  if (!descriptor->isGeneric()) return false;
+
+  // Recurse to record the parent context's generic parameters.
+  if (auto parent = descriptor->Parent.get())
+    (void)_gatherGenericParameterCounts(parent, genericParamCounts);
+
+  // Record a new level of generic parameters if the count exceeds the
+  // previous count.
+  auto myCount =
+    descriptor->getGenericContext()->getGenericContextHeader().NumParams;
+  if (genericParamCounts.empty() || myCount > genericParamCounts.back()) {
+    genericParamCounts.push_back(myCount);
+    return true;
+  }
+
+  return false;
+}
+
+namespace {
+
+/// Find the offset of the protocol requirement for an associated type with
+/// the given name in the given protocol descriptor.
+Optional<unsigned> findAssociatedTypeByName(const ProtocolDescriptor *protocol,
+                                            StringRef name) {
+  // Only Swift protocols have associated types.
+  if (!protocol->Flags.isSwift()) return None;
+
+  // If we don't have associated type names, there's nothing to do.
+  const char *associatedTypeNamesPtr = protocol->AssociatedTypeNames.get();
+  if (!associatedTypeNamesPtr) return None;
+
+  // Look through the list of associated type names.
+  StringRef associatedTypeNames(associatedTypeNamesPtr);
+  unsigned matchingAssocTypeIdx = 0;
+  bool found = false;
+  while (!associatedTypeNames.empty()) {
+    auto split = associatedTypeNames.split(' ');
+    if (split.first == name) {
+      found = true;
+      break;
+    }
+
+    ++matchingAssocTypeIdx;
+    associatedTypeNames = split.second;
+  }
+
+  if (!found) return None;
+
+  // We have a match on the Nth associated type; go find the Nth associated
+  // type requirement.
+  unsigned currentAssocTypeIdx = 0;
+  unsigned numRequirements = protocol->NumRequirements;
+  const ProtocolRequirement *requirements = protocol->Requirements.get();
+  for (unsigned reqIdx = 0; reqIdx != numRequirements; ++reqIdx) {
+    if (requirements[reqIdx].Flags.getKind() !=
+        ProtocolRequirementFlags::Kind::AssociatedTypeAccessFunction)
+      continue;
+
+    if (currentAssocTypeIdx == matchingAssocTypeIdx)
+      return reqIdx + WitnessTableFirstRequirementOffset;
+
+    ++currentAssocTypeIdx;
+  }
+
+  swift_runtime_unreachable("associated type names don't line up");
+}
+
+/// Constructs metadata by decoding a mangled type name, for use with
+/// \c TypeDecoder.
+class DecodedMetadataBuilder {
+public:
+  /// Callback used to handle the substitution of a generic parameter for
+  /// its metadata.
+  using SubstGenericParameterFn =
+    std::function<const Metadata *(unsigned depth, unsigned index)>;
+
+  /// Callback used to handle the lookup of dependent member types.
+  using LookupDependentMemberFn =
+    std::function<const Metadata *(const Metadata *base, StringRef assocType,
+                                   const ProtocolDescriptor *protocol)>;
+
+private:
+  /// The demangler we'll use when building new nodes.
+  Demangler &demangler;
+
+  /// Substitute generic parameters.
+  SubstGenericParameterFn substGenericParameter;
+
+  /// Lookup dependent member types.
+  LookupDependentMemberFn lookupDependentMember;
+
+  /// Ownership information related to the metadata we are trying to lookup.
+  TypeOwnership Ownership;
+
+public:
+  DecodedMetadataBuilder(Demangler &demangler,
+                         SubstGenericParameterFn substGenericParameter
+                           = nullptr,
+                         LookupDependentMemberFn lookupDependentMember
+                           = nullptr)
+    : demangler(demangler),
+      substGenericParameter(substGenericParameter),
+      lookupDependentMember(lookupDependentMember) { }
+
+  using BuiltType = const Metadata *;
+
+  struct BuiltNominalTypeDecl :
+    llvm::PointerUnion<const TypeContextDescriptor *, const Metadata *>
+  {
+    using PointerUnion::PointerUnion;
+
+    explicit operator bool() const { return !isNull(); }
+  };
+
+  using BuiltProtocolDecl = const ProtocolDescriptor *;
+
+  Demangle::NodeFactory &getNodeFactory() { return demangler; }
+
+  BuiltNominalTypeDecl createNominalTypeDecl(
+                                     const Demangle::NodePointer &node) const {
+#if SWIFT_OBJC_INTEROP
+    // If we have an Objective-C class name, call into the Objective-C
+    // runtime to find them.
+    if (auto objcClassName = getObjCClassOrProtocolName(node)) {
+      auto objcClass = objc_getClass(objcClassName->str().c_str());
+      return swift_getObjCClassMetadata((const ClassMetadata *)objcClass);
+    }
+#endif
+
+    // Look for a nominal type descriptor based on its mangled name.
+    return _findNominalTypeDescriptor(node);
+  }
+
+  BuiltProtocolDecl createProtocolDecl(
+                                    const Demangle::NodePointer &node) const {
+#if SWIFT_OBJC_INTEROP
+    // If we have an Objective-C class name, call into the Objective-C
+    // runtime to find them.
+    if (auto objcProtocolName = getObjCClassOrProtocolName(node)) {
+      return (ProtocolDescriptor *)objc_getProtocol(
+                                              objcProtocolName->str().c_str());
+    }
+#endif
+
+    auto mangledName = Demangle::mangleNode(node);
+
+    // Look for a Swift protocol with this mangled name.
+    if (auto protocol = _findProtocolDescriptor(mangledName))
+      return protocol;
+
+#if SWIFT_OBJC_INTEROP
+    // Look for a Swift-defined @objc protocol with the Swift 3 mangling that
+    // is used for Objective-C entities.
+    std::string objcMangledName =
+      "_TtP" + mangledName.substr(0, mangledName.size()-1) + "_";
+    if (auto protocol = objc_getProtocol(objcMangledName.c_str()))
+      return (ProtocolDescriptor *)protocol;
+#endif
+
+    return nullptr;
+  }
+
+  BuiltType createNominalType(BuiltNominalTypeDecl metadataOrTypeDecl,
+                              BuiltType parent) const {
+    // Treat nominal type creation the same way as generic type creation,
+    // but with no generic arguments at this level.
+    return createBoundGenericType(metadataOrTypeDecl, { }, parent);
+  }
+
+  BuiltType createBoundGenericType(BuiltNominalTypeDecl metadataOrTypeDecl,
+                                   const ArrayRef<BuiltType> genericArgs,
+                                   const BuiltType parent) const {
+    // If we already have metadata, return it.
+    if (auto metadata = metadataOrTypeDecl.dyn_cast<const Metadata *>())
+      return metadata;
+
+    auto typeDecl = metadataOrTypeDecl.get<const TypeContextDescriptor *>();
+
+    // Figure out the various levels of generic parameters we have in
+    // this type.
+    std::vector<unsigned> genericParamCounts;
+    bool innermostIsGeneric =
+      _gatherGenericParameterCounts(typeDecl, genericParamCounts);
+    bool isGeneric = !genericParamCounts.empty();
+
+    // Gather the generic arguments.
+    std::vector<const void *> allGenericArgsVec;
+    ArrayRef<const void *> allGenericArgs;
+
+    // If the innermost type is generic, we need to gather arguments and
+    // check requirements.
+    if (innermostIsGeneric) {
+      // If no generic arguments were provided at this level, fail.
+      if (genericArgs.empty()) return BuiltType();
+
+      unsigned startParamIndex;
+      if (genericParamCounts.size() > 1) {
+        // When there is more than one level of generic parameters, copy all of
+        // the key type parameters from the parent (but not any of the other
+        // requirements, e.g., witness tables are excluded).
+        auto parentGenericArgs = parent->getGenericArgs();
+        auto parentGenericParams =
+          typeDecl->Parent->getGenericContext()->getGenericParams();
+        unsigned parentArgIndex = 0;
+        for (const auto &parentGenericParam : parentGenericParams) {
+          if (parentGenericParam.hasKeyArgument())
+            allGenericArgsVec.push_back(parentGenericArgs[parentArgIndex++]);
+        }
+
+        startParamIndex = parentGenericParams.size();
+      } else {
+        startParamIndex = 0;
+      }
+
+      // If we have the wrong number of generic arguments, fail.
+      auto genericContext = typeDecl->getGenericContext();
+      auto genericParams = genericContext->getGenericParams();
+      if (genericArgs.size() != genericParamCounts.back() - startParamIndex)
+        return BuiltType();
+
+      // Add generic arguments for the key parameters at this level.
+      unsigned genericArgIndex = 0;
+      for (const auto &genericParam : genericParams.slice(startParamIndex)) {
+        if (genericParam.hasKeyArgument())
+          allGenericArgsVec.push_back(genericArgs[genericArgIndex++]);
+      }
+
+      // Check whether the generic requirements are satisfied, collecting
+      // any extra arguments we need for the instantiation function.
+      bool failed =
+        _checkGenericRequirements(genericContext->getGenericRequirements(),
+                                  allGenericArgsVec,
+            [&](unsigned flatIndex) -> BuiltType {
+              // FIXME: Wrong for same-type-to-concrete
+              // constraints.
+              if (flatIndex < allGenericArgsVec.size())
+                return static_cast<BuiltType>(allGenericArgsVec[flatIndex]);
+
+              return BuiltType();
+            },
+            [&](unsigned depth, unsigned index) -> BuiltType {
+              auto flatIndex = _depthIndexToFlatIndex(depth, index,
+                                                      genericParamCounts);
+              // FIXME: Wrong for same-type-to-concrete
+              // constraints.
+              if (flatIndex && *flatIndex < allGenericArgsVec.size())
+                return static_cast<BuiltType>(allGenericArgsVec[*flatIndex]);
+
+              return BuiltType();
+            });
+      if (failed)
+        return BuiltType();
+
+      // If we still have the wrong number of generic arguments, this is
+      // some kind of metadata mismatch.
+      // FIXME: Fail silently? Complain loudly?
+      assert(typeDecl->getGenericContextHeader().getNumArguments() ==
+             allGenericArgsVec.size());
+
+      allGenericArgs = allGenericArgsVec;
+    } else {
+      // If generic arguments were provided at this level, fail.
+      if (!genericArgs.empty()) return BuiltType();
+
+      // If this is a generic context, get all of the arguments from our
+      // parent.
+      if (isGeneric) {
+        if (!parent) return BuiltType();
+
+        auto numGenericArgs =
+          typeDecl->getGenericContextHeader().getNumArguments();
+        auto parentGenericArgs =
+          reinterpret_cast<const void * const *>(parent->getGenericArgs());
+        allGenericArgs =
+          llvm::makeArrayRef(parentGenericArgs, numGenericArgs);
+      }
+    }
+
+    // Call the access function.
+    auto accessFunction = typeDecl->getAccessFunction();
+    if (!accessFunction) return BuiltType();
+
+    return accessFunction(allGenericArgs);
+  }
+
+  BuiltType createBuiltinType(StringRef mangledName) const {
+#define BUILTIN_TYPE(Symbol, _) \
+    if (mangledName.equals(#Symbol)) \
+      return &METADATA_SYM(Symbol).base;
+#include "swift/Runtime/BuiltinTypes.def"
+    return BuiltType();
+  }
+
+  BuiltType createMetatypeType(BuiltType instance, bool wasAbstract) const {
+    return swift_getMetatypeMetadata(instance);
+  }
+
+  BuiltType createExistentialMetatypeType(BuiltType instance) const {
+    return swift_getExistentialMetatypeMetadata(instance);
+  }
+
+  BuiltType createProtocolCompositionType(ArrayRef<BuiltProtocolDecl> protocols,
+                                          BuiltType superclass,
+                                          bool isClassBound) const {
+    // Determine whether we have a class bound.
+    ProtocolClassConstraint classConstraint = ProtocolClassConstraint::Any;
+    if (isClassBound || superclass) {
+      classConstraint = ProtocolClassConstraint::Class;
+    } else {
+      for (auto protocol : protocols) {
+        if (protocol->Flags.getClassConstraint()
+              == ProtocolClassConstraint::Class) {
+          classConstraint = ProtocolClassConstraint::Class;
+          break;
+        }
+      }
+    }
+
+    return swift_getExistentialTypeMetadata(classConstraint, superclass,
+                                            protocols.size(), protocols.data());
+  }
+
+  BuiltType createGenericTypeParameterType(unsigned depth,
+                                           unsigned index) const {
+    // Use the callback, when provided.
+    if (substGenericParameter)
+      return substGenericParameter(depth, index);
+
+    return BuiltType();
+  }
+
+  BuiltType createFunctionType(
+                           ArrayRef<Demangle::FunctionParam<BuiltType>> params,
+                           BuiltType result, FunctionTypeFlags flags) const {
+    std::vector<BuiltType> paramTypes;
+    std::vector<uint32_t> paramFlags;
+
+    // Fill in the parameters.
+    paramTypes.reserve(params.size());
+    if (flags.hasParameterFlags())
+      paramFlags.reserve(params.size());
+    for (const auto &param : params) {
+      paramTypes.push_back(param.getType());
+      if (flags.hasParameterFlags())
+        paramFlags.push_back(param.getFlags().getIntValue());
+    }
+
+    return swift_getFunctionTypeMetadata(flags, paramTypes.data(),
+                                         flags.hasParameterFlags()
+                                           ? paramFlags.data()
+                                           : nullptr,
+                                         result);
+  }
+
+  BuiltType createTupleType(ArrayRef<BuiltType> elements,
+                            std::string labels,
+                            bool variadic) const {
+    // TODO: 'variadic' should no longer exist
+    auto flags = TupleTypeFlags().withNumElements(elements.size());
+    if (!labels.empty())
+      flags = flags.withNonConstantLabels(true);
+    return swift_getTupleTypeMetadata(flags, elements.data(),
+                                      labels.empty() ? nullptr : labels.c_str(),
+                                      /*proposedWitnesses=*/nullptr);
+  }
+
+  BuiltType createDependentMemberType(StringRef name, BuiltType base,
+                                      BuiltProtocolDecl protocol) const {
+    if (lookupDependentMember)
+      return lookupDependentMember(base, name, protocol);
+
+    return BuiltType();
+  }
+
+  BuiltType createUnownedStorageType(BuiltType base) {
+    Ownership.setUnowned();
+    return base;
+  }
+
+  BuiltType createUnmanagedStorageType(BuiltType base) {
+    Ownership.setUnmanaged();
+    return base;
+  }
+
+  BuiltType createWeakStorageType(BuiltType base) {
+    Ownership.setWeak();
+    return base;
+  }
+
+  BuiltType createSILBoxType(BuiltType base) const {
+    // FIXME: Implement.
+    return BuiltType();
+  }
+
+  TypeOwnership getOwnership() const { return Ownership; }
+};
+
+}
+
+TypeInfo
+swift::_getTypeByMangledName(StringRef typeName,
+                             SubstGenericParameterFn substGenericParam) {
+
+  Demangler demangler;
+  NodePointer node;
+
+  // Check whether this is the convenience syntax "ModuleName.ClassName".
+  size_t dotPos = typeName.find('.');
+  if (dotPos != llvm::StringRef::npos &&
+      typeName.find('.', dotPos + 1) == llvm::StringRef::npos) {
+    // Form a demangle tree for this class.
+    NodePointer classNode = demangler.createNode(Node::Kind::Class);
+    NodePointer moduleNode = demangler.createNode(Node::Kind::Module,
+                                                  typeName.substr(0, dotPos));
+    NodePointer nameNode = demangler.createNode(Node::Kind::Identifier,
+                                            typeName.substr(dotPos + 1));
+    classNode->addChild(moduleNode, demangler);
+    classNode->addChild(nameNode, demangler);
+
+    node = classNode;
+  } else {
+    // Demangle the type name.
+    node = demangler.demangleType(typeName);
+    if (!node)
+      return TypeInfo();
+  }
+
+  DecodedMetadataBuilder builder(demangler, substGenericParam,
+    [](const Metadata *base, StringRef assocType,
+       const ProtocolDescriptor *protocol) -> const Metadata * {
+      // Look for a conformance of the base type to the protocol.
+      auto witnessTable = swift_conformsToProtocol(base, protocol);
+      if (!witnessTable) return nullptr;
+
+      // Look for the named associated type within the protocol.
+      auto assocTypeReqIndex = findAssociatedTypeByName(protocol, assocType);
+      if (!assocTypeReqIndex) return nullptr;
+
+      // Call the associated type access function.
+      using AssociatedTypeAccessFn =
+        const Metadata *(*)(const Metadata *base, const WitnessTable *);
+      return ((const AssociatedTypeAccessFn *)witnessTable)[*assocTypeReqIndex]
+                (base, witnessTable);
+    });
+
+  auto type = Demangle::decodeMangledType(builder, node);
+  return {type, builder.getOwnership()};
+}
+
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERNAL
+const Metadata * _Nullable
+swift_getTypeByMangledName(const char *typeNameStart, size_t typeNameLength,
+                           size_t numberOfLevels,
+                           size_t *parametersPerLevel,
+                           const Metadata * const *flatSubstitutions) {
+  llvm::StringRef typeName(typeNameStart, typeNameLength);
+  return _getTypeByMangledName(typeName,
+    [&](unsigned depth, unsigned index) -> const Metadata * {
+      if (depth >= numberOfLevels)
+        return nullptr;
+
+      if (index >= parametersPerLevel[depth])
+        return nullptr;
+
+      unsigned flatIndex = index;
+      for (unsigned i = 0; i < depth; ++i)
+        flatIndex += parametersPerLevel[i];
+
+      return flatSubstitutions[flatIndex];
+    });
 }

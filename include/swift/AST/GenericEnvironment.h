@@ -89,7 +89,7 @@ public:
     return Signature;
   }
 
-  ArrayRef<GenericTypeParamType *> getGenericParams() const;
+  TypeArrayView<GenericTypeParamType> getGenericParams() const;
 
   /// Create a new, "incomplete" generic environment that will be populated
   /// by calls to \c addMapping().
@@ -154,12 +154,6 @@ public:
   /// Get the sugared form of a type by substituting any
   /// generic parameter types by their sugared form.
   Type getSugaredType(Type type) const;
-
-  /// Build a contextual type substitution map from a type substitution function
-  /// and conformance lookup function.
-  SubstitutionMap
-  getSubstitutionMap(TypeSubstitutionFn subs,
-                     LookupConformanceFn lookupConformance) const;
 
   SubstitutionList getForwardingSubstitutions() const;
 

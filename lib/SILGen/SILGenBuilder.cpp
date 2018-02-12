@@ -110,6 +110,30 @@ SILGenBuilder::createPartialApply(SILLocation loc, SILValue fn,
       closureTy.getAs<SILFunctionType>()->getCalleeConvention());
 }
 
+ManagedValue SILGenBuilder::createPartialApply(SILLocation loc, SILValue fn,
+                                               SILType substFnTy,
+                                               SubstitutionList subs,
+                                               ArrayRef<ManagedValue> args,
+                                               SILType closureTy) {
+  llvm::SmallVector<SILValue, 8> values;
+  transform(args, std::back_inserter(values), [&](ManagedValue mv) -> SILValue {
+    return mv.forward(getSILGenFunction());
+  });
+  SILValue result = SILGenBuilder::createPartialApply(loc, fn, substFnTy, subs,
+                                                      values, closureTy);
+  // Partial apply instructions create a box, so we need to put on a cleanup.
+  return getSILGenFunction().emitManagedRValueWithCleanup(result);
+}
+
+ManagedValue SILGenBuilder::createConvertFunction(SILLocation loc,
+                                                  ManagedValue fn,
+                                                  SILType resultTy) {
+  CleanupCloner cloner(*this, fn);
+  SILValue result = SILBuilder::createConvertFunction(
+      loc, fn.forward(getSILGenFunction()), resultTy);
+  return cloner.clone(result);
+}
+
 BuiltinInst *SILGenBuilder::createBuiltin(SILLocation loc, Identifier name,
                                           SILType resultTy,
                                           SubstitutionList subs,
@@ -437,34 +461,18 @@ ManagedValue SILGenBuilder::formalAccessBufferForExpr(
 ManagedValue SILGenBuilder::createUncheckedEnumData(SILLocation loc,
                                                     ManagedValue operand,
                                                     EnumElementDecl *element) {
-  if (operand.hasCleanup()) {
-    SILValue newValue =
-        SILBuilder::createUncheckedEnumData(loc, operand.forward(SGF), element);
-    return SGF.emitManagedRValueWithCleanup(newValue);
-  }
-
-  ManagedValue borrowedBase = operand.borrow(SGF, loc);
-  SILValue newValue = SILBuilder::createUncheckedEnumData(
-      loc, borrowedBase.getValue(), element);
-  return ManagedValue::forUnmanaged(newValue);
+  CleanupCloner cloner(*this, operand);
+  SILValue result = createUncheckedEnumData(loc, operand.forward(SGF), element);
+  return cloner.clone(result);
 }
 
 ManagedValue SILGenBuilder::createUncheckedTakeEnumDataAddr(
     SILLocation loc, ManagedValue operand, EnumElementDecl *element,
     SILType ty) {
-  // First see if we have a cleanup. If we do, we are going to forward and emit
-  // a managed buffer with cleanup.
-  if (operand.hasCleanup()) {
-    return SGF.emitManagedBufferWithCleanup(
-        SILBuilder::createUncheckedTakeEnumDataAddr(loc, operand.forward(SGF),
-                                                    element, ty));
-  }
-
-  SILValue result = SILBuilder::createUncheckedTakeEnumDataAddr(
-      loc, operand.getUnmanagedValue(), element, ty);
-  if (operand.isLValue())
-    return ManagedValue::forLValue(result);
-  return ManagedValue::forUnmanaged(result);
+  CleanupCloner cloner(*this, operand);
+  SILValue result =
+      createUncheckedTakeEnumDataAddr(loc, operand.forward(SGF), element);
+  return cloner.clone(result);
 }
 
 ManagedValue SILGenBuilder::createLoadTake(SILLocation loc, ManagedValue v) {
@@ -617,6 +625,11 @@ ManagedValue SILGenBuilder::createManagedOptionalNone(SILLocation loc,
   return ManagedValue::forUnmanaged(tempResult);
 }
 
+ManagedValue SILGenBuilder::createManagedFunctionRef(SILLocation loc,
+                                                     SILFunction *f) {
+  return ManagedValue::forUnmanaged(SILBuilder::createFunctionRef(loc, f));
+}
+
 ManagedValue SILGenBuilder::createTupleElementAddr(SILLocation Loc,
                                                    ManagedValue Base,
                                                    unsigned Index,
@@ -678,6 +691,14 @@ ManagedValue SILGenBuilder::createOpenExistentialBoxValue(SILLocation loc,
   return ManagedValue::forUnmanaged(openedExistential);
 }
 
+ManagedValue SILGenBuilder::createOpenExistentialMetatype(SILLocation loc,
+                                                          ManagedValue value,
+                                                          SILType openedType) {
+  SILValue result = SILGenBuilder::createOpenExistentialMetatype(
+      loc, value.getValue(), openedType);
+  return ManagedValue::forTrivialRValue(result);
+}
+
 ManagedValue SILGenBuilder::createStore(SILLocation loc, ManagedValue value,
                                         SILValue address,
                                         StoreOwnershipQualifier qualifier) {
@@ -729,6 +750,78 @@ void SILGenBuilder::createStoreBorrowOrTrivial(SILLocation loc,
   }
 
   createStoreBorrow(loc, value, address);
+}
+
+ManagedValue SILGenBuilder::createBridgeObjectToRef(SILLocation loc,
+                                                    ManagedValue mv,
+                                                    SILType destType) {
+  CleanupCloner cloner(*this, mv);
+  SILValue result = createBridgeObjectToRef(loc, mv.forward(SGF), destType);
+  return cloner.clone(result);
+}
+
+ManagedValue SILGenBuilder::createBlockToAnyObject(SILLocation loc,
+                                                   ManagedValue v,
+                                                   SILType destType) {
+  assert(SGF.getASTContext().LangOpts.EnableObjCInterop);
+  assert(destType.isAnyObject());
+  assert(v.getType().is<SILFunctionType>());
+  assert(v.getType().castTo<SILFunctionType>()->getRepresentation() ==
+           SILFunctionTypeRepresentation::Block);
+
+  // For now, we don't have a better instruction than this.
+  return createUncheckedRefCast(loc, v, destType);
+}
+
+BranchInst *SILGenBuilder::createBranch(SILLocation loc,
+                                        SILBasicBlock *targetBlock,
+                                        ArrayRef<ManagedValue> args) {
+  llvm::SmallVector<SILValue, 8> newArgs;
+  transform(args, std::back_inserter(newArgs),
+            [&](ManagedValue mv) -> SILValue { return mv.forward(SGF); });
+  return createBranch(loc, targetBlock, newArgs);
+}
+
+ReturnInst *SILGenBuilder::createReturn(SILLocation loc,
+                                        ManagedValue returnValue) {
+  return createReturn(loc, returnValue.forward(SGF));
+}
+
+ManagedValue SILGenBuilder::createTuple(SILLocation loc, SILType type,
+                                        ArrayRef<ManagedValue> elements) {
+  // Handle the empty tuple case.
+  if (elements.empty()) {
+    SILValue result = createTuple(loc, type, ArrayRef<SILValue>());
+    return ManagedValue::forUnmanaged(result);
+  }
+
+  // We need to look for the first non-trivial value and use that as our cleanup
+  // cloner value.
+  auto iter = find_if(elements, [&](ManagedValue mv) -> bool {
+    return mv.getType().isTrivial(getModule());
+  });
+
+  llvm::SmallVector<SILValue, 8> forwardedValues;
+  // If we have all trivial values, then just create the tuple and return. No
+  // cleanups need to be cloned.
+  if (iter == elements.end()) {
+    transform(elements, std::back_inserter(forwardedValues),
+              [&](ManagedValue mv) -> SILValue {
+                return mv.forward(getSILGenFunction());
+              });
+    SILValue result = createTuple(loc, type, forwardedValues);
+    return ManagedValue::forUnmanaged(result);
+  }
+
+  // Otherwise, we use that values cloner. This is taking advantage of
+  // instructions that forward ownership requiring that all input values have
+  // the same ownership if they are non-trivial.
+  CleanupCloner cloner(*this, *iter);
+  transform(elements, std::back_inserter(forwardedValues),
+            [&](ManagedValue mv) -> SILValue {
+              return mv.forward(getSILGenFunction());
+            });
+  return cloner.clone(createTuple(loc, type, forwardedValues));
 }
 
 //===----------------------------------------------------------------------===//

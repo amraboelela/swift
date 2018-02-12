@@ -66,7 +66,7 @@ open class ManagedBuffer<Header, Element> {
   @_inlineable // FIXME(sil-serialize-all)
   public final var capacity: Int {
     let storageAddr = UnsafeMutableRawPointer(Builtin.bridgeToRawPointer(self))
-    let endAddr = storageAddr + _swift_stdlib_malloc_size(storageAddr)
+    let endAddr = storageAddr + _stdlib_malloc_size(storageAddr)
     let realCapacity = endAddr.assumingMemoryBound(to: Element.self) -
       firstElementAddress
     return realCapacity
@@ -430,7 +430,7 @@ public struct ManagedBufferPointer<Header, Element> : Equatable {
   @_inlineable // FIXME(sil-serialize-all)
   @_versioned // FIXME(sil-serialize-all)
   internal var _capacityInBytes: Int {
-    return _swift_stdlib_malloc_size(_address)
+    return _stdlib_malloc_size(_address)
   }
 
   /// The address of this instance in a convenient pointer-to-bytes form
@@ -506,6 +506,32 @@ public struct ManagedBufferPointer<Header, Element> : Equatable {
 ///
 ///     mutating func update(withValue value: T) {
 ///         if !isKnownUniquelyReferenced(&myStorage) {
+///             myStorage = self.copiedStorage()
+///         }
+///         myStorage.update(withValue: value)
+///     }
+///
+/// Use care when calling `isKnownUniquelyReferenced(_:)` from within a Boolean
+/// expression. In debug builds, an instance in the left-hand side of a `&&`
+/// or `||` expression may still be referenced when evaluating the right-hand
+/// side, inflating the instance's reference count. For example, this version
+/// of the `update(withValue)` method will re-copy `myStorage` on every call:
+///
+///     // Copies too frequently:
+///     mutating func badUpdate(withValue value: T) {
+///         if myStorage.shouldCopy || !isKnownUniquelyReferenced(&myStorage) {
+///             myStorage = self.copiedStorage()
+///         }
+///         myStorage.update(withValue: value)
+///     }
+///
+/// To avoid this behavior, swap the call `isKnownUniquelyReferenced(_:)` to
+/// the left-hand side or store the result of the first expression in a local
+/// constant:
+///
+///     mutating func goodUpdate(withValue value: T) {
+///         let shouldCopy = myStorage.shouldCopy
+///         if shouldCopy || !isKnownUniquelyReferenced(&myStorage) {
 ///             myStorage = self.copiedStorage()
 ///         }
 ///         myStorage.update(withValue: value)

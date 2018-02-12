@@ -83,7 +83,7 @@ func test_too_many_but_some_better() {
 // type variables.
 _ = [Any]().withUnsafeBufferPointer { (buf) -> [Any] in
   guard let base = buf.baseAddress else { return [] }
-  return (base ..< base + buf.count).m // expected-error {{value of type 'CountableRange<UnsafePointer<Any>>' has no member 'm'}}
+  return (base ..< base + buf.count).m // expected-error {{value of type 'Range<UnsafePointer<Any>>' has no member 'm'}}
 }
 
 // Typo correction with class-bound archetypes.
@@ -119,4 +119,19 @@ func takesAnyObject(_ t: AnyObject) {
 func takesAnyObjectArchetype<T : AnyObject>(_ t: T) {
   _ = t.rawPointer
   // expected-error@-1 {{value of type 'T' has no member 'rawPointer'}}
+}
+
+// Typo correction with an UnresolvedDotExpr.
+enum Foo {
+  // note: the fixit is actually for the line with the error below, but
+  // -verify mode is not smart enough for that yet.
+
+  case flashing // expected-note {{did you mean 'flashing'?}}{{8-15=flashing}}
+}
+
+func foo(_ a: Foo) {
+}
+
+func bar() {
+  foo(.flashin) // expected-error {{type 'Foo' has no member 'flashin'}}
 }

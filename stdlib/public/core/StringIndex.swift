@@ -19,6 +19,7 @@ extension String {
     internal var _cache: _Cache
 
     internal typealias _UTF8Buffer = _ValidUTF8Buffer<UInt64>
+    @_fixed_layout // FIXME(sil-serialize-all)
     @_versioned
     internal enum _Cache {
     case utf16
@@ -64,6 +65,13 @@ extension String.Index : Comparable {
   @_inlineable // FIXME(sil-serialize-all)
   public static func < (lhs: String.Index, rhs: String.Index) -> Bool {
     return lhs._compoundOffset < rhs._compoundOffset
+  }
+}
+
+extension String.Index : Hashable {
+  @_inlineable // FIXME(sil-serialize-all)
+  public var hashValue: Int {
+    return _compoundOffset.hashValue
   }
 }
 

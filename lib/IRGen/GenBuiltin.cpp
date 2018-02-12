@@ -116,13 +116,10 @@ getLoweredTypeAndTypeInfo(IRGenModule &IGM, Type unloweredType) {
 }
 
 /// emitBuiltinCall - Emit a call to a builtin function.
-void irgen::emitBuiltinCall(IRGenFunction &IGF, Identifier FnId,
-                            SILType resultType,
+void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
+                            Identifier FnId, SILType resultType,
                             Explosion &args, Explosion &out,
                             SubstitutionList substitutions) {
-  // Decompose the function's name into a builtin name and type list.
-  const BuiltinInfo &Builtin = IGF.getSILModule().getBuiltinInfo(FnId);
-
   if (Builtin.ID == BuiltinValueKind::UnsafeGuaranteedEnd) {
     // Just consume the incoming argument.
     assert(args.size() == 1 && "Expecting one incoming argument");
@@ -201,6 +198,11 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, Identifier FnId,
   // At that stage, the function name GV used by the profiling pass is hidden.
   // Fix the intrinsic call here by pointing it to the correct GV.
   if (IID == llvm::Intrinsic::instrprof_increment) {
+    // If we import profiling intrinsics from a swift module but profiling is
+    // not enabled, ignore the increment.
+    if (!IGF.getSILModule().getOptions().GenerateProfile)
+      return;
+
     // Extract the PGO function name.
     auto *NameGEP = cast<llvm::User>(args.claimNext());
     auto *NameGV = dyn_cast<llvm::GlobalVariable>(NameGEP->stripPointerCasts());
@@ -213,13 +215,15 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, Identifier FnId,
       std::string PGOFuncNameVar = llvm::getPGOFuncNameVarName(
           PGOFuncName, llvm::GlobalValue::LinkOnceAnyLinkage);
       auto *FuncNamePtr = IGF.IGM.Module.getNamedGlobal(PGOFuncNameVar);
+      if (!FuncNamePtr)
+        FuncNamePtr = llvm::createPGOFuncNameVar(
+            *IGF.IGM.getModule(), llvm::GlobalValue::LinkOnceAnyLinkage,
+            PGOFuncName);
 
-      if (FuncNamePtr) {
-        llvm::SmallVector<llvm::Value *, 2> Indices(2, NameGEP->getOperand(1));
-        NameGEP = llvm::ConstantExpr::getGetElementPtr(
-            ((llvm::PointerType *)FuncNamePtr->getType())->getElementType(),
-            FuncNamePtr, makeArrayRef(Indices));
-      }
+      llvm::SmallVector<llvm::Value *, 2> Indices(2, NameGEP->getOperand(1));
+      NameGEP = llvm::ConstantExpr::getGetElementPtr(
+          ((llvm::PointerType *)FuncNamePtr->getType())->getElementType(),
+          FuncNamePtr, makeArrayRef(Indices));
     }
 
     // Replace the placeholder value with the new GEP.
