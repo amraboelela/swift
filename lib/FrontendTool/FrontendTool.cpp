@@ -188,7 +188,7 @@ template <> struct ObjectTraits<LoadedModuleTraceFormat> {
 }
 
 static bool emitLoadedModuleTraceIfNeeded(ASTContext &ctxt,
-                                          DependencyTracker &depTracker,
+                                          DependencyTracker *depTracker,
                                           const FrontendOptions &opts) {
   if (opts.InputsAndOutputs.supplementaryOutputs()
           .LoadedModuleTracePath.empty())
@@ -210,7 +210,7 @@ static bool emitLoadedModuleTraceIfNeeded(ASTContext &ctxt,
   llvm::SmallVector<std::string, 16> swiftModules;
 
   // Canonicalise all the paths by opening them.
-  for (auto &dep : depTracker.getDependencies()) {
+  for (auto &dep : depTracker->getDependencies()) {
     llvm::SmallString<256> buffer;
     StringRef realPath;
     int FD;
@@ -838,7 +838,7 @@ static bool performCompile(CompilerInstance &Instance,
   FrontendOptions::ActionType Action = opts.RequestedAction;
 
   if (Action == FrontendOptions::ActionType::EmitSyntax) {
-    Instance.getASTContext().LangOpts.KeepSyntaxInfoInSourceFile = true;
+    Instance.getASTContext().LangOpts.BuildSyntaxTree = true;
     Instance.getASTContext().LangOpts.VerifySyntaxTree = true;
   }
 
@@ -903,7 +903,7 @@ static bool performCompile(CompilerInstance &Instance,
 
   emitReferenceDependenciesIfNeeded(Invocation, Instance);
 
-  (void)emitLoadedModuleTraceIfNeeded(Context, *Instance.getDependencyTracker(),
+  (void)emitLoadedModuleTraceIfNeeded(Context, Instance.getDependencyTracker(),
                                       opts);
 
   if (Context.hadError()) {
