@@ -29,4 +29,5 @@ cd $SWIFT_PATH
 test -e swift/swift-nightly-install || exit 
 rm -rf ~/backup/swift-toolchain-$(date "+%u")
 cp swift-toolchain ~/backup/swift-toolchain-$(date "+%u")
+rm -rf swift-toolchain
 cp -r swift/swift-nightly-install swift-toolchain
