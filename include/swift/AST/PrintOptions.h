@@ -16,7 +16,9 @@
 #include "swift/Basic/STLExtras.h"
 #include "swift/AST/AttrKind.h"
 #include "swift/AST/Identifier.h"
+#include "swift/AST/TypeOrExtensionDecl.h"
 #include "llvm/ADT/Optional.h"
+#include "llvm/ADT/DenseMap.h"
 #include <limits.h>
 #include <vector>
 
@@ -36,32 +38,6 @@ enum DeclAttrKind : unsigned;
 class SynthesizedExtensionAnalyzer;
 struct PrintOptions;
 
-/// \brief Describes either a nominal type declaration or an extension
-/// declaration.
-struct TypeOrExtensionDecl {
-  llvm::PointerUnion<NominalTypeDecl *, ExtensionDecl *> Decl;
-
-  TypeOrExtensionDecl() = default;
-
-  TypeOrExtensionDecl(NominalTypeDecl *D);
-  TypeOrExtensionDecl(ExtensionDecl *D);
-
-  /// \brief Return the contained *Decl as the Decl superclass.
-  class Decl *getAsDecl() const;
-  /// \brief Return the contained *Decl as the DeclContext superclass.
-  DeclContext *getAsDeclContext() const;
-  /// \brief Return the contained NominalTypeDecl or that of the extended type
-  /// in the ExtensionDecl.
-  NominalTypeDecl *getBaseNominal() const;
-
-  /// \brief Is the contained pointer null?
-  bool isNull() const;
-  explicit operator bool() const { return !isNull(); }
-
-  bool operator==(TypeOrExtensionDecl rhs) { return Decl == rhs.Decl; }
-  bool operator!=(TypeOrExtensionDecl rhs) { return Decl != rhs.Decl; }
-  bool operator<(TypeOrExtensionDecl rhs) { return Decl < rhs.Decl; }
-};
 
 /// Necessary information for archetype transformation during printing.
 struct TypeTransformContext {
@@ -490,6 +466,7 @@ struct PrintOptions {
     result.PrintForSIL = true;
     result.PrintInSILBody = true;
     result.PreferTypeRepr = false;
+    result.PrintIfConfig = false;
     return result;
   }
 

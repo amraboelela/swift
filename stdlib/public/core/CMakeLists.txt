@@ -48,7 +48,7 @@ set(SWIFTLIB_ESSENTIAL
   CTypes.swift
   DebuggerSupport.swift
   DoubleWidth.swift.gyb
-  DropWhile.swift.gyb
+  DropWhile.swift
   Dump.swift
   EmptyCollection.swift
   Equatable.swift
@@ -88,19 +88,19 @@ set(SWIFTLIB_ESSENTIAL
   Misc.swift
   MutableCollection.swift
   NewtypeWrapper.swift.gyb
-  ObjCMirrors.swift
+  NormalizedCodeUnitIterator.swift
   ObjectIdentifier.swift
   Optional.swift
   OptionSet.swift
   OutputStream.swift
   Pointer.swift
   Policy.swift
-  PrefixWhile.swift.gyb
+  PrefixWhile.swift
   Print.swift
   RandomAccessCollection.swift
   Range.swift
   RangeReplaceableCollection.swift
-  ReflectionLegacy.swift
+  ReflectionMirror.swift
   Repeat.swift
   REPL.swift
   Reverse.swift
@@ -109,7 +109,7 @@ set(SWIFTLIB_ESSENTIAL
   SipHash.swift.gyb
   SentinelCollection.swift
   Sequence.swift
-  SequenceAlgorithms.swift.gyb
+  SequenceAlgorithms.swift
   SequenceWrapper.swift
   SetAlgebra.swift
   ShadowProtocols.swift
@@ -123,6 +123,7 @@ set(SWIFTLIB_ESSENTIAL
   String.swift
   StringBridge.swift
   StringComparable.swift
+  StringComparison.swift
   StringGuts.swift
   StringObject.swift
   StringIndex.swift
@@ -132,6 +133,7 @@ set(SWIFTLIB_ESSENTIAL
   StringStorage.swift
   StringSwitch.swift
   StringIndexConversions.swift
+  StringNormalization.swift
   StringUnicodeScalarView.swift
   StringUTF16.swift
   StringUTF8.swift
@@ -170,6 +172,7 @@ set(SWIFTLIB_SOURCES
   CollectionOfOne.swift
   ExistentialCollection.swift.gyb
   Mirror.swift
+  PlaygroundDisplay.swift
   CommandLine.swift
   SliceBuffer.swift
   Tuple.swift.gyb

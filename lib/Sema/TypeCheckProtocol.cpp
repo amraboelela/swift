@@ -21,6 +21,7 @@
 #include "TypeChecker.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/StringExtras.h"
+#include "swift/Basic/Statistic.h"
 #include "swift/AST/AccessScope.h"
 #include "swift/AST/GenericSignatureBuilder.h"
 #include "swift/AST/ASTContext.h"
@@ -1328,6 +1329,27 @@ checkIndividualConformance(NormalProtocolConformance *conformance,
         conformance->setInvalid();
         return conformance;
       }
+    }
+  }
+
+  // Not every protocol/type is compatible with conditional conformances.
+  if (!conformance->getConditionalRequirements().empty()) {
+    auto nestedType = canT;
+    // Obj-C generics cannot be looked up at runtime, so we don't support
+    // conditional conformances involving them. Check the full stack of nested
+    // types for any obj-c ones.
+    while (nestedType) {
+      if (auto clas = nestedType->getClassOrBoundGenericClass()) {
+        if (clas->usesObjCGenericsModel()) {
+          TC.diagnose(ComplainLoc,
+                      diag::objc_generics_cannot_conditionally_conform, T,
+                      Proto->getDeclaredType());
+          conformance->setInvalid();
+          return conformance;
+        }
+      }
+
+      nestedType = nestedType.getNominalParent();
     }
   }
 
@@ -3026,6 +3048,9 @@ void ConformanceChecker::ensureRequirementsAreSatisfied(
 void ConformanceChecker::checkConformance(MissingWitnessDiagnosisKind Kind) {
   assert(!Conformance->isComplete() && "Conformance is already complete");
 
+  FrontendStatsTracer statsTracer(TC.Context.Stats, "check-conformance",
+                                  Conformance);
+
   llvm::SaveAndRestore<bool> restoreSuppressDiagnostics(SuppressDiagnostics);
   SuppressDiagnostics = false;
 
@@ -4152,8 +4177,7 @@ static void inferStaticInitializeObjCMetadata(TypeChecker &tc,
 
   // If we know that the Objective-C metadata will be statically registered,
   // there's nothing to do.
-  if (!hasGenericAncestry(classDecl) &&
-      classDecl->getDeclContext()->isModuleScopeContext()) {
+  if (!hasGenericAncestry(classDecl)) {
     return;
   }
 

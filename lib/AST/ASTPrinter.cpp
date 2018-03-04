@@ -63,23 +63,6 @@ void PrintOptions::clearSynthesizedExtension() {
   TransformContext.reset();
 }
 
-TypeOrExtensionDecl::TypeOrExtensionDecl(NominalTypeDecl *D) : Decl(D) {}
-TypeOrExtensionDecl::TypeOrExtensionDecl(ExtensionDecl *D) : Decl(D) {}
-
-Decl *TypeOrExtensionDecl::getAsDecl() const {
-  if (auto NTD = Decl.dyn_cast<NominalTypeDecl *>())
-    return NTD;
-
-  return Decl.get<ExtensionDecl *>();
-}
-DeclContext *TypeOrExtensionDecl::getAsDeclContext() const {
-  return getAsDecl()->getInnermostDeclContext();
-}
-NominalTypeDecl *TypeOrExtensionDecl::getBaseNominal() const {
-  return getAsDeclContext()->getAsNominalTypeOrNominalTypeExtensionContext();
-}
-bool TypeOrExtensionDecl::isNull() const { return Decl.isNull(); }
-
 TypeTransformContext::TypeTransformContext(Type T)
     : BaseType(T.getPointer()) {
   assert(T->mayHaveMembers());
@@ -1777,15 +1760,15 @@ static void printExtendedTypeName(Type ExtendedType, ASTPrinter &Printer,
                                   PrintOptions Options) {
   auto Nominal = ExtendedType->getAnyNominal();
   assert(Nominal && "extension of non-nominal type");
-  if (auto ct = ExtendedType->getAs<ClassType>()) {
-    if (auto ParentType = ct->getParent()) {
-      ParentType.print(Printer, Options);
-      Printer << ".";
-    }
-  }
-  if (auto st = ExtendedType->getAs<StructType>()) {
-    if (auto ParentType = st->getParent()) {
-      ParentType.print(Printer, Options);
+  if (auto nt = ExtendedType->getAs<NominalType>()) {
+    if (auto ParentType = nt->getParent()) {
+      if (auto *ParentNT = ParentType->getAs<NominalOrBoundGenericNominalType>()) {
+        // Avoid using the parent type directly because it can be bound
+        // generic type and sugared.
+        ParentNT->getDecl()->getDeclaredType().print(Printer, Options);
+      } else {
+        ParentType.print(Printer, Options);
+      }
       Printer << ".";
     }
   }
@@ -3984,9 +3967,9 @@ void LayoutConstraintInfo::print(ASTPrinter &Printer,
   }
 }
 
-void GenericSignature::print(raw_ostream &OS) const {
+void GenericSignature::print(raw_ostream &OS, PrintOptions Opts) const {
   StreamPrinter Printer(OS);
-  PrintAST(Printer, PrintOptions())
+  PrintAST(Printer, Opts)
       .printGenericSignature(this,
                              PrintAST::PrintParams |
                              PrintAST::PrintRequirements);

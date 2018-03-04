@@ -1362,7 +1362,7 @@ namespace {
       
       auto locator = CS.getConstraintLocator(E);
       type = CS.openUnboundGenericType(type, locator);
-      E->getTypeLoc().setType(type, /*validated=*/true);
+      CS.setType(E->getTypeLoc(), type);
       return MetatypeType::get(type);
     }
 
@@ -2014,8 +2014,8 @@ namespace {
                                           TVO_CanBindToInOut);
 
         // For weak variables, use Optional<T>.
-        if (auto *OA = var->getAttrs().getAttribute<OwnershipAttr>())
-          if (OA->get() == Ownership::Weak) {
+        if (auto *OA = var->getAttrs().getAttribute<ReferenceOwnershipAttr>())
+          if (OA->get() == ReferenceOwnership::Weak) {
             ty = CS.getTypeChecker().getOptionalType(var->getLoc(), ty);
             if (!ty) return Type();
           }
@@ -2534,7 +2534,7 @@ namespace {
       // Open the type we're casting to.
       auto toType = CS.openUnboundGenericType(expr->getCastTypeLoc().getType(),
                                               CS.getConstraintLocator(expr));
-      expr->getCastTypeLoc().setType(toType, /*validated=*/true);
+      CS.setType(expr->getCastTypeLoc(), toType);
 
       auto fromType = CS.getType(fromExpr);
       auto locator = CS.getConstraintLocator(expr);
@@ -2563,7 +2563,7 @@ namespace {
       // Open the type we're casting to.
       auto toType = CS.openUnboundGenericType(expr->getCastTypeLoc().getType(),
                                               CS.getConstraintLocator(expr));
-      expr->getCastTypeLoc().setType(toType, /*validated=*/true);
+      CS.setType(expr->getCastTypeLoc(), toType);
 
       auto fromType = CS.getType(expr->getSubExpr());
       auto locator = CS.getConstraintLocator(expr);
@@ -2597,7 +2597,7 @@ namespace {
       // Open the type we're casting to.
       auto toType = CS.openUnboundGenericType(expr->getCastTypeLoc().getType(),
                                               CS.getConstraintLocator(expr));
-      expr->getCastTypeLoc().setType(toType, /*validated=*/true);
+      CS.setType(expr->getCastTypeLoc(), toType);
 
       auto fromType = CS.getType(fromExpr);
       auto locator = CS.getConstraintLocator(expr);
@@ -2626,7 +2626,7 @@ namespace {
       // FIXME: Locator for the cast type?
       auto toType = CS.openUnboundGenericType(expr->getCastTypeLoc().getType(),
                                               CS.getConstraintLocator(expr));
-      expr->getCastTypeLoc().setType(toType, /*validated=*/true);
+      CS.setType(expr->getCastTypeLoc(), toType);
 
       // Add a checked cast constraint.
       auto fromType = CS.getType(expr->getSubExpr());
@@ -2998,15 +2998,10 @@ namespace {
         auto join =
             Type::join(lhsMeta->getInstanceType(), rhsMeta->getInstanceType());
 
-        // We will hit this assert today due to implemenation details
-        // of Type::join, but the intent is to define join to always
-        // result in a type.
-        assert(join && "Unexpected null type returned from Type::join!");
-
         if (!join)
           return ErrorType::get(ctx);
 
-        return MetatypeType::get(join, ctx)->getCanonicalType();
+        return MetatypeType::get(*join, ctx)->getCanonicalType();
       }
 
       case TypeOperation::JoinInout: {
@@ -3020,15 +3015,10 @@ namespace {
         auto join =
             Type::join(lhsInOut, rhsMeta->getInstanceType());
 
-        // We will hit this assert today due to implemenation details
-        // of Type::join, but the intent is to define join to always
-        // result in a type.
-        assert(join && "Unexpected null type returned from Type::join!");
-
         if (!join)
           return ErrorType::get(ctx);
 
-        return MetatypeType::get(join, ctx)->getCanonicalType();
+        return MetatypeType::get(*join, ctx)->getCanonicalType();
       }
 
       case TypeOperation::JoinMeta: {
@@ -3041,15 +3031,10 @@ namespace {
 
         auto join = Type::join(lhsMeta, rhsMeta);
 
-        // We will hit this assert today due to implemenation details
-        // of Type::join, but the intent is to define join to always
-        // result in a type.
-        assert(join && "Unexpected null type returned from Type::join!");
-
         if (!join)
           return ErrorType::get(ctx);
 
-        return join;
+        return *join;
       }
       }
     }
@@ -3216,6 +3201,7 @@ namespace {
 
             auto *TE = TypeExpr::createImplicit(joinTy, CS.getASTContext());
             CS.cacheType(TE);
+            CS.setType(TE->getTypeLoc(), joinTy);
 
             auto *DSE = new (CS.getASTContext())
                 DotSelfExpr(TE, SourceLoc(), SourceLoc(), CS.getType(TE));
@@ -3464,6 +3450,7 @@ bool swift::typeCheckUnresolvedExpr(DeclContext &DC,
                                     SmallVectorImpl<Type> &PossibleTypes) {
   PrettyStackTraceExpr stackTrace(DC.getASTContext(),
                                   "type-checking unresolved member", Parent);
+
   ConstraintSystemOptions Options = ConstraintSystemFlags::AllowFixes;
   auto *TC = static_cast<TypeChecker*>(DC.getASTContext().getLazyResolver());
   ConstraintSystem CS(*TC, &DC, Options);
@@ -3481,7 +3468,7 @@ bool swift::typeCheckUnresolvedExpr(DeclContext &DC,
   }
 
   SmallVector<Solution, 3> solutions;
-  if (CS.solve(Parent, solutions, FreeTypeVariableBinding::Allow)) {
+  if (CS.solve(Parent, solutions, FreeTypeVariableBinding::UnresolvedType)) {
     return false;
   }
 

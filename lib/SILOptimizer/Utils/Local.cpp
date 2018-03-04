@@ -585,6 +585,12 @@ SILValue swift::castValueToABICompatibleType(SILBuilder *B, SILLocation Loc,
   // Function types are interchangeable if they're also ABI-compatible.
   if (SrcTy.is<SILFunctionType>()) {
     if (DestTy.is<SILFunctionType>()) {
+      assert(SrcTy.getAs<SILFunctionType>()->isNoEscape() ==
+                 DestTy.getAs<SILFunctionType>()->isNoEscape() ||
+             SrcTy.getAs<SILFunctionType>()->getRepresentation() !=
+                     SILFunctionType::Representation::Thick &&
+                 "Swift thick functions that differ in escapeness are not ABI "
+                 "compatible");
       // Insert convert_function.
       return B->createConvertFunction(Loc, Value, DestTy);
     }
@@ -671,8 +677,6 @@ bool StringConcatenationOptimizer::extractStringConcatOperands() {
   if (AI->getNumArguments() != 3 || !Fn->hasSemanticsAttr("string.concat"))
     return false;
 
-  assert(Fn->getRepresentation() == SILFunctionTypeRepresentation::Method);
-
   // Left and right operands of a string concatenation operation.
   AILeft = dyn_cast<ApplyInst>(AI->getOperand(1));
   AIRight = dyn_cast<ApplyInst>(AI->getOperand(2));
@@ -712,11 +716,6 @@ bool StringConcatenationOptimizer::extractStringConcatOperands() {
         (FRIRightFun->hasSemanticsAttr("string.makeUTF8") &&
          AIRightOperandsNum == 5)))
     return false;
-
-  assert(FRILeftFun->getRepresentation() ==
-         SILFunctionTypeRepresentation::Method);
-  assert(FRIRightFun->getRepresentation() ==
-         SILFunctionTypeRepresentation::Method);
 
   SLILeft = dyn_cast<StringLiteralInst>(AILeft->getOperand(1));
   SLIRight = dyn_cast<StringLiteralInst>(AIRight->getOperand(1));
@@ -885,9 +884,9 @@ static bool useDoesNotKeepClosureAlive(const SILInstruction *I) {
 }
 
 static bool useHasTransitiveOwnership(const SILInstruction *I) {
-  // convert_function is used to add the @noescape attribute. It does not change
-  // ownership of the function value.
-  return isa<ConvertFunctionInst>(I);
+  // convert_escape_to_noescape is used to convert to a @noescape function type.
+  // It does not change ownership of the function value.
+  return isa<ConvertEscapeToNoEscapeInst>(I);
 }
 
 static SILValue createLifetimeExtendedAllocStack(
@@ -1094,11 +1093,10 @@ bool swift::tryDeleteDeadClosure(SingleValueInstruction *Closure,
   // Then delete all user instructions in reverse so that leaf uses are deleted
   // first.
   for (auto *User : reverse(Tracker.getTrackedUsers())) {
-    assert(User->getResults().empty()
-           || useHasTransitiveOwnership(User)
-                  && "We expect only ARC operations without "
-                     "results. This is true b/c of "
-                     "isARCOperationRemovableIfObjectIsDead");
+    assert(User->getResults().empty() ||
+           useHasTransitiveOwnership(User) &&
+               "We expect only ARC operations without "
+               "results or a cast from escape to noescape without users");
     Callbacks.DeleteInst(User);
   }
 

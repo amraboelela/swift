@@ -39,7 +39,7 @@ public:
   InputFileKind InputKind = InputFileKind::IFK_Swift;
 
   void forAllOutputPaths(const InputFile &input,
-                         std::function<void(const std::string &)> fn) const;
+                         std::function<void(StringRef)> fn) const;
 
   bool isOutputFileDirectory() const;
 
@@ -164,6 +164,13 @@ public:
   /// Trace changes to stats to files in StatsOutputDir.
   bool TraceStats = false;
 
+  /// Profile changes to stats to files in StatsOutputDir.
+  bool ProfileEvents = false;
+
+  /// Profile changes to stats to files in StatsOutputDir, grouped by source
+  /// entity.
+  bool ProfileEntities = false;
+
   /// If true, serialization encodes an extra lookup table for use in module-
   /// merging when emitting partial modules (the per-file modules in a non-WMO
   /// build).
@@ -266,14 +273,17 @@ public:
     return llvm::hash_value(0);
   }
 
-  StringRef originalPath() const;
-
   StringRef determineFallbackModuleName() const;
 
   bool isCompilingExactlyOneSwiftFile() const {
     return InputKind == InputFileKind::IFK_Swift &&
            InputsAndOutputs.hasSingleInput();
   }
+
+  const PrimarySpecificPaths &
+  getPrimarySpecificPathsForAtMostOnePrimary() const;
+  const PrimarySpecificPaths &
+      getPrimarySpecificPathsForPrimary(StringRef) const;
 
 private:
   static bool canActionEmitDependencies(ActionType);

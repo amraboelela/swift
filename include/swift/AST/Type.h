@@ -66,6 +66,12 @@ using TypeSubstitutionFn
   = llvm::function_ref<Type(SubstitutableType *dependentType)>;
 
 /// A function object suitable for use as a \c TypeSubstitutionFn that
+/// replaces archetypes with their interface types.
+struct MapTypeOutOfContext {
+  Type operator()(SubstitutableType *type) const;
+};
+
+/// A function object suitable for use as a \c TypeSubstitutionFn that
 /// queries an underlying \c TypeSubstitutionMap.
 struct QueryTypeSubstitutionMap {
   const TypeSubstitutionMap &substitutions;
@@ -362,15 +368,19 @@ public:
   /// class D { }
   /// \endcode
   ///
-  /// The join of B and C is A, the join of A and B is A. However, there is no
-  /// join of D and A (or D and B, or D and C) because there is no common
-  /// superclass. One would have to jump to an existential (e.g., \c AnyObject)
-  /// to find a common type.
+  /// The join of B and C is A, the join of A and B is A.
+  ///
+  /// The Any type is considered the common supertype by default when no
+  /// closer common supertype exists.
+  ///
+  /// In unsupported cases where we cannot yet compute an accurate join,
+  /// we return None.
   ///
   /// \returns the join of the two types, if there is a concrete type
   /// that can express the join, or Any if the only join would be a
-  /// more-general existential type
-  static Type join(Type first, Type second);
+  /// more-general existential type, or None if we cannot yet compute a
+  /// correct join but one better than Any may exist.
+  static Optional<Type> join(Type first, Type second);
 
 private:
   // Direct comparison is disabled for types, because they may not be canonical.

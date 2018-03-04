@@ -85,6 +85,23 @@ static void addPrimaryInputsOfType(ArgStringList &Arguments,
   }
 }
 
+static bool
+addOutputsOfType(ArgStringList &Arguments,
+                 CommandOutput const &Output,
+                 const llvm::opt::ArgList &Args,
+                 types::ID OutputType,
+                 const char *PrefixArgument = nullptr) {
+  bool Added = false;
+  for (auto Output : Output.getAdditionalOutputsForType(OutputType)) {
+    assert(!Output.empty());
+    if (PrefixArgument)
+      Arguments.push_back(PrefixArgument);
+    Arguments.push_back(Args.MakeArgString(Output));
+    Added = true;
+  }
+  return Added;
+}
+
 /// Handle arguments common to all invocations of the frontend (compilation,
 /// module-merging, LLDB's REPL, etc).
 static void addCommonFrontendArgs(const ToolChain &TC,
@@ -167,6 +184,8 @@ static void addCommonFrontendArgs(const ToolChain &TC,
   inputArgs.AddLastArg(arguments, options::OPT_enforce_exclusivity_EQ);
   inputArgs.AddLastArg(arguments, options::OPT_stats_output_dir);
   inputArgs.AddLastArg(arguments, options::OPT_trace_stats_events);
+  inputArgs.AddLastArg(arguments, options::OPT_profile_stats_events);
+  inputArgs.AddLastArg(arguments, options::OPT_profile_stats_entities);
   inputArgs.AddLastArg(arguments,
                        options::OPT_solver_shrink_unsolved_threshold);
   inputArgs.AddLastArg(arguments, options::OPT_O_Group);
@@ -179,27 +198,32 @@ static void addCommonFrontendArgs(const ToolChain &TC,
   // Pass through the values passed to -Xfrontend.
   inputArgs.AddAllArgValues(arguments, options::OPT_Xfrontend);
 
+  if (auto *A = inputArgs.getLastArg(options::OPT_working_directory)) {
+    // Add -Xcc -working-directory before any other -Xcc options to ensure it is
+    // overridden by an explicit -Xcc -working-directory, although having a
+    // different working directory is probably incorrect.
+    SmallString<128> workingDirectory(A->getValue());
+    llvm::sys::fs::make_absolute(workingDirectory);
+    arguments.push_back("-Xcc");
+    arguments.push_back("-working-directory");
+    arguments.push_back("-Xcc");
+    arguments.push_back(inputArgs.MakeArgString(workingDirectory));
+  }
+
   // Pass through any subsystem flags.
   inputArgs.AddAllArgs(arguments, options::OPT_Xllvm);
   inputArgs.AddAllArgs(arguments, options::OPT_Xcc);
 
-  auto moduleDocOutputPath =
-      output.getAdditionalOutputForType(types::TY_SwiftModuleDocFile);
-  if (!moduleDocOutputPath.empty()) {
-    arguments.push_back("-emit-module-doc-path");
-    arguments.push_back(inputArgs.MakeArgString(moduleDocOutputPath));
-  }
+  addOutputsOfType(arguments, output, inputArgs,
+                   types::TY_SwiftModuleDocFile,
+                   "-emit-module-doc-path");
 
   if (llvm::sys::Process::StandardErrHasColors())
     arguments.push_back("-color-diagnostics");
 
-  auto SerializedDiagnosticsPath =
-    output.getAdditionalOutputForType(types::TY_SerializedDiagnostics);
-  if (!SerializedDiagnosticsPath.empty()) {
-    arguments.push_back("-serialize-diagnostics-path");
-    arguments.push_back(
-        inputArgs.MakeArgString(SerializedDiagnosticsPath));
-  }
+  addOutputsOfType(arguments, output, inputArgs,
+                   types::TY_SerializedDiagnostics,
+                   "-serialize-diagnostics-path");
 }
 
 
@@ -429,72 +453,44 @@ ToolChain::constructInvocation(const CompileJobAction &job,
   Arguments.push_back("-module-name");
   Arguments.push_back(context.Args.MakeArgString(context.OI.ModuleName));
 
-  auto ModuleOutputPath =
-    context.Output.getAdditionalOutputForType(types::ID::TY_SwiftModuleFile);
-  if (!ModuleOutputPath.empty()) {
-    Arguments.push_back("-emit-module-path");
-    Arguments.push_back(context.Args.MakeArgString(ModuleOutputPath));
+  addOutputsOfType(Arguments, context.Output, context.Args,
+                   types::ID::TY_SwiftModuleFile,
+                   "-emit-module-path");
+
+  if (addOutputsOfType(Arguments, context.Output, context.Args,
+                       types::ID::TY_ObjCHeader, "-emit-objc-header-path")) {
+      assert(context.OI.CompilerMode == OutputInfo::Mode::SingleCompile &&
+             "The Swift tool should only emit an Obj-C header in single compile"
+             "mode!");
   }
 
-  auto ObjCHeaderOutputPath =
-    context.Output.getAdditionalOutputForType(types::ID::TY_ObjCHeader);
-  if (!ObjCHeaderOutputPath.empty()) {
-    assert(context.OI.CompilerMode == OutputInfo::Mode::SingleCompile &&
-           "The Swift tool should only emit an Obj-C header in single compile"
-           "mode!");
+  addOutputsOfType(Arguments, context.Output, context.Args,
+                   types::TY_Dependencies,
+                   "-emit-dependencies-path");
 
-    Arguments.push_back("-emit-objc-header-path");
-    Arguments.push_back(
-        context.Args.MakeArgString(ObjCHeaderOutputPath));
-  }
+  addOutputsOfType(Arguments, context.Output, context.Args,
+                   types::TY_SwiftDeps,
+                   "-emit-reference-dependencies-path");
 
-  auto DependenciesPath =
-    context.Output.getAdditionalOutputForType(types::TY_Dependencies);
-  if (!DependenciesPath.empty()) {
-    Arguments.push_back("-emit-dependencies-path");
-    Arguments.push_back(context.Args.MakeArgString(DependenciesPath));
-  }
+  addOutputsOfType(Arguments, context.Output, context.Args,
+                   types::TY_ModuleTrace,
+                   "-emit-loaded-module-trace-path");
 
-  auto ReferenceDependenciesPath =
-    context.Output.getAdditionalOutputForType(types::TY_SwiftDeps);
-  if (!ReferenceDependenciesPath.empty()) {
-    Arguments.push_back("-emit-reference-dependencies-path");
-    Arguments.push_back(
-        context.Args.MakeArgString(ReferenceDependenciesPath));
-  }
+  addOutputsOfType(Arguments, context.Output, context.Args,
+                   types::TY_TBD,
+                   "-emit-tbd-path");
 
-  auto LoadedModuleTracePath =
-      context.Output.getAdditionalOutputForType(types::TY_ModuleTrace);
-  if (!LoadedModuleTracePath.empty()) {
-    Arguments.push_back("-emit-loaded-module-trace-path");
-    Arguments.push_back(
-        context.Args.MakeArgString(LoadedModuleTracePath));
-  }
-
-  auto TBDPath =
-      context.Output.getAdditionalOutputForType(types::TY_TBD);
-  if (!TBDPath.empty()) {
-    Arguments.push_back("-emit-tbd-path");
-    Arguments.push_back(context.Args.MakeArgString(TBDPath));
-  }
-
-  auto OptRecordPath =
-      context.Output.getAdditionalOutputForType(types::TY_OptRecord);
-  if (!OptRecordPath.empty()) {
-    Arguments.push_back("-save-optimization-record-path");
-    Arguments.push_back(context.Args.MakeArgString(OptRecordPath));
-  }
+  addOutputsOfType(Arguments, context.Output, context.Args,
+                   types::TY_OptRecord,
+                   "-save-optimization-record-path");
 
   if (context.Args.hasArg(options::OPT_migrate_keep_objc_visibility)) {
     Arguments.push_back("-migrate-keep-objc-visibility");
   }
 
-  auto FixitsPath =
-    context.Output.getAdditionalOutputForType(types::TY_Remapping);
-  if (!FixitsPath.empty()) {
-    Arguments.push_back("-emit-remap-file-path");
-    Arguments.push_back(context.Args.MakeArgString(FixitsPath));
-  }
+  addOutputsOfType(Arguments, context.Output, context.Args,
+                   types::TY_Remapping,
+                   "-emit-remap-file-path");
 
   if (context.OI.numThreads > 0) {
     Arguments.push_back("-num-threads");
@@ -729,8 +725,10 @@ ToolChain::constructInvocation(const MergeModuleJobAction &job,
     addInputsOfType(Arguments, context.Inputs, context.Args, types::TY_SwiftModuleFile);
     addInputsOfType(Arguments, context.InputActions, types::TY_SwiftModuleFile);
     assert(Arguments.size() - origLen >=
-           context.Inputs.size() + context.InputActions.size());
+           context.Inputs.size() + context.InputActions.size() ||
+           context.OI.CompilerOutputType == types::TY_Nothing);
     assert((Arguments.size() - origLen == context.Inputs.size() ||
+            context.OI.CompilerOutputType == types::TY_Nothing ||
             !context.InputActions.empty()) &&
            "every input to MergeModule must generate a swiftmodule");
   }
@@ -1134,18 +1132,21 @@ getSanitizerRuntimeLibNameForLinux(StringRef Sanitizer, const llvm::Triple &Trip
 }
 
 bool toolchains::Darwin::sanitizerRuntimeLibExists(
-    const ArgList &args, StringRef sanitizer) const {
+    const ArgList &args, StringRef sanitizer, bool shared) const {
   SmallString<128> sanitizerLibPath;
   getClangLibraryPath(*this, args, sanitizerLibPath);
   llvm::sys::path::append(sanitizerLibPath,
-      getSanitizerRuntimeLibNameForDarwin(sanitizer, this->getTriple()));
+                          getSanitizerRuntimeLibNameForDarwin(
+                              sanitizer, this->getTriple(), shared));
   return llvm::sys::fs::exists(sanitizerLibPath.str());
 }
 
 bool toolchains::GenericUnix::sanitizerRuntimeLibExists(
-    const ArgList &args, StringRef sanitizer) const {
+    const ArgList &args, StringRef sanitizer, bool shared) const {
   SmallString<128> sanitizerLibPath;
   getClangLibraryPath(*this, args, sanitizerLibPath);
+
+  // All libraries are static for linux.
   llvm::sys::path::append(sanitizerLibPath,
       getSanitizerRuntimeLibNameForLinux(sanitizer, this->getTriple()));
   return llvm::sys::fs::exists(sanitizerLibPath.str());
@@ -1786,4 +1787,3 @@ std::string toolchains::Cygwin::getDefaultLinker() const {
 std::string toolchains::Cygwin::getTargetForLinker() const {
   return "";
 }
-

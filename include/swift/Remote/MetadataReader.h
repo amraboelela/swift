@@ -540,23 +540,44 @@ public:
   llvm::Optional<uint32_t>
   readGenericArgsOffset(MetadataRef metadata,
                         ContextDescriptorRef descriptor) {
-    auto type = cast<TargetTypeContextDescriptor<Runtime>>(descriptor);
-    if (auto *classMetadata = dyn_cast<TargetClassMetadata<Runtime>>(metadata)){
-      if (classMetadata->SuperClass) {
-        auto superMetadata = readMetadata(classMetadata->SuperClass);
-        if (!superMetadata)
-          return llvm::None;
+    switch (descriptor->getKind()) {
+    case ContextDescriptorKind::Class: {
+      auto type = cast<TargetClassDescriptor<Runtime>>(descriptor);
 
-        auto result =
-          type->getGenericArgumentOffset(
-            classMetadata,
-            cast<TargetClassMetadata<Runtime>>(superMetadata));
+      auto *classMetadata = dyn_cast<TargetClassMetadata<Runtime>>(metadata);
+      if (!classMetadata)
+        return llvm::None;
 
-        return result;
-      }
+      if (!classMetadata->SuperClass)
+        return type->getGenericArgumentOffset(nullptr, nullptr);
+
+      auto superMetadata = readMetadata(classMetadata->SuperClass);
+      if (!superMetadata)
+        return llvm::None;
+
+      auto superClassMetadata =
+        dyn_cast<TargetClassMetadata<Runtime>>(superMetadata);
+      if (!superClassMetadata)
+        return llvm::None;
+
+      auto result =
+        type->getGenericArgumentOffset(classMetadata, superClassMetadata);
+      return result;
     }
 
-    return type->getGenericArgumentOffset();
+    case ContextDescriptorKind::Enum: {
+      auto type = cast<TargetEnumDescriptor<Runtime>>(descriptor);
+      return type->getGenericArgumentOffset();
+    }
+
+    case ContextDescriptorKind::Struct: {
+      auto type = cast<TargetStructDescriptor<Runtime>>(descriptor);
+      return type->getGenericArgumentOffset();
+    }
+
+    default:
+      return llvm::None;
+    }
   }
 
   /// Read a single generic type argument from a bound generic type
@@ -898,7 +919,7 @@ private:
         // If this class has a null descriptor, it's artificial,
         // and we need to skip it upon request.  Otherwise, we're done.
         if (descriptorAddress || !skipArtificialSubclasses)
-          return static_cast<uintptr_t>(descriptorAddress);
+          return static_cast<StoredPointer>(descriptorAddress);
 
         auto superclassMetadataAddress = classMeta->SuperClass;
         if (!superclassMetadataAddress)
@@ -921,7 +942,7 @@ private:
     case MetadataKind::Optional:
     case MetadataKind::Enum: {
       auto valueMeta = cast<TargetValueMetadata<Runtime>>(metadata);
-      return reinterpret_cast<uintptr_t>(valueMeta->getDescription());
+      return valueMeta->getDescription();
     }
 
     default:
@@ -959,15 +980,21 @@ private:
     case ContextDescriptorKind::Anonymous:
       baseSize = sizeof(TargetAnonymousContextDescriptor<Runtime>);
       break;
+    case ContextDescriptorKind::Class:
+      baseSize = sizeof(TargetClassDescriptor<Runtime>);
+      genericHeaderSize = sizeof(TypeGenericContextDescriptorHeader);
+      hasVTable = TypeContextDescriptorFlags(flags.getKindSpecificFlags())
+                    .class_hasVTable();
+      break;
+    case ContextDescriptorKind::Enum:
+      baseSize = sizeof(TargetEnumDescriptor<Runtime>);
+      genericHeaderSize = sizeof(TypeGenericContextDescriptorHeader);
+      break;
+    case ContextDescriptorKind::Struct:
+      baseSize = sizeof(TargetStructDescriptor<Runtime>);
+      genericHeaderSize = sizeof(TypeGenericContextDescriptorHeader);
+      break;
     default:
-      if (kind >= ContextDescriptorKind::Type_First
-          && kind <= ContextDescriptorKind::Type_Last) {
-        baseSize = sizeof(TargetTypeContextDescriptor<Runtime>);
-        genericHeaderSize = sizeof(TypeGenericContextDescriptorHeader);
-        hasVTable = flags.getKindSpecificFlags()
-                     & (uint16_t)TypeContextDescriptorFlags::HasVTable;
-        break;
-      }
       // We don't know about this kind of context.
       return nullptr;
     }
@@ -1055,21 +1082,25 @@ private:
         return Reader->readString(RemoteAddress(nameAddress), nodeName);
       };
       
+      bool isTypeContext = false;
       switch (auto contextKind = parent->getKind()) {
       case ContextDescriptorKind::Class:
         if (!getTypeName())
           return nullptr;
         nodeKind = Demangle::Node::Kind::Class;
+        isTypeContext = true;
         break;
       case ContextDescriptorKind::Struct:
         if (!getTypeName())
           return nullptr;
         nodeKind = Demangle::Node::Kind::Structure;
+        isTypeContext = true;
         break;
       case ContextDescriptorKind::Enum:
         if (!getTypeName())
           return nullptr;
         nodeKind = Demangle::Node::Kind::Enum;
+        isTypeContext = true;
         break;
 
       case ContextDescriptorKind::Extension:
@@ -1098,11 +1129,15 @@ private:
       }
 
       // Override the node kind if this was a Clang-imported type.
-      auto flags = parent->Flags.getKindSpecificFlags();
-      if (flags & (uint16_t)TypeContextDescriptorFlags::IsCTag)
-        nodeKind = Demangle::Node::Kind::Structure;
-      else if (flags & (uint16_t)TypeContextDescriptorFlags::IsCTypedef)
-        nodeKind = Demangle::Node::Kind::TypeAlias;
+      if (isTypeContext) {
+        auto typeFlags =
+          TypeContextDescriptorFlags(parent->Flags.getKindSpecificFlags());
+
+        if (typeFlags.isCTag())
+          nodeKind = Demangle::Node::Kind::Structure;
+        else if (typeFlags.isCTypedef())
+          nodeKind = Demangle::Node::Kind::TypeAlias;
+      }
 
       nameComponents.emplace_back(nodeKind, nodeName);
       

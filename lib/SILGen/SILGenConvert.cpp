@@ -17,7 +17,7 @@
 #include "LValue.h"
 #include "RValue.h"
 #include "Scope.h"
-#include "SwitchCaseFullExpr.h"
+#include "SwitchEnumBuilder.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/ProtocolConformance.h"
@@ -368,6 +368,9 @@ SILGenFunction::emitOptionalToOptional(SILLocation loc,
   auto contBB = createBasicBlock();
   auto isNotPresentBB = createBasicBlock();
   auto isPresentBB = createBasicBlock();
+
+  // All conversions happen at +1.
+  input = input.ensurePlusOne(*this, loc);
 
   SwitchEnumBuilder SEBuilder(B, loc, input);
   SILType noOptResultTy = resultTy.getOptionalObjectType();

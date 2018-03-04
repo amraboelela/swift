@@ -170,20 +170,6 @@ public:
 //                                  Utility
 //===----------------------------------------------------------------------===//
 
-static bool compatibleOwnershipKinds(ValueOwnershipKind K1,
-                                     ValueOwnershipKind K2) {
-  return K1.merge(K2).hasValue();
-}
-
-/// Returns true if \p Kind is trivial or if \p Kind is compatible with \p
-/// ComparisonKind.
-static bool
-trivialOrCompatibleOwnershipKinds(ValueOwnershipKind Kind,
-                                  ValueOwnershipKind ComparisonKind) {
-  return compatibleOwnershipKinds(Kind, ValueOwnershipKind::Trivial) ||
-         compatibleOwnershipKinds(Kind, ComparisonKind);
-}
-
 static bool isValueAddressOrTrivial(SILValue V, SILModule &M) {
   return V->getType().isAddress() ||
          V.getOwnershipKind() == ValueOwnershipKind::Trivial ||
@@ -333,7 +319,7 @@ public:
   SILType getType() const { return Op.get()->getType(); }
 
   bool compatibleWithOwnership(ValueOwnershipKind Kind) const {
-    return compatibleOwnershipKinds(getOwnershipKind(), Kind);
+    return getOwnershipKind().isCompatibleWith(Kind);
   }
 
   bool hasExactOwnership(ValueOwnershipKind Kind) const {
@@ -601,6 +587,7 @@ ACCEPTS_ANY_OWNERSHIP_INST(ValueToBridgeObject)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP_OR_METATYPE(MustBeLive, ClassMethod)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP_OR_METATYPE(MustBeLive, ObjCMethod)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP_OR_METATYPE(MustBeLive, ObjCSuperMethod)
+ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP_OR_METATYPE(MustBeLive, SuperMethod)
 #undef ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP_OR_METATYPE
 
 // Trivial if trivial typed, otherwise must accept owned?
@@ -612,7 +599,6 @@ ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP_OR_METATYPE(MustBeLive, ObjCSuperMethod)
                       !compatibleWithOwnership(ValueOwnershipKind::Trivial);   \
     return {compatible, UseLifetimeConstraint::USE_LIFETIME_CONSTRAINT};       \
   }
-ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, SuperMethod)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, BridgeObjectToWord)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, ClassifyBridgeObject)
 ACCEPTS_ANY_NONTRIVIAL_OWNERSHIP(MustBeLive, CopyBlock)
@@ -1009,6 +995,9 @@ OwnershipUseCheckerResult OwnershipCompatibilityUseChecker::visitCallee(
     return {compatibleWithOwnership(ValueOwnershipKind::Owned),
             UseLifetimeConstraint::MustBeInvalidated};
   case ParameterConvention::Direct_Guaranteed:
+    if (SubstCalleeType->isNoEscape())
+      return {compatibleWithOwnership(ValueOwnershipKind::Trivial),
+        UseLifetimeConstraint::MustBeLive};
     return {compatibleWithOwnership(ValueOwnershipKind::Guaranteed),
             UseLifetimeConstraint::MustBeLive};
   }
@@ -1046,8 +1035,7 @@ OwnershipUseCheckerResult OwnershipCompatibilityUseChecker::visitEnumArgument(
   } else {
     lifetimeConstraint = UseLifetimeConstraint::MustBeLive;
   }
-  return {compatibleOwnershipKinds(ownership, RequiredKind),
-          lifetimeConstraint};
+  return {ownership.isCompatibleWith(RequiredKind), lifetimeConstraint};
 }
 
 // We allow for trivial cases of enums with non-trivial cases to be passed in
@@ -1189,6 +1177,16 @@ OwnershipCompatibilityUseChecker::visitStoreInst(StoreInst *I) {
 OwnershipUseCheckerResult
 OwnershipCompatibilityUseChecker::visitMarkDependenceInst(
     MarkDependenceInst *MDI) {
+
+  // Forward ownership if the mark_dependence instruction marks a dependence
+  // on a @noescape function type for an escaping function type.
+  if (getValue() == MDI->getValue())
+    if (auto ResFnTy = MDI->getType().getAs<SILFunctionType>())
+      if (auto BaseFnTy = MDI->getBase()->getType().getAs<SILFunctionType>())
+        if (!ResFnTy->isNoEscape() && BaseFnTy->isNoEscape())
+          return {compatibleWithOwnership(ValueOwnershipKind::Owned),
+                  UseLifetimeConstraint::MustBeInvalidated};
+
   // We always treat mark dependence as a use that keeps a value alive. We will
   // be introducing a begin_dependence/end_dependence version of this later.
   return {true, UseLifetimeConstraint::MustBeLive};
@@ -1792,14 +1790,14 @@ void SILValueOwnershipChecker::gatherUsers(
         // TODO: Add a flag that associates the terminator instruction with
         // needing to be verified. If it isn't verified appropriately, assert
         // when the verifier is destroyed.
-        if (!trivialOrCompatibleOwnershipKinds(BBArg->getOwnershipKind(),
-                                               OwnershipKind)) {
+        auto BBArgOwnershipKind = BBArg->getOwnershipKind();
+        if (!BBArgOwnershipKind.isTrivialOrCompatibleWith(OwnershipKind)) {
           // This is where the error would go.
           continue;
         }
 
         // If we have a trivial value, just continue.
-        if (BBArg->getOwnershipKind() == ValueOwnershipKind::Trivial)
+        if (BBArgOwnershipKind == ValueOwnershipKind::Trivial)
           continue;
 
         // Otherwise, 
@@ -1908,11 +1906,16 @@ bool SILValueOwnershipChecker::checkValueWithoutLifetimeEndingUses() {
 
   if (!isValueAddressOrTrivial(Value, Mod)) {
     return !handleError([&] {
-      llvm::errs() << "Function: '" << Value->getFunction()->getName() << "'\n"
-                   << "Non trivial values, non address values, and non "
-                      "guaranteed function args must have at least one "
-                      "lifetime ending use?!\n"
-                   << "Value: " << *Value << '\n';
+      llvm::errs() << "Function: '" << Value->getFunction()->getName() << "'\n";
+      if (Value.getOwnershipKind() == ValueOwnershipKind::Owned) {
+        llvm::errs() << "Error! Found a leaked owned value that was never "
+                        "consumed.\n";
+      } else {
+        llvm::errs() << "Non trivial values, non address values, and non "
+                        "guaranteed function args must have at least one "
+                        "lifetime ending use?!\n";
+      }
+      llvm::errs() << "Value: " << *Value << '\n';
     });
   }
 

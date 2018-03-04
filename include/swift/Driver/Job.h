@@ -96,6 +96,13 @@ struct CommandInputPair {
   /// derived from the BaseInput it is related to. Also used as a key into
   /// the DerivedOutputFileMap.
   StringRef Primary;
+
+  /// Construct a CommandInputPair from a Base Input and, optionally, a Primary;
+  /// if the Primary is empty, use the Base value for it.
+  explicit CommandInputPair(StringRef BaseInput, StringRef PrimaryInput)
+    : Base(BaseInput),
+      Primary(PrimaryInput.empty() ? BaseInput : PrimaryInput)
+    {}
 };
 
 class CommandOutput {
@@ -147,14 +154,29 @@ public:
   /// with the provided \p Input pair of Base and Primary inputs.
   void addPrimaryOutput(CommandInputPair Input, StringRef PrimaryOutputFile);
 
+  /// Return true iff the set of additional output types in \c this is
+  /// identical to the set of additional output types in \p other.
+  bool hasSameAdditionalOutputTypes(CommandOutput const &other) const;
+
+  /// Copy all the input pairs from \p other to \c this. Assumes (and asserts)
+  /// that \p other shares output file map and PrimaryOutputType with \c this
+  /// already, as well as AdditionalOutputTypes if \c this has any.
+  void addOutputs(CommandOutput const &other);
+
   /// Assuming (and asserting) that there is only one input pair, return the
   /// primary output file associated with it. Note that the returned StringRef
   /// may be invalidated by subsequent mutations to the \c CommandOutput.
   StringRef getPrimaryOutputFilename() const;
 
   /// Return a all of the outputs of type \c getPrimaryOutputType() associated
-  /// with a primary input. Note that the returned \c StringRef vector may be
-  /// invalidated by subsequent mutations to the \c CommandOutput.
+  /// with a primary input. The return value will contain one \c StringRef per
+  /// primary input, _even if_ the primary output type is TY_Nothing, and the
+  /// primary output filenames are therefore all empty strings.
+  ///
+  /// FIXME: This is not really ideal behaviour -- it would be better to return
+  /// only nonempty strings in all cases, and have the callers differentiate
+  /// contexts with absent primary outputs another way -- but this is currently
+  /// assumed at several call sites.
   SmallVector<StringRef, 16> getPrimaryOutputFilenames() const;
 
   /// Assuming (and asserting) that there are one or more input pairs, associate
@@ -168,6 +190,17 @@ public:
   /// first primary input.
   StringRef getAdditionalOutputForType(types::ID type) const;
 
+  /// Return a vector of additional (not primary) outputs of type \p type
+  /// associated with the primary inputs.
+  ///
+  /// In contrast to \c getPrimaryOutputFilenames, this method does _not_ return
+  /// any empty strings or ensure the return vector is matched in size with the
+  /// set of primary inputs; however it _does_ assert that the return vector's
+  /// length is _either_ zero, one, or equal to the size of the set of inputs,
+  /// as these are the only valid arity relationships between primary and
+  /// additional outputs.
+  SmallVector<StringRef, 16> getAdditionalOutputsForType(types::ID type) const;
+
   /// Assuming (and asserting) that there is only one input pair, return any
   /// output -- primary or additional -- of type \p type associated with that
   /// the sole primary input.
@@ -178,6 +211,10 @@ public:
 
   void print(raw_ostream &Stream) const;
   void dump() const LLVM_ATTRIBUTE_USED;
+
+  /// For use in assertions: check the CommandOutput's state is consistent with
+  /// its invariants.
+  void checkInvariants() const;
 };
 
 class Job {
@@ -235,6 +272,8 @@ public:
         Executable(Executable), Arguments(std::move(Arguments)),
         ExtraEnvironment(std::move(ExtraEnvironment)),
         FilelistFileInfos(std::move(Infos)) {}
+
+  virtual ~Job();
 
   const JobAction &getSource() const {
     return *SourceAndCondition.getPointer();

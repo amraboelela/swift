@@ -171,6 +171,9 @@ private:
   /// would indicate.
   unsigned HasCReferences : 1;
 
+  /// Whether cross-module references to this function should use weak linking.
+  unsigned IsWeakLinked : 1;
+
   /// If != OptimizationMode::NotSet, the optimization mode specified with an
   /// function attribute.
   OptimizationMode OptMode;
@@ -346,7 +349,9 @@ public:
   /// SIL). If so, diagnostics should not be reapplied.
   bool wasDeserializedCanonical() const { return WasDeserializedCanonical; }
 
-  void setWasDeserializedCanonical() { WasDeserializedCanonical = true; }
+  void setWasDeserializedCanonical(bool val = true) {
+    WasDeserializedCanonical = val;
+  }
 
   /// Returns the calling convention used by this entry point.
   SILFunctionTypeRepresentation getRepresentation() const {
@@ -449,6 +454,16 @@ public:
   /// Return whether this function may be referenced by C code.
   bool hasCReferences() const { return HasCReferences; }
   void setHasCReferences(bool value) { HasCReferences = value; }
+
+  /// Returns whether this function's symbol must always be weakly referenced
+  /// across module boundaries.
+  bool isWeakLinked() const { return IsWeakLinked; }
+  /// Forces IRGen to treat references to this function as weak across module
+  /// boundaries (i.e. if it has external linkage).
+  void setWeakLinked(bool value = true) {
+    assert(!IsWeakLinked && "already set");
+    IsWeakLinked = value;
+  }
 
   /// Get the DeclContext of this function. (Debug info only).
   DeclContext *getDeclContext() const {
