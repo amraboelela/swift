@@ -191,7 +191,6 @@ bool ArrayAllocation::recursivelyCollectUses(ValueBase *Def) {
     auto *User = Opd->getUser();
     // Ignore reference counting and debug instructions.
     if (isa<RefCountingInst>(User) ||
-        isa<StrongPinInst>(User) ||
         isa<DebugValueInst>(User))
       continue;
 
@@ -298,8 +297,8 @@ public:
     if (Repls.empty())
       return false;
 
-    DEBUG(llvm::dbgs() << "Array append contentsOf calls replaced in "
-                       << Fn.getName() << " (" << Repls.size() << ")\n");
+    LLVM_DEBUG(llvm::dbgs() << "Array append contentsOf calls replaced in "
+                            << Fn.getName() << " (" << Repls.size() << ")\n");
 
     FuncDecl *AppendFnDecl = Ctx.getArrayAppendElementDecl();
     if (!AppendFnDecl)
@@ -324,30 +323,30 @@ public:
       assert(AppendContentsOf && "Must be AppendContentsOf call");
 
       NominalTypeDecl *AppendSelfArray = AppendContentsOf.getSelf()->getType().
-        getSwiftRValueType()->getAnyNominal();
+        getASTType()->getAnyNominal();
 
       // In case if it's not an Array, but e.g. an ContiguousArray
       if (AppendSelfArray != Ctx.getArrayDecl())
         continue;
 
       SILType ArrayType = Repl.Array->getType();
-      auto *NTD = ArrayType.getSwiftRValueType()->getAnyNominal();
-      SubstitutionMap ArraySubMap = ArrayType.getSwiftRValueType()
+      auto *NTD = ArrayType.getASTType()->getAnyNominal();
+      SubstitutionMap ArraySubMap = ArrayType.getASTType()
         ->getContextSubstitutionMap(M.getSwiftModule(), NTD);
       
-      GenericSignature *Sig = NTD->getGenericSignature();
-      assert(Sig && "Array type must have generic signature");
-      SmallVector<Substitution, 4> Subs;
-      Sig->getSubstitutions(ArraySubMap, Subs);
-      
       AppendContentsOf.replaceByAppendingValues(M, AppendFn, ReserveFn,
-                                                Repl.ReplacementValues, Subs);
+                                                Repl.ReplacementValues,
+                                                ArraySubMap);
     }
     return true;
   }
 
   void run() override {
     auto &Fn = *getFunction();
+
+    // FIXME: Update for ownership.
+    if (Fn.hasOwnership())
+      return;
 
     // Propagate the elements an of array value to its users.
     llvm::SmallVector<ArrayAllocation::GetElementReplacement, 16>
@@ -367,7 +366,7 @@ public:
       }
     }
 
-    DEBUG(if (!GetElementReplacements.empty()) {
+    LLVM_DEBUG(if (!GetElementReplacements.empty()) {
       llvm::dbgs() << "Array elements replaced in " << Fn.getName() << " ("
                    << GetElementReplacements.size() << ")\n";
     });

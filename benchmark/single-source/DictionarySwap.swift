@@ -14,9 +14,17 @@
 // rdar://problem/19804127
 import TestsUtils
 
+let t: [BenchmarkCategory] = [.validation, .api, .Dictionary]
+
 public let DictionarySwap = [
-  BenchmarkInfo(name: "DictionarySwap", runFunction: run_DictionarySwap, tags: [.validation, .api, .Dictionary]),
-  BenchmarkInfo(name: "DictionarySwapOfObjects", runFunction: run_DictionarySwapOfObjects, tags: [.validation, .api, .Dictionary]),
+  BenchmarkInfo(name: "DictionarySwap",
+    runFunction: run_DictionarySwap, tags: t, legacyFactor: 4),
+  BenchmarkInfo(name: "DictionarySwapOfObjects",
+    runFunction: run_DictionarySwapOfObjects, tags: t, legacyFactor: 40),
+  BenchmarkInfo(name: "DictionarySwapAt",
+    runFunction: run_DictionarySwapAt, tags: t, legacyFactor: 4),
+  BenchmarkInfo(name: "DictionarySwapAtOfObjects",
+    runFunction: run_DictionarySwapAtOfObjects, tags: t, legacyFactor: 40),
 ]
 
 @inline(never)
@@ -31,7 +39,7 @@ public func run_DictionarySwap(_ N: Int) {
     CheckResults(dict.count == size)
 
     var swapped = false
-    for _ in 1...10000*N {
+    for _ in 1...2500*N {
         (dict[25], dict[75]) = (dict[75]!, dict[25]!)
         swapped = !swapped
         if !swappedCorrectly(swapped, dict[25]!, dict[75]!) {
@@ -40,6 +48,32 @@ public func run_DictionarySwap(_ N: Int) {
     }
 
     CheckResults(swappedCorrectly(swapped, dict[25]!, dict[75]!))
+}
+
+@inline(never)
+public func run_DictionarySwapAt(_ N: Int) {
+  let size = 100
+  var dict = [Int: Int](minimumCapacity: size)
+
+  // Fill dictionary
+  for i in 1...size {
+    dict[i] = i
+  }
+  CheckResults(dict.count == size)
+
+  var swapped = false
+  for _ in 1...2500*N {
+    let i25 = dict.index(forKey: 25)!
+    let i75 = dict.index(forKey: 75)!
+
+    dict.values.swapAt(i25, i75)
+    swapped = !swapped
+    if !swappedCorrectly(swapped, dict[25]!, dict[75]!) {
+      break
+    }
+  }
+
+  CheckResults(swappedCorrectly(swapped, dict[25]!, dict[75]!))
 }
 
 // Return true if correctly swapped, false otherwise
@@ -55,8 +89,8 @@ class Box<T : Hashable> : Hashable {
     value = v
   }
 
-  var hashValue: Int {
-    return value.hashValue
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(value)
   }
 
   static func ==(lhs: Box, rhs: Box) -> Bool {
@@ -76,7 +110,7 @@ public func run_DictionarySwapOfObjects(_ N: Int) {
     CheckResults(dict.count == size)
 
     var swapped = false
-    for _ in 1...10000*N {
+    for _ in 1...250*N {
         let b1 = Box(25)
         let b2 = Box(75)
         (dict[b1], dict[b2]) = (dict[b2]!, dict[b1]!)
@@ -87,4 +121,32 @@ public func run_DictionarySwapOfObjects(_ N: Int) {
     }
 
     CheckResults(swappedCorrectly(swapped, dict[Box(25)]!.value, dict[Box(75)]!.value))
+}
+
+@inline(never)
+public func run_DictionarySwapAtOfObjects(_ N: Int) {
+  let size = 100
+  var dict = [Box<Int>: Box<Int>](minimumCapacity: size)
+
+  // Fill dictionary
+  for i in 1...size {
+    dict[Box(i)] = Box(i)
+  }
+  CheckResults(dict.count == size)
+
+  var swapped = false
+  for _ in 1...250*N {
+    let b25 = Box(25)
+    let b75 = Box(75)
+    let i25 = dict.index(forKey: b25)!
+    let i75 = dict.index(forKey: b75)!
+
+    dict.values.swapAt(i25, i75)
+    swapped = !swapped
+    if !swappedCorrectly(swapped, dict[Box(25)]!.value, dict[Box(75)]!.value) {
+      break
+    }
+  }
+
+  CheckResults(swappedCorrectly(swapped, dict[Box(25)]!.value, dict[Box(75)]!.value))
 }

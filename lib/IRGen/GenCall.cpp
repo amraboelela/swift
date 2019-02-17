@@ -182,17 +182,22 @@ void IRGenModule::addSwiftSelfAttributes(llvm::AttributeList &attrs,
 
 void IRGenModule::addSwiftErrorAttributes(llvm::AttributeList &attrs,
                                           unsigned argIndex) {
-  // Don't add the swifterror attribute on ABI that don't pass it in a register.
+  llvm::AttrBuilder b;
+  // Don't add the swifterror attribute on ABIs that don't pass it in a register.
   // We create a shadow stack location of the swifterror parameter for the
   // debugger on such platforms and so we can't mark the parameter with a
   // swifterror attribute.
-  if (!this->IsSwiftErrorInRegister)
-    return;
-
-  llvm::AttrBuilder b;
-  b.addAttribute(llvm::Attribute::SwiftError);
-  attrs = attrs.addAttributes(this->LLVMContext,
-                              argIndex + llvm::AttributeList::FirstArgIndex, b);
+  if (IsSwiftErrorInRegister)
+    b.addAttribute(llvm::Attribute::SwiftError);
+  
+  // The error result should not be aliased, captured, or pointed at invalid
+  // addresses regardless.
+  b.addAttribute(llvm::Attribute::NoAlias);
+  b.addAttribute(llvm::Attribute::NoCapture);
+  b.addDereferenceableAttr(getPointerSize().getValue());
+  
+  auto attrIndex = argIndex + llvm::AttributeList::FirstArgIndex;
+  attrs = attrs.addAttributes(this->LLVMContext, attrIndex, b);
 }
 
 void irgen::addByvalArgumentAttributes(IRGenModule &IGM,
@@ -870,6 +875,9 @@ namespace {
         return convertFloatingType(Ctx.getTargetInfo().getDoubleFormat());
       case clang::BuiltinType::LongDouble:
         return convertFloatingType(Ctx.getTargetInfo().getLongDoubleFormat());
+      case clang::BuiltinType::Float16:
+        llvm_unreachable("When upstream support is added for Float16 in "
+                         "clang::TargetInfo, use the implementation here");
       case clang::BuiltinType::Float128:
         return convertFloatingType(Ctx.getTargetInfo().getFloat128Format());
 
@@ -1502,11 +1510,14 @@ void CallEmission::emitToUnmappedExplosion(Explosion &out) {
 
   // For ABI reasons the result type of the call might not actually match the
   // expected result type.
+  //
+  // This can happen when calling C functions, or class method dispatch thunks
+  // for methods that have covariant ABI-compatible overrides.
   auto expectedNativeResultType = nativeSchema.getExpandedType(IGF.IGM);
   if (result->getType() != expectedNativeResultType) {
-    // This should only be needed when we call C functions.
-    assert(getCallee().getOrigFunctionType()->getLanguage() ==
-           SILFunctionLanguage::C);
+    auto origFnType = getCallee().getOrigFunctionType();
+    assert(origFnType->getLanguage() == SILFunctionLanguage::C ||
+           origFnType->getRepresentation() == SILFunctionTypeRepresentation::Method);
     result =
         IGF.coerceValue(result, expectedNativeResultType, IGF.IGM.DataLayout);
   }
@@ -1634,10 +1645,8 @@ void CallEmission::emitToMemory(Address addr,
   // result that's actually being passed indirectly.
   //
   // TODO: SIL address lowering should be able to handle such cases earlier.
-  CanType origResultType =
-      origFnType->getDirectFormalResultsType().getSwiftRValueType();
-  CanType substResultType =
-      substFnType->getDirectFormalResultsType().getSwiftRValueType();
+  auto origResultType = origFnType->getDirectFormalResultsType().getASTType();
+  auto substResultType = substFnType->getDirectFormalResultsType().getASTType();
 
   if (origResultType->hasTypeParameter())
     origResultType = IGF.IGM.getGenericEnvironment()
@@ -1732,9 +1741,11 @@ void CallEmission::emitYieldsToExplosion(Explosion &out) {
     }
 
     // Otherwise, it's direct.  Remap.
-    auto temp = schema.getDirectSchema().mapFromNative(IGF.IGM, IGF,
-                                                       rawYieldComponents,
-                                                       schema.getSILType());
+    const auto &directSchema = schema.getDirectSchema();
+    Explosion eltValues;
+    rawYieldComponents.transferInto(eltValues, directSchema.size());
+    auto temp = directSchema.mapFromNative(IGF.IGM, IGF, eltValues,
+                                           schema.getSILType());
 
     auto &yieldTI = cast<LoadableTypeInfo>(schema.getTypeInfo());
     emitCastToSubstSchema(IGF, temp, yieldTI.getSchema(), out);
@@ -1920,7 +1931,7 @@ void CallEmission::setFromCallee() {
 
     // Fill in the context pointer if necessary.
     if (!contextPtr) {
-      assert(!CurCallee.getOrigFunctionType()->isNoEscape() &&
+      assert(!CurCallee.getOrigFunctionType()->getExtInfo().hasContext() &&
              "Missing context?");
       contextPtr = llvm::UndefValue::get(IGF.IGM.RefCountedPtrTy);
     }
@@ -2757,7 +2768,7 @@ Address IRGenFunction::getErrorResultSlot(SILType errorType) {
   if (!ErrorResultSlot) {
     auto &errorTI = cast<FixedTypeInfo>(getTypeInfo(errorType));
 
-    IRBuilder builder(IGM.getLLVMContext(), IGM.DebugInfo);
+    IRBuilder builder(IGM.getLLVMContext(), IGM.DebugInfo != nullptr);
     builder.SetInsertPoint(AllocaIP->getParent(), AllocaIP->getIterator());
 
     // Create the alloca.  We don't use allocateStack because we're
@@ -2920,7 +2931,7 @@ llvm::Value* IRGenFunction::coerceValue(llvm::Value *value, llvm::Type *toTy,
 
 void IRGenFunction::emitScalarReturn(llvm::Type *resultType,
                                      Explosion &result) {
-  if (result.size() == 0) {
+  if (result.empty()) {
     Builder.CreateRetVoid();
     return;
   }
@@ -3008,7 +3019,7 @@ Explosion NativeConventionSchema::mapFromNative(IRGenModule &IGM,
                                                 IRGenFunction &IGF,
                                                 Explosion &native,
                                                 SILType type) const {
-  if (native.size() == 0) {
+  if (native.empty()) {
     assert(empty() && "Empty explosion must match the native convention");
     return Explosion();
   }
@@ -3099,7 +3110,6 @@ Explosion NativeConventionSchema::mapFromNative(IRGenModule &IGM,
   // Store the expanded type elements.
   auto coercionAddr = Builder.CreateElementBitCast(temporary, coercionTy);
   unsigned expandedMapIdx = 0;
-  SmallVector<llvm::Value *, 8> expandedElts(expandedTys.size(), nullptr);
 
   auto eltsArray = native.claimAll();
   SmallVector<llvm::Value *, 8> nativeElts(eltsArray.begin(), eltsArray.end());
@@ -3142,7 +3152,7 @@ Explosion NativeConventionSchema::mapIntoNative(IRGenModule &IGM,
                                                 Explosion &fromNonNative,
                                                 SILType type,
                                                 bool isOutlined) const {
-  if (fromNonNative.size() == 0) {
+  if (fromNonNative.empty()) {
     assert(empty() && "Empty explosion must match the native convention");
     return Explosion();
   }
@@ -3275,7 +3285,7 @@ Explosion NativeConventionSchema::mapIntoNative(IRGenModule &IGM,
 
 void IRGenFunction::emitScalarReturn(SILType resultType, Explosion &result,
                                      bool isSwiftCCReturn, bool isOutlined) {
-  if (result.size() == 0) {
+  if (result.empty()) {
     assert(IGM.getTypeInfo(resultType).nativeReturnValueSchema(IGM).empty() &&
            "Empty explosion must match the native calling convention");
 

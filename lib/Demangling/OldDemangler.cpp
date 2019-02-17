@@ -100,13 +100,21 @@ public:
 
   /// Return the next character without claiming it.  Asserts that
   /// there is at least one remaining character.
-  char peek() { return Text.front(); }
+  char peek() {
+    if (isEmpty()) {
+      // Return an otherwise unused character to prevent crashes for malformed
+      // symbols.
+      return '.';
+    }
+    return Text.front();
+  }
 
   /// Claim and return the next character.  Asserts that there is at
   /// least one remaining character.
   char next() {
     char c = peek();
-    advanceOffset(1);
+    if (!isEmpty())
+      advanceOffset(1);
     return c;
   }
 
@@ -641,6 +649,11 @@ private:
               unsigned(FunctionSigSpecializationParamKind::OwnedToGuaranteed);
         }
 
+        if (Mangled.nextIf('o')) {
+          Value |=
+              unsigned(FunctionSigSpecializationParamKind::GuaranteedToOwned);
+        }
+
         if (Mangled.nextIf('s')) {
           Value |= unsigned(FunctionSigSpecializationParamKind::SROA);
         }
@@ -675,9 +688,9 @@ private:
                               Node::Kind::GenericSpecializationNotReAbstracted :
                               Node::Kind::GenericSpecialization);
 
-      // Create a node if the specialization is externally inlineable.
+      // Create a node if the specialization is serialized.
       if (Mangled.nextIf("q")) {
-        auto kind = Node::Kind::SpecializationIsFragile;
+        auto kind = Node::Kind::IsSerialized;
         spec->addChild(Factory.createNode(kind), Factory);
       }
 
@@ -692,9 +705,9 @@ private:
       auto spec =
           Factory.createNode(Node::Kind::FunctionSignatureSpecialization);
 
-      // Create a node if the specialization is externally inlineable.
+      // Create a node if the specialization is serialized.
       if (Mangled.nextIf("q")) {
-        auto kind = Node::Kind::SpecializationIsFragile;
+        auto kind = Node::Kind::IsSerialized;
         spec->addChild(Factory.createNode(kind), Factory);
       }
 
@@ -1004,6 +1017,8 @@ private:
         parentOrModule->getKind() != Node::Kind::Function &&
         parentOrModule->getKind() != Node::Kind::Extension) {
       parentOrModule = demangleBoundGenericArgs(parentOrModule);
+      if (!parentOrModule)
+        return nullptr;
 
       // Rebuild this type with the new parent type, which may have
       // had its generic arguments applied.
@@ -1244,6 +1259,16 @@ private:
     } else if (Mangled.nextIf('W')) {
       wrapEntity = true;
       entityKind = Node::Kind::DidSet;
+      name = demangleDeclName();
+      if (!name) return nullptr;
+    } else if (Mangled.nextIf('r')) {
+      wrapEntity = true;
+      entityKind = Node::Kind::ReadAccessor;
+      name = demangleDeclName();
+      if (!name) return nullptr;
+    } else if (Mangled.nextIf('M')) {
+      wrapEntity = true;
+      entityKind = Node::Kind::ModifyAccessor;
       name = demangleDeclName();
       if (!name) return nullptr;
     } else if (Mangled.nextIf('U')) {
@@ -1692,20 +1717,6 @@ private:
       NodePointer stdlib = Factory.createNode(Node::Kind::Module, STDLIB_NAME);
       return makeAssociatedType(stdlib);
     }
-    if (Mangled.nextIf('q')) {
-      NodePointer index = demangleIndexAsNode();
-      if (!index)
-        return nullptr;
-      NodePointer decl_ctx = Factory.createNode(Node::Kind::DeclContext);
-      NodePointer ctx = demangleContext();
-      if (!ctx)
-        return nullptr;
-      decl_ctx->addChild(ctx, Factory);
-      auto qual_atype = Factory.createNode(Node::Kind::QualifiedArchetype);
-      qual_atype->addChild(index, Factory);
-      qual_atype->addChild(decl_ctx, Factory);
-      return qual_atype;
-    }
     return nullptr;
   }
 
@@ -1799,7 +1810,7 @@ private:
         if (demangleBuiltinSize(size)) {
           return Factory.createNode(
               Node::Kind::BuiltinTypeName,
-              std::move(DemanglerPrinter() << "Builtin.Float" << size).str());
+              std::move(DemanglerPrinter() << "Builtin.FPIEEE" << size).str());
         }
       }
       if (c == 'i') {

@@ -20,7 +20,6 @@
 #include "swift/Reflection/TypeRef.h"
 #include "swift/Reflection/TypeRefBuilder.h"
 #include "llvm/Object/Archive.h"
-#include "llvm/Object/MachO.h"
 #include "llvm/Object/MachOUniversal.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Object/ELFObjectFile.h"
@@ -80,73 +79,6 @@ static T unwrap(llvm::Expected<T> value) {
   exit(EXIT_FAILURE);
 }
 
-static SectionRef getSectionRef(const ObjectFile *objectFile,
-                                ArrayRef<StringRef> anySectionNames) {
-  for (auto section : objectFile->sections()) {
-    StringRef sectionName;
-    section.getName(sectionName);
-    for (auto desiredName : anySectionNames) {
-      if (sectionName.equals(desiredName)) {
-        return section;
-      }
-    }
-  }
-  return SectionRef();
-}
-
-template <typename Section>
-static std::pair<Section, uintptr_t>
-findReflectionSection(const ObjectFile *objectFile,
-                      ArrayRef<StringRef> anySectionNames) {
-  auto sectionRef = getSectionRef(objectFile, anySectionNames);
-
-  if (sectionRef.getObject() == nullptr)
-    return {{nullptr, nullptr}, 0};
-
-  StringRef sectionContents;
-  sectionRef.getContents(sectionContents);
-
-  uintptr_t Offset = 0;
-  if (isa<ELFObjectFileBase>(sectionRef.getObject())) {
-    ELFSectionRef S{sectionRef};
-    Offset = sectionRef.getAddress() - S.getOffset();
-  }
-
-  return {{reinterpret_cast<const void *>(sectionContents.begin()),
-           reinterpret_cast<const void *>(sectionContents.end())},
-          Offset};
-}
-
-static ReflectionInfo findReflectionInfo(const ObjectFile *objectFile) {
-  auto fieldSection = findReflectionSection<FieldSection>(
-      objectFile, {"__swift5_fieldmd", ".swift5_fieldmd", "swift5_fieldmd"});
-  auto associatedTypeSection = findReflectionSection<AssociatedTypeSection>(
-      objectFile, {"__swift5_assocty", ".swift5_assocty", "swift5_assocty"});
-  auto builtinTypeSection = findReflectionSection<BuiltinTypeSection>(
-      objectFile, {"__swift5_builtin", ".swift5_builtin", "swift5_builtin"});
-  auto captureSection = findReflectionSection<CaptureSection>(
-      objectFile, {"__swift5_capture", ".swift5_capture", "swift5_capture"});
-  auto typeRefSection = findReflectionSection<GenericSection>(
-      objectFile, {"__swift5_typeref", ".swift5_typeref", "swift5_typeref"});
-  auto reflectionStringsSection = findReflectionSection<GenericSection>(
-      objectFile, {"__swift5_reflstr", ".swift5_reflstr", "swift5_reflstr"});
-
-  // The entire object file is mapped into this process's memory, so the
-  // local/remote mapping is identity.
-  auto startAddress = (uintptr_t)objectFile->getData().begin();
-
-  return {
-      {fieldSection.first, fieldSection.second},
-      {associatedTypeSection.first, associatedTypeSection.second},
-      {builtinTypeSection.first, builtinTypeSection.second},
-      {captureSection.first, captureSection.second},
-      {typeRefSection.first, typeRefSection.second},
-      {reflectionStringsSection.first, reflectionStringsSection.second},
-      /*LocalStartAddress*/ startAddress,
-      /*RemoteStartAddress*/ startAddress,
-  };
-}
-
 using NativeReflectionContext
   = ReflectionContext<External<RuntimeTarget<sizeof(uintptr_t)>>>;
 
@@ -158,12 +90,24 @@ public:
   {
   }
 
-  uint8_t getPointerSize() override {
-    return sizeof(uintptr_t);
+  bool queryDataLayout(DataLayoutQueryType type, void *inBuffer,
+                       void *outBuffer) override {
+    switch (type) {
+      case DLQ_GetPointerSize: {
+        auto result = static_cast<uint8_t *>(outBuffer);
+        *result = sizeof(void *);
+        return true;
+      }
+      case DLQ_GetSizeSize: {
+        auto result = static_cast<uint8_t *>(outBuffer);
+        *result = sizeof(size_t);
+        return true;
+      }
+    }
+
+    return false;
   }
-  uint8_t getSizeSize() override {
-    return sizeof(size_t);
-  }
+
   RemoteAddress getSymbolAddress(const std::string &name) override {
     for (auto &object : ObjectFiles) {
       for (auto &symbol : object->symbols()) {
@@ -191,15 +135,12 @@ public:
     return false;
   }
   
-  bool readBytes(RemoteAddress address, uint8_t *dest,
-                 uint64_t size) override {
+  ReadBytesResult readBytes(RemoteAddress address, uint64_t size) override {
     if (!isAddressValid(address, size))
-      return false;
+      return ReadBytesResult(nullptr, [](const void *){});
 
     // TODO: Account for offset in ELF binaries
-    auto src = (const void *)address.getAddressData();
-    memcpy(dest, (const void*)src, size);
-    return true;
+    return ReadBytesResult((const void *)address.getAddressData(), [](const void *) {});
   }
   
   bool readString(RemoteAddress address, std::string &dest) override {
@@ -246,12 +187,13 @@ static int doDumpReflectionSections(ArrayRef<std::string> binaryFilenames,
       objectFile = objectOwner.get();
     }
 
-    context.addReflectionInfo(findReflectionInfo(objectFile));
-
     // Retain the objects that own section memory
     binaryOwners.push_back(std::move(binaryOwner));
     objectOwners.push_back(std::move(objectOwner));
     objectFiles.push_back(objectFile);
+
+    auto startAddress = (uintptr_t)objectFile->getData().begin();
+    context.addImage(RemoteAddress(startAddress));
   }
 
   switch (action) {

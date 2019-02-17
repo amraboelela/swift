@@ -43,11 +43,15 @@ function(get_test_dependencies SDK result_var_name)
       swift swift-ide-test swift-syntax-test sil-opt swift-llvm-opt swift-demangle
       sil-func-extractor sil-llvm-gen sil-nm sil-passpipeline-dumper
       lldb-moduleimport-test swift-reflection-dump swift-remoteast-test
-      swift-api-digester swift-refactor)
+      swift-api-digester swift-refactor swift-demangle-yamldump)
   if(NOT SWIFT_BUILT_STANDALONE)
     list(APPEND deps_binaries FileCheck arcmt-test c-arcmt-test c-index-test
          clang llc llvm-cov llvm-dwarfdump llvm-link llvm-as llvm-dis
-         llvm-bcanalyzer llvm-nm llvm-readobj llvm-profdata count not)
+         llvm-bcanalyzer llvm-nm llvm-readobj llvm-profdata count not
+         llvm-strings)
+  endif()
+  if(SWIFT_BUILD_SYNTAXPARSERLIB)
+    list(APPEND deps_binaries swift-syntax-parser-test)
   endif()
   if(SWIFT_BUILD_SOURCEKIT)
     list(APPEND deps_binaries sourcekitd-test complete-test)
@@ -130,6 +134,7 @@ normalize_boolean_spelling(LLVM_ENABLE_ASSERTIONS)
 normalize_boolean_spelling(SWIFT_STDLIB_ASSERTIONS)
 normalize_boolean_spelling(SWIFT_AST_VERIFIER)
 normalize_boolean_spelling(SWIFT_ASAN_BUILD)
+normalize_boolean_spelling(SWIFT_BUILD_SYNTAXPARSERLIB)
 normalize_boolean_spelling(SWIFT_ENABLE_SOURCEKIT_TESTS)
 is_build_type_optimized("${SWIFT_STDLIB_BUILD_TYPE}" SWIFT_OPTIMIZED)
 
@@ -146,6 +151,7 @@ set(TEST_SUBSETS
     all
     only_validation
     only_long
+    only_stress
 )
 
 if(NOT "${COVERAGE_DB}" STREQUAL "")
@@ -158,8 +164,8 @@ foreach(SDK ${SWIFT_SDKS})
   foreach(ARCH ${SWIFT_SDK_${SDK}_ARCHITECTURES})
     # Configure variables for this subdirectory.
     set(VARIANT_SUFFIX "-${SWIFT_SDK_${SDK}_LIB_SUBDIR}-${ARCH}")
-    set(VARIANT_TRIPLE "${SWIFT_SDK_${SDK}_ARCH_${ARCH}_TRIPLE}")
-    set(VARIANT_SDK "${SWIFT_SDK_${SDK}_PATH}")
+    set(VARIANT_TRIPLE "${SWIFT_SDK_${SDK}_ARCH_${ARCH}_TRIPLE}${SWIFT_SDK_${SDK}_DEPLOYMENT_VERSION}")
+    set(VARIANT_SDK "${SWIFT_SDK_${SDK}_ARCH_${ARCH}_PATH}")
 
     # A directory where to put the xUnit-style XML test results.
     set(SWIFT_TEST_RESULTS_DIR
@@ -195,7 +201,7 @@ foreach(SDK ${SWIFT_SDKS})
 
     if(SWIFT_BUILD_STDLIB AND SWIFT_INCLUDE_TESTS)
       list(APPEND test_dependencies
-          "swift-reflection-test${VARIANT_SUFFIX}")
+          "swift-reflection-test${VARIANT_SUFFIX}_signed")
     endif()
 
     if(NOT "${COVERAGE_DB}" STREQUAL "")
@@ -248,7 +254,7 @@ foreach(SDK ${SWIFT_SDKS})
       set(LIT_ARGS "${SWIFT_TEST_EXTRA_ARGS} ${LLVM_LIT_ARGS}")
       separate_arguments(LIT_ARGS)
 
-      if(NOT SWIFT_BUILD_STDLIB)
+      if(NOT SWIFT_BUILD_STDLIB AND NOT SWIFT_PATH_TO_EXTERNAL_STDLIB_BUILD)
         list(APPEND LIT_ARGS
             "--param" "test_sdk_overlay_dir=${SWIFTLIB_DIR}/${SWIFT_SDK_${SDK}_LIB_SUBDIR}")
       endif()
@@ -271,12 +277,14 @@ foreach(SDK ${SWIFT_SDKS})
         if((test_subset STREQUAL "primary") OR
            (test_subset STREQUAL "validation") OR
            (test_subset STREQUAL "only_long") OR
+           (test_subset STREQUAL "only_stress") OR
            (test_subset STREQUAL "all"))
           list(APPEND directories "${test_bin_dir}")
         endif()
         if((test_subset STREQUAL "validation") OR
            (test_subset STREQUAL "only_validation") OR
            (test_subset STREQUAL "only_long") OR
+           (test_subset STREQUAL "only_stress") OR
            (test_subset STREQUAL "all"))
           list(APPEND directories "${validation_test_bin_dir}")
           list(APPEND dependencies ${validation_test_dependencies})
@@ -296,7 +304,9 @@ foreach(SDK ${SWIFT_SDKS})
           set(test_mode_target_suffix "-${test_mode}")
         endif()
 
-        add_custom_target("check-swift${test_subset_target_suffix}${test_mode_target_suffix}${VARIANT_SUFFIX}"
+        set(test_target_name
+            "check-swift${test_subset_target_suffix}${test_mode_target_suffix}${VARIANT_SUFFIX}")
+        add_custom_target("${test_target_name}"
             ${command_upload_stdlib}
             ${command_upload_swift_reflection_test}
             ${command_clean_test_results_dir}
@@ -310,7 +320,12 @@ foreach(SDK ${SWIFT_SDKS})
             COMMENT "Running ${test_subset} Swift tests for ${VARIANT_TRIPLE}"
             USES_TERMINAL)
 
-        add_custom_target("check-swift${test_subset_target_suffix}${test_mode_target_suffix}${VARIANT_SUFFIX}-custom"
+        set(test_dependencies_target_name
+            "swift${test_subset_target_suffix}${test_mode_target_suffix}${VARIANT_SUFFIX}-test-depends")
+        add_custom_target("${test_dependencies_target_name}"
+            DEPENDS ${dependencies})
+
+        add_custom_target("${test_target_name}-custom"
             ${command_upload_stdlib}
             ${command_upload_swift_reflection_test}
             ${command_clean_test_results_dir}
@@ -319,9 +334,15 @@ foreach(SDK ${SWIFT_SDKS})
               ${LIT_ARGS}
               "--param" "swift_test_subset=${test_subset}"
               "--param" "swift_test_mode=${test_mode}"
+              ${SWIFT_LIT_TEST_PATHS}
             DEPENDS ${dependencies}
             COMMENT "Running ${test_subset} Swift tests for ${VARIANT_TRIPLE} from custom test locations"
             USES_TERMINAL)
+        set_property(TARGET
+            "${test_target_name}"
+            "${test_target_name}-custom"
+            "${test_dependencies_target_name}"
+            PROPERTY FOLDER "Tests/check-swift")
       endforeach()
     endforeach()
   endforeach()
@@ -339,7 +360,18 @@ foreach(test_mode ${TEST_MODES})
       set(test_subset_target_suffix "")
     endif()
 
-    add_custom_target(check-swift${test_subset_target_suffix}${test_mode_target_suffix}
-        DEPENDS "check-swift${test_subset_target_suffix}${test_mode_target_suffix}${SWIFT_PRIMARY_VARIANT_SUFFIX}")
+    set(test_target_name
+        "check-swift${test_subset_target_suffix}${test_mode_target_suffix}")
+    add_custom_target("${test_target_name}"
+        DEPENDS "${test_target_name}${SWIFT_PRIMARY_VARIANT_SUFFIX}")
+    set_property(TARGET "${test_target_name}"
+        PROPERTY FOLDER "Tests/check-swift")
+
+    set(test_depends_target_name
+        "swift${test_subset_target_suffix}${test_mode_target_suffix}-test-depends")
+    add_custom_target("${test_depends_target_name}"
+        DEPENDS "swift${test_subset_target_suffix}${test_mode_target_suffix}${SWIFT_PRIMARY_VARIANT_SUFFIX}-test-depends")
+    set_property(TARGET "${test_depends_target_name}"
+        PROPERTY FOLDER "Tests/check-swift")
   endforeach()
 endforeach()

@@ -18,6 +18,7 @@
 #include "TypeChecker.h"
 #include "MiscDiagnostics.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/Initializer.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/Pattern.h"
 #include "swift/AST/TypeRefinementContext.h"
@@ -179,7 +180,7 @@ private:
     // when we process the accessor, we can use this TRC as the
     // parent.
     if (auto *StorageDecl = dyn_cast<AbstractStorageDecl>(D)) {
-      if (StorageDecl->hasAccessorFunctions()) {
+      if (StorageDecl->hasAnyAccessors()) {
         StorageContexts[StorageDecl] = NewTRC;
       }
     }
@@ -228,7 +229,7 @@ private:
       // locations and have callers of that method provide appropriate source
       // locations.
       SourceLoc BracesEnd = storageDecl->getBracesRange().End;
-      if (storageDecl->hasAccessorFunctions() && BracesEnd.isValid()) {
+      if (storageDecl->hasAnyAccessors() && BracesEnd.isValid()) {
         return SourceRange(storageDecl->getStartLoc(),
                            BracesEnd);
       }
@@ -433,7 +434,7 @@ private:
       // If this query expression has no queries, we will not introduce a new
       // refinement context. We do not diagnose here: a diagnostic will already
       // have been emitted by the parser.
-      if (Query->getQueries().size() == 0)
+      if (Query->getQueries().empty())
         continue;
 
       AvailabilitySpec *Spec = bestActiveSpecForQuery(Query);
@@ -736,7 +737,7 @@ public:
 
   /// The type of a match predicate, which takes as input a node and its
   /// parent and returns a bool indicating whether the node matches.
-  typedef std::function<bool(ASTNode, ASTWalker::ParentTy)> MatchPredicate;
+  using MatchPredicate = std::function<bool(ASTNode, ASTWalker::ParentTy)>;
 
 private:
   const SourceRange TargetRange;
@@ -856,15 +857,31 @@ static Optional<ASTNode> findInnermostAncestor(
 static const Decl *findContainingDeclaration(SourceRange ReferenceRange,
                                              const DeclContext *ReferenceDC,
                                              const SourceManager &SM) {
-  if (const Decl *D = ReferenceDC->getInnermostDeclarationDeclContext())
-    return D;
+  auto ContainsReferenceRange = [&](const Decl *D) -> bool {
+    if (ReferenceRange.isInvalid())
+      return false;
+    return SM.rangeContains(D->getSourceRange(), ReferenceRange);
+  };
 
-  // We couldn't find a suitable node by climbing the DeclContext
-  // hierarchy, so fall back to looking for a top-level declaration
-  // that contains the reference range. We will hit this case for
-  // top-level elements that do not themselves introduce DeclContexts,
-  // such as extensions and global variables. If we don't have a reference
-  // range, there is nothing we can do, so return null.
+  if (const Decl *D = ReferenceDC->getInnermostDeclarationDeclContext()) {
+    // If we have an inner declaration context, see if we can narrow the search
+    // down to one of its members. This is important for properties, which don't
+    // count as DeclContexts of their own but which can still introduce
+    // availability.
+    if (auto *IDC = dyn_cast<IterableDeclContext>(D)) {
+      auto BestMember = llvm::find_if(IDC->getMembers(),
+                                      ContainsReferenceRange);
+      if (BestMember != IDC->getMembers().end())
+        return *BestMember;
+    }
+    return D;
+  }
+
+  // We couldn't find a suitable node by climbing the DeclContext hierarchy, so
+  // fall back to looking for a top-level declaration that contains the
+  // reference range. We will hit this case for top-level elements that do not
+  // themselves introduce DeclContexts, such as global variables. If we don't
+  // have a reference range, there is nothing we can do, so return null.
   if (ReferenceRange.isInvalid())
     return nullptr;
 
@@ -872,11 +889,9 @@ static const Decl *findContainingDeclaration(SourceRange ReferenceRange,
   if (!SF)
     return nullptr;
 
-  for (Decl *D : SF->Decls) {
-    if (SM.rangeContains(D->getSourceRange(), ReferenceRange)) {
-      return D;
-    }
-  }
+  auto BestTopLevelDecl = llvm::find_if(SF->Decls, ContainsReferenceRange);
+  if (BestTopLevelDecl != SF->Decls.end())
+    return *BestTopLevelDecl;
 
   return nullptr;
 }
@@ -928,16 +943,20 @@ abstractSyntaxDeclForAvailableAttribute(const Decl *ConcreteSyntaxDecl) {
     // PatternBindingDecl are added to all of the VarDecls for the pattern
     // binding.
     ArrayRef<PatternBindingEntry> Entries = PBD->getPatternList();
-    if (Entries.size() > 0) {
-      VarDecl *VD = Entries.front().getPattern()->getSingleVar();
-      if (VD)
-        return VD;
+    if (!Entries.empty()) {
+      const VarDecl *AnyVD = nullptr;
+      // FIXME: This is wasteful; we only need the first variable.
+      Entries.front().getPattern()->forEachVariable([&](const VarDecl *VD) {
+        AnyVD = VD;
+      });
+      if (AnyVD)
+        return AnyVD;
     }
   } else if (auto *ECD = dyn_cast<EnumCaseDecl>(ConcreteSyntaxDecl)) {
     // Similar to the PatternBindingDecl case above, we return the
     // first EnumElementDecl.
     ArrayRef<EnumElementDecl *> Elems = ECD->getElements();
-    if (Elems.size() > 0) {
+    if (!Elems.empty()) {
       return Elems.front();
     }
   }
@@ -1091,35 +1110,17 @@ static void findAvailabilityFixItNodes(SourceRange ReferenceRange,
   FoundVersionCheckNode =
       findInnermostAncestor(ReferenceRange, SM, SearchRoot, IsGuardable);
 
-  // Find some Decl that contains the reference range. We use this declaration
-  // as a starting place to climb the DeclContext hierarchy to find
-  // places to suggest adding @available() annotations.
-  InnermostAncestorFinder::MatchPredicate IsDeclaration = [](
-      ASTNode Node, ASTWalker::ParentTy Parent) { return Node.is<Decl *>(); };
-
-  Optional<ASTNode> FoundDeclarationNode =
-      findInnermostAncestor(ReferenceRange, SM, SearchRoot, IsDeclaration);
-
-  const Decl *ContainingDecl = nullptr;
-  if (FoundDeclarationNode.hasValue()) {
-    ContainingDecl = FoundDeclarationNode.getValue().get<Decl *>();
-  }
-
-  if (!ContainingDecl) {
-    ContainingDecl = ReferenceDC->getInnermostMethodContext();
-  }
-
   // Try to find declarations on which @available attributes can be added.
   // The heuristics for finding these declarations are biased towards deeper
   // nodes in the AST to limit the scope of suggested availability regions
   // and provide a better IDE experience (it can get jumpy if Fix-It locations
   // are far away from the error needing the Fix-It).
-  if (ContainingDecl) {
+  if (DeclarationToSearch) {
     FoundMemberLevelDecl =
-        ancestorMemberLevelDeclForAvailabilityFixit(ContainingDecl);
+        ancestorMemberLevelDeclForAvailabilityFixit(DeclarationToSearch);
 
     FoundTypeLevelDecl =
-        ancestorTypeLevelDeclForAvailabilityFixit(ContainingDecl);
+        ancestorTypeLevelDeclForAvailabilityFixit(DeclarationToSearch);
   }
 }
 
@@ -1245,8 +1246,9 @@ static void fixAvailabilityByAddingVersionCheck(
     return;
 
   SourceLoc ReplaceLocStart = RangeToWrap.Start;
-  StringRef OriginalIndent =
-      Lexer::getIndentationForLine(TC.Context.SourceMgr, ReplaceLocStart);
+  StringRef ExtraIndent;
+  StringRef OriginalIndent = Lexer::getIndentationForLine(
+      TC.Context.SourceMgr, ReplaceLocStart, &ExtraIndent);
 
   std::string IfText;
   {
@@ -1260,16 +1262,15 @@ static void fixAvailabilityByAddingVersionCheck(
                                                          ReplaceLocStart,
                                                          ReplaceLocEnd)).str();
 
-    // We'll indent with 4 spaces
-    std::string ExtraIndent = "    ";
     std::string NewLine = "\n";
+    std::string NewLineReplacement = (NewLine + ExtraIndent).str();
 
     // Indent the body of the Fix-It if. Because the body may be a compound
     // statement, we may have to indent multiple lines.
     size_t StartAt = 0;
     while ((StartAt = GuardedText.find(NewLine, StartAt)) !=
            std::string::npos) {
-      GuardedText.replace(StartAt, NewLine.length(), NewLine + ExtraIndent);
+      GuardedText.replace(StartAt, NewLine.length(), NewLineReplacement);
       StartAt += NewLine.length();
     }
 
@@ -1355,12 +1356,12 @@ void TypeChecker::diagnosePotentialUnavailability(
 }
 
 void TypeChecker::diagnosePotentialAccessorUnavailability(
-    AccessorDecl *Accessor, SourceRange ReferenceRange,
+    const AccessorDecl *Accessor, SourceRange ReferenceRange,
     const DeclContext *ReferenceDC, const UnavailabilityReason &Reason,
     bool ForInout) {
   assert(Accessor->isGetterOrSetter());
 
-  AbstractStorageDecl *ASD = Accessor->getStorage();
+  const AbstractStorageDecl *ASD = Accessor->getStorage();
   DeclName Name = ASD->getFullName();
 
   auto &diag = ForInout ? diag::availability_inout_accessor_only_version_newer
@@ -1404,14 +1405,11 @@ const AvailableAttr *TypeChecker::getDeprecated(const Decl *D) {
 static bool
 someEnclosingDeclMatches(SourceRange ReferenceRange,
                          const DeclContext *ReferenceDC,
-                         TypeChecker &TC,
                          llvm::function_ref<bool(const Decl *)> Pred) {
-  ASTContext &Ctx = TC.Context;
-
   // Climb the DeclContext hierarchy to see if any of the containing
   // declarations matches the predicate.
   const DeclContext *DC = ReferenceDC;
-  do {
+  while (true) {
     auto *D = DC->getInnermostDeclarationDeclContext();
     if (!D)
       break;
@@ -1427,75 +1425,58 @@ someEnclosingDeclMatches(SourceRange ReferenceRange,
         return true;
     }
 
-    DC = DC->getParent();
-  } while (DC);
+    DC = D->getDeclContext();
+  }
 
   // Search the AST starting from our innermost declaration context to see if
   // if the reference is inside a property declaration but not inside an
   // accessor (this can happen for the TypeRepr for the declared type of a
   // property, for example).
   // We can't rely on the DeclContext hierarchy climb above because properties
-  // do not introduce a new DeclContext. This search is potentially slow, so we
-  // do it last and only if the reference declaration context is a
-  // type or global context.
-
-  if (!ReferenceDC->isTypeContext() && !ReferenceDC->isModuleScopeContext())
-    return false;
+  // do not introduce a new DeclContext.
 
   // Don't search for a containing declaration if we don't have a source range.
   if (ReferenceRange.isInvalid())
     return false;
 
+  ASTContext &Ctx = ReferenceDC->getASTContext();
   const Decl *DeclToSearch =
       findContainingDeclaration(ReferenceRange, ReferenceDC, Ctx.SourceMgr);
 
   // We may not be able to find a declaration to search if the ReferenceRange
-  // is invalid (i.e., we are in synthesized code).
+  // isn't useful (i.e., we are in synthesized code).
   if (!DeclToSearch)
     return false;
 
-  InnermostAncestorFinder::MatchPredicate IsDeclaration =
-      [](ASTNode Node, ASTWalker::ParentTy Parent) {
-        return Node.is<Decl *>();
-  };
-
-  Optional<ASTNode> FoundDeclarationNode =
-      findInnermostAncestor(ReferenceRange, Ctx.SourceMgr,
-                            const_cast<Decl *>(DeclToSearch), IsDeclaration);
-
-  if (FoundDeclarationNode.hasValue()) {
-    const Decl *D = FoundDeclarationNode.getValue().get<Decl *>();
-    D = abstractSyntaxDeclForAvailableAttribute(D);
-    if (Pred(D)) {
-      return true;
-    }
-  }
-
-  return false;
+  return Pred(abstractSyntaxDeclForAvailableAttribute(DeclToSearch));
 }
 
-bool TypeChecker::isInsideImplicitFunction(SourceRange ReferenceRange,
-                                           const DeclContext *DC) {
+/// Returns true if the reference or any of its parents is an
+/// implicit function.
+static bool isInsideImplicitFunction(SourceRange ReferenceRange,
+                                     const DeclContext *DC) {
   auto IsInsideImplicitFunc = [](const Decl *D) {
     auto *AFD = dyn_cast<AbstractFunctionDecl>(D);
     return AFD && AFD->isImplicit();
   };
 
-  return someEnclosingDeclMatches(ReferenceRange, DC, *this,
-                                  IsInsideImplicitFunc);
+  return someEnclosingDeclMatches(ReferenceRange, DC, IsInsideImplicitFunc);
 }
 
-bool TypeChecker::isInsideUnavailableDeclaration(
-    SourceRange ReferenceRange, const DeclContext *ReferenceDC) {
+/// Returns true if the reference or any of its parents is an
+/// unavailable (or obsoleted) declaration.
+static bool isInsideUnavailableDeclaration(SourceRange ReferenceRange,
+                                           const DeclContext *ReferenceDC) {
   auto IsUnavailable = [](const Decl *D) {
     return D->getAttrs().getUnavailable(D->getASTContext());
   };
 
-  return someEnclosingDeclMatches(ReferenceRange, ReferenceDC, *this,
-                                  IsUnavailable);
+  return someEnclosingDeclMatches(ReferenceRange, ReferenceDC, IsUnavailable);
 }
 
-bool TypeChecker::isInsideCompatibleUnavailableDeclaration(
+/// Returns true if the reference or any of its parents is an
+/// unconditional unavailable declaration for the same platform.
+static bool isInsideCompatibleUnavailableDeclaration(
     SourceRange ReferenceRange, const DeclContext *ReferenceDC,
     const AvailableAttr *attr) {
   if (!attr->isUnconditionallyUnavailable()) {
@@ -1512,26 +1493,28 @@ bool TypeChecker::isInsideCompatibleUnavailableDeclaration(
     return EnclosingUnavailable && EnclosingUnavailable->Platform == platform;
   };
 
-  return someEnclosingDeclMatches(ReferenceRange, ReferenceDC, *this,
-                                  IsUnavailable);
+  return someEnclosingDeclMatches(ReferenceRange, ReferenceDC, IsUnavailable);
 }
 
-bool TypeChecker::isInsideDeprecatedDeclaration(SourceRange ReferenceRange,
-                                                const DeclContext *ReferenceDC){
+/// Returns true if the reference is lexically contained in a declaration
+/// that is deprecated on all deployment targets.
+static bool isInsideDeprecatedDeclaration(SourceRange ReferenceRange,
+                                          const DeclContext *ReferenceDC){
   auto IsDeprecated = [](const Decl *D) {
     return D->getAttrs().getDeprecated(D->getASTContext());
   };
 
-  return someEnclosingDeclMatches(ReferenceRange, ReferenceDC, *this,
-                                  IsDeprecated);
+  return someEnclosingDeclMatches(ReferenceRange, ReferenceDC, IsDeprecated);
 }
 
-static void fixItAvailableAttrRename(TypeChecker &TC,
-                                     InFlightDiagnostic &diag,
+static void fixItAvailableAttrRename(InFlightDiagnostic &diag,
                                      SourceRange referenceRange,
                                      const ValueDecl *renamedDecl,
                                      const AvailableAttr *attr,
                                      const ApplyExpr *call) {
+  if (isa<AccessorDecl>(renamedDecl))
+    return;
+
   ParsedDeclName parsed = swift::parseDeclName(attr->Rename);
   if (!parsed)
     return;
@@ -1546,7 +1529,8 @@ static void fixItAvailableAttrRename(TypeChecker &TC,
   if (parsed.isOperator() != originallyWasKnownOperatorExpr)
     return;
 
-  SourceManager &sourceMgr = TC.Context.SourceMgr;
+  auto &ctx = renamedDecl->getASTContext();
+  SourceManager &sourceMgr = ctx.SourceMgr;
 
   if (parsed.isInstanceMember()) {
     // Replace the base of the call with the "self argument".
@@ -1676,7 +1660,7 @@ static void fixItAvailableAttrRename(TypeChecker &TC,
 
     // Continue on to diagnose any argument label renames.
 
-  } else if (parsed.BaseName == TC.Context.Id_init.str() &&
+  } else if (parsed.BaseName == "init" &&
              call && isa<CallExpr>(call)) {
     // For initializers, replace with a "call" of the context type...but only
     // if we know we're doing a call (rather than a first-class reference).
@@ -1751,8 +1735,8 @@ static void fixItAvailableAttrRename(TypeChecker &TC,
   SmallVector<Identifier, 4> argumentLabelIDs;
   std::transform(parsed.ArgumentLabels.begin(), parsed.ArgumentLabels.end(),
                  std::back_inserter(argumentLabelIDs),
-                 [&TC](StringRef labelStr) -> Identifier {
-    return labelStr.empty() ? Identifier() : TC.Context.getIdentifier(labelStr);
+                 [&ctx](StringRef labelStr) -> Identifier {
+    return labelStr.empty() ? Identifier() : ctx.getIdentifier(labelStr);
   });
 
   if (auto args = dyn_cast<TupleShuffleExpr>(argExpr)) {
@@ -1850,7 +1834,7 @@ static void fixItAvailableAttrRename(TypeChecker &TC,
     llvm_unreachable("Unexpected arg expression");
   }
 
-  diagnoseArgumentLabelError(TC, argExpr, argumentLabelIDs, false, &diag);
+  diagnoseArgumentLabelError(ctx, argExpr, argumentLabelIDs, false, &diag);
 }
 
 // Must be kept in sync with diag::availability_decl_unavailable_rename and
@@ -1879,7 +1863,7 @@ describeRename(ASTContext &ctx, const AvailableAttr *attr, const ValueDecl *D,
   // and bindings to member types and class/static properties.
   if (!(parsed.isInstanceMember() || parsed.isPropertyAccessor() ||
         (parsed.isMember() && parsed.IsFunctionName) ||
-        (parsed.BaseName == ctx.Id_init.str() &&
+        (parsed.BaseName == "init" &&
          !dyn_cast_or_null<ConstructorDecl>(D)))) {
     return None;
   }
@@ -1890,14 +1874,7 @@ describeRename(ASTContext &ctx, const AvailableAttr *attr, const ValueDecl *D,
     name << parsed.ContextName << '.';
 
   if (parsed.IsFunctionName) {
-    // FIXME: duplicated from above.
-    SmallVector<Identifier, 4> argumentLabelIDs;
-    std::transform(parsed.ArgumentLabels.begin(), parsed.ArgumentLabels.end(),
-                   std::back_inserter(argumentLabelIDs),
-                   [&ctx](StringRef labelStr) -> Identifier {
-      return labelStr.empty() ? Identifier() : ctx.getIdentifier(labelStr);
-    });
-    name << DeclName(ctx, ctx.getIdentifier(parsed.BaseName), argumentLabelIDs);
+    name << parsed.formDeclName(ctx);
   } else {
     name << parsed.BaseName;
   }
@@ -1911,6 +1888,26 @@ describeRename(ASTContext &ctx, const AvailableAttr *attr, const ValueDecl *D,
   return ReplacementDeclKind::None;
 }
 
+/// Returns a value that can be used to select between accessor kinds in
+/// diagnostics.
+///
+/// This is correlated with diag::availability_deprecated and others.
+static std::pair<unsigned, DeclName>
+getAccessorKindAndNameForDiagnostics(const ValueDecl *D) {
+  // This should always be one more than the last AccessorKind supported in
+  // the diagnostics. If you need to change it, change the assertion below as
+  // well.
+  static const unsigned NOT_ACCESSOR_INDEX = 2;
+
+  if (auto *accessor = dyn_cast<AccessorDecl>(D)) {
+    DeclName Name = accessor->getStorage()->getFullName();
+    assert(accessor->isGetterOrSetter());
+    return {static_cast<unsigned>(accessor->getAccessorKind()), Name};
+  }
+
+  return {NOT_ACCESSOR_INDEX, D->getFullName()};
+}
+
 void TypeChecker::diagnoseIfDeprecated(SourceRange ReferenceRange,
                                        const DeclContext *ReferenceDC,
                                        const ValueDecl *DeprecatedDecl,
@@ -1919,6 +1916,12 @@ void TypeChecker::diagnoseIfDeprecated(SourceRange ReferenceRange,
   if (!Attr)
     return;
 
+  // We don't want deprecated declarations to trigger warnings
+  // in synthesized code.
+  if (ReferenceRange.isInvalid() &&
+      isInsideImplicitFunction(ReferenceRange, ReferenceDC)) {
+    return;
+  }
   // We match the behavior of clang to not report deprecation warnings
   // inside declarations that are themselves deprecated on all deployment
   // targets.
@@ -1937,16 +1940,20 @@ void TypeChecker::diagnoseIfDeprecated(SourceRange ReferenceRange,
     }
   }
 
-  DeclName Name = DeprecatedDecl->getFullName();
+  DeclName Name;
+  unsigned RawAccessorKind;
+  std::tie(RawAccessorKind, Name) =
+      getAccessorKindAndNameForDiagnostics(DeprecatedDecl);
+
   StringRef Platform = Attr->prettyPlatformString();
-  clang::VersionTuple DeprecatedVersion;
+  llvm::VersionTuple DeprecatedVersion;
   if (Attr->Deprecated)
     DeprecatedVersion = Attr->Deprecated.getValue();
 
   if (Attr->Message.empty() && Attr->Rename.empty()) {
-    diagnose(ReferenceRange.Start, diag::availability_deprecated, Name,
-             Attr->hasPlatform(), Platform, Attr->Deprecated.hasValue(),
-             DeprecatedVersion)
+    diagnose(ReferenceRange.Start, diag::availability_deprecated,
+             RawAccessorKind, Name, Attr->hasPlatform(), Platform,
+             Attr->Deprecated.hasValue(), DeprecatedVersion)
       .highlight(Attr->getRange());
     return;
   }
@@ -1958,41 +1965,50 @@ void TypeChecker::diagnoseIfDeprecated(SourceRange ReferenceRange,
 
   if (!Attr->Message.empty()) {
     EncodedDiagnosticMessage EncodedMessage(Attr->Message);
-    diagnose(ReferenceRange.Start, diag::availability_deprecated_msg, Name,
-             Attr->hasPlatform(), Platform, Attr->Deprecated.hasValue(),
-             DeprecatedVersion, EncodedMessage.Message)
+    diagnose(ReferenceRange.Start, diag::availability_deprecated_msg,
+             RawAccessorKind, Name, Attr->hasPlatform(), Platform,
+             Attr->Deprecated.hasValue(), DeprecatedVersion,
+             EncodedMessage.Message)
       .highlight(Attr->getRange());
   } else {
     unsigned rawReplaceKind = static_cast<unsigned>(
         replacementDeclKind.getValueOr(ReplacementDeclKind::None));
-    diagnose(ReferenceRange.Start, diag::availability_deprecated_rename, Name,
-             Attr->hasPlatform(), Platform, Attr->Deprecated.hasValue(),
-             DeprecatedVersion, replacementDeclKind.hasValue(), rawReplaceKind,
-             newName)
+    diagnose(ReferenceRange.Start, diag::availability_deprecated_rename,
+             RawAccessorKind, Name, Attr->hasPlatform(), Platform,
+             Attr->Deprecated.hasValue(), DeprecatedVersion,
+             replacementDeclKind.hasValue(), rawReplaceKind, newName)
       .highlight(Attr->getRange());
   }
 
-  if (!Attr->Rename.empty()) {
+  if (!Attr->Rename.empty() && !isa<AccessorDecl>(DeprecatedDecl)) {
     auto renameDiag = diagnose(ReferenceRange.Start,
                                diag::note_deprecated_rename,
                                newName);
-    fixItAvailableAttrRename(*this, renameDiag, ReferenceRange, DeprecatedDecl,
+    fixItAvailableAttrRename(renameDiag, ReferenceRange, DeprecatedDecl,
                              Attr, Call);
   }
 }
 
 
-void TypeChecker::diagnoseUnavailableOverride(ValueDecl *override,
-                                              const ValueDecl *base,
-                                              const AvailableAttr *attr) {
+void swift::diagnoseUnavailableOverride(ValueDecl *override,
+                                        const ValueDecl *base,
+                                        const AvailableAttr *attr) {
+  ASTContext &ctx = override->getASTContext();
+  auto &diags = ctx.Diags;
   if (attr->Rename.empty()) {
     if (attr->Message.empty())
-      diagnose(override, diag::override_unavailable, override->getBaseName());
+      diags.diagnose(override, diag::override_unavailable,
+                     override->getBaseName());
     else
-      diagnose(override, diag::override_unavailable_msg,
-               override->getBaseName(), attr->Message);
-    diagnose(base, diag::availability_marked_unavailable,
-             base->getFullName());
+      diags.diagnose(override, diag::override_unavailable_msg,
+                     override->getBaseName(), attr->Message);
+
+    DeclName name;
+    unsigned rawAccessorKind;
+    std::tie(rawAccessorKind, name) =
+        getAccessorKindAndNameForDiagnostics(base);
+    diags.diagnose(base, diag::availability_marked_unavailable,
+                   rawAccessorKind, name);
     return;
   }
 
@@ -2007,7 +2023,7 @@ void TypeChecker::diagnoseUnavailableOverride(ValueDecl *override,
 
     // Only initializers should be named 'init'.
     if (isa<ConstructorDecl>(override) ^
-        (parsedName.BaseName == Context.Id_init.str())) {
+        (parsedName.BaseName == "init")) {
       return;
     }
 
@@ -2016,7 +2032,7 @@ void TypeChecker::diagnoseUnavailableOverride(ValueDecl *override,
       return;
     }
 
-    DeclName newName = parsedName.formDeclName(Context);
+    DeclName newName = parsedName.formDeclName(ctx);
     size_t numArgs = override->getFullName().getArgumentNames().size();
     if (!newName || newName.getArgumentNames().size() != numArgs)
       return;
@@ -2027,13 +2043,13 @@ void TypeChecker::diagnoseUnavailableOverride(ValueDecl *override,
 
 /// Emit a diagnostic for references to declarations that have been
 /// marked as unavailable, either through "unavailable" or "obsoleted:".
-bool TypeChecker::diagnoseExplicitUnavailability(const ValueDecl *D,
+bool swift::diagnoseExplicitUnavailability(const ValueDecl *D,
                                                  SourceRange R,
                                                  const DeclContext *DC,
                                                  const ApplyExpr *call) {
   return diagnoseExplicitUnavailability(D, R, DC,
                                         [=](InFlightDiagnostic &diag) {
-    fixItAvailableAttrRename(*this, diag, R, D, AvailableAttr::isUnavailable(D),
+    fixItAvailableAttrRename(diag, R, D, AvailableAttr::isUnavailable(D),
                              call);
   });
 }
@@ -2052,7 +2068,7 @@ bool isSubscriptReturningString(const ValueDecl *D, ASTContext &Context) {
   auto *stringDecl = Context.getStringDecl();
   auto *substringDecl = Context.getSubstringDecl();
 
-  auto *typeDecl = declContext->getAsNominalTypeOrNominalTypeExtensionContext();
+  auto *typeDecl = declContext->getSelfNominalTypeDecl();
   if (!typeDecl)
     return false;
 
@@ -2066,7 +2082,15 @@ bool isSubscriptReturningString(const ValueDecl *D, ASTContext &Context) {
 
   // We're only going to warn for BoundGenericStructType with a single
   // type argument that is not Int!
-  auto inputTy = fnTy->getInput()->getAs<BoundGenericStructType>();
+  auto params = fnTy->getParams();
+  if (params.size() != 1)
+    return false;
+
+  const auto &param = params.front();
+  if (param.hasLabel() || param.isVariadic() || param.isInOut())
+    return false;
+
+  auto inputTy = param.getPlainType()->getAs<BoundGenericStructType>();
   if (!inputTy)
     return false;
 
@@ -2091,7 +2115,7 @@ bool isSubscriptReturningString(const ValueDecl *D, ASTContext &Context) {
   return resultTy->getDecl() == stringDecl;
 }
 
-bool TypeChecker::diagnoseExplicitUnavailability(
+bool swift::diagnoseExplicitUnavailability(
     const ValueDecl *D,
     SourceRange R,
     const DeclContext *DC,
@@ -2119,8 +2143,12 @@ bool TypeChecker::diagnoseExplicitUnavailability(
   }
 
   SourceLoc Loc = R.Start;
-  auto Name = D->getFullName();
+  DeclName Name;
+  unsigned RawAccessorKind;
+  std::tie(RawAccessorKind, Name) = getAccessorKindAndNameForDiagnostics(D);
 
+  ASTContext &ctx = D->getASTContext();
+  auto &diags = ctx.Diags;
   switch (Attr->getPlatformAgnosticAvailability()) {
   case PlatformAgnosticAvailabilityKind::Deprecated:
     break;
@@ -2128,6 +2156,7 @@ bool TypeChecker::diagnoseExplicitUnavailability(
   case PlatformAgnosticAvailabilityKind::None:
   case PlatformAgnosticAvailabilityKind::Unavailable:
   case PlatformAgnosticAvailabilityKind::SwiftVersionSpecific:
+  case PlatformAgnosticAvailabilityKind::PackageDescriptionVersionSpecific:
   case PlatformAgnosticAvailabilityKind::UnavailableInSwift: {
     bool inSwift = (Attr->getPlatformAgnosticAvailability() ==
                     PlatformAgnosticAvailabilityKind::UnavailableInSwift);
@@ -2135,25 +2164,28 @@ bool TypeChecker::diagnoseExplicitUnavailability(
     if (!Attr->Rename.empty()) {
       SmallString<32> newNameBuf;
       Optional<ReplacementDeclKind> replaceKind =
-          describeRename(Context, Attr, D, newNameBuf);
+          describeRename(ctx, Attr, D, newNameBuf);
       unsigned rawReplaceKind = static_cast<unsigned>(
           replaceKind.getValueOr(ReplacementDeclKind::None));
       StringRef newName = replaceKind ? newNameBuf.str() : Attr->Rename;
 
       if (Attr->Message.empty()) {
-        auto diag = diagnose(Loc, diag::availability_decl_unavailable_rename,
-                             Name, replaceKind.hasValue(), rawReplaceKind,
-                             newName);
+        auto diag = diags.diagnose(Loc,
+                                   diag::availability_decl_unavailable_rename,
+                                   RawAccessorKind, Name,
+                                   replaceKind.hasValue(),
+                                   rawReplaceKind, newName);
         attachRenameFixIts(diag);
       } else {
         EncodedDiagnosticMessage EncodedMessage(Attr->Message);
-        auto diag = diagnose(Loc, diag::availability_decl_unavailable_rename_msg,
-                             Name, replaceKind.hasValue(), rawReplaceKind,
-                             newName, EncodedMessage.Message);
+        auto diag =
+          diags.diagnose(Loc, diag::availability_decl_unavailable_rename_msg,
+                         RawAccessorKind, Name, replaceKind.hasValue(),
+                         rawReplaceKind, newName, EncodedMessage.Message);
         attachRenameFixIts(diag);
       }
-    } else if (isSubscriptReturningString(D, Context)) {
-      diagnose(Loc, diag::availabilty_string_subscript_migration)
+    } else if (isSubscriptReturningString(D, ctx)) {
+      diags.diagnose(Loc, diag::availabilty_string_subscript_migration)
         .highlight(R)
         .fixItInsert(R.Start, "String(")
         .fixItInsertAfter(R.End, ")");
@@ -2161,42 +2193,61 @@ bool TypeChecker::diagnoseExplicitUnavailability(
       // Skip the note emitted below.
       return true;
     } else if (Attr->Message.empty()) {
-      diagnose(Loc, inSwift ? diag::availability_decl_unavailable_in_swift
-                            : diag::availability_decl_unavailable,
-               Name).highlight(R);
+      diags.diagnose(Loc, inSwift ? diag::availability_decl_unavailable_in_swift
+                                 : diag::availability_decl_unavailable,
+                     RawAccessorKind, Name)
+        .highlight(R);
     } else {
       EncodedDiagnosticMessage EncodedMessage(Attr->Message);
-      diagnose(Loc, inSwift ? diag::availability_decl_unavailable_in_swift_msg
-                            : diag::availability_decl_unavailable_msg,
-               Name, EncodedMessage.Message)
+      diags.diagnose(Loc,
+                     inSwift ? diag::availability_decl_unavailable_in_swift_msg
+                             : diag::availability_decl_unavailable_msg,
+                     RawAccessorKind, Name, EncodedMessage.Message)
         .highlight(R);
     }
     break;
   }
   }
 
-  switch (Attr->getVersionAvailability(Context)) {
+  switch (Attr->getVersionAvailability(ctx)) {
   case AvailableVersionComparison::Available:
   case AvailableVersionComparison::PotentiallyUnavailable:
     llvm_unreachable("These aren't considered unavailable");
 
   case AvailableVersionComparison::Unavailable:
-    if (Attr->isLanguageVersionSpecific()
+    if ((Attr->isLanguageVersionSpecific() ||
+         Attr->isPackageDescriptionVersionSpecific())
         && Attr->Introduced.hasValue())
-      diagnose(D, diag::availability_introduced_in_swift, Name,
-               *Attr->Introduced).highlight(Attr->getRange());
+      diags.diagnose(D, diag::availability_introduced_in_version,
+                     RawAccessorKind, Name,
+                     (Attr->isLanguageVersionSpecific() ? 
+                      "Swift" : "PackageDescription"),
+                     *Attr->Introduced)
+        .highlight(Attr->getRange());
     else
-      diagnose(D, diag::availability_marked_unavailable, Name)
+      diags.diagnose(D, diag::availability_marked_unavailable, RawAccessorKind,
+                     Name)
         .highlight(Attr->getRange());
     break;
 
   case AvailableVersionComparison::Obsoleted:
     // FIXME: Use of the platformString here is non-awesome for application
     // extensions.
-    diagnose(D, diag::availability_obsoleted, Name,
-             (Attr->isLanguageVersionSpecific() ?
-              "Swift" : Attr->prettyPlatformString()),
-             *Attr->Obsoleted).highlight(Attr->getRange());
+
+    StringRef platformDisplayString;
+    if (Attr->isLanguageVersionSpecific()) {
+      platformDisplayString = "Swift";
+    } else if (Attr->isPackageDescriptionVersionSpecific()) {
+      platformDisplayString = "PackageDescription";
+    } else {
+      platformDisplayString = Attr->prettyPlatformString();
+    }
+
+    diags.diagnose(D, diag::availability_obsoleted,
+                   RawAccessorKind, Name,
+                   platformDisplayString,
+                   *Attr->Obsoleted)
+      .highlight(Attr->getRange());
     break;
   }
   return true;
@@ -2225,10 +2276,31 @@ class AvailabilityWalker : public ASTWalker {
   DeclContext *DC;
   MemberAccessContext AccessContext = MemberAccessContext::Getter;
   SmallVector<const Expr *, 16> ExprStack;
+  ResilienceExpansion Expansion;
+  Optional<TypeChecker::FragileFunctionKind> FragileKind;
+  bool TreatUsableFromInlineAsPublic = false;
+
+  /// Returns true if DC is an \c init(rawValue:) declaration and it is marked
+  /// implicit.
+  bool inSynthesizedInitRawValue() {
+    auto init = dyn_cast_or_null<ConstructorDecl>(
+                    DC->getInnermostDeclarationDeclContext());
+
+    return init &&
+           init->isImplicit() &&
+           init->getParameters()->size() == 1 &&
+           init->getParameters()->get(0)->getArgumentName() ==
+                   TC.Context.Id_rawValue;
+  }
 
 public:
   AvailabilityWalker(
-      TypeChecker &TC, DeclContext *DC) : TC(TC), DC(DC) {}
+      TypeChecker &TC, DeclContext *DC) : TC(TC), DC(DC) {
+    Expansion = DC->getResilienceExpansion();
+    if (Expansion == ResilienceExpansion::Minimal)
+      std::tie(FragileKind, TreatUsableFromInlineAsPublic)
+        = TC.getFragileFunctionKind(DC);
+  }
 
   std::pair<bool, Expr *> walkToExprPre(Expr *E) override {
     ExprStack.push_back(E);
@@ -2239,9 +2311,23 @@ public:
       return std::make_pair(false, E);
     };
 
-    if (auto DR = dyn_cast<DeclRefExpr>(E))
+    if (auto DR = dyn_cast<DeclRefExpr>(E)) {
+      DeclAvailabilityFlags flags = None;
+      if (inSynthesizedInitRawValue())
+        // HACK: If a raw-value enum has cases with `@available(introduced:)`
+        // attributes, the auto-derived `init(rawValue:)` will contain
+        // DeclRefExprs which reference those cases. It will also contain
+        // appropriate `guard #available` statements to keep them from running
+        // on older versions, but the availability checker can't verify that
+        // because the synthesized code uses invalid SourceLocs. Don't diagnose
+        // these errors; instead, take it on faith that
+        // DerivedConformanceRawRepresentable will do the right thing.
+        flags |= DeclAvailabilityFlag::AllowPotentiallyUnavailable;
+
       diagAvailability(DR->getDecl(), DR->getSourceRange(),
-                       getEnclosingApplyExpr());
+                       getEnclosingApplyExpr(), flags);
+      maybeDiagStorageAccess(DR->getDecl(), DR->getSourceRange(), DC);
+    }
     if (auto MR = dyn_cast<MemberRefExpr>(E)) {
       walkMemberRef(MR);
       return skipChildren();
@@ -2257,8 +2343,13 @@ public:
     if (auto DS = dyn_cast<DynamicSubscriptExpr>(E))
       diagAvailability(DS->getMember().getDecl(), DS->getSourceRange());
     if (auto S = dyn_cast<SubscriptExpr>(E)) {
-      if (S->hasDecl())
+      if (S->hasDecl()) {
         diagAvailability(S->getDecl().getDecl(), S->getSourceRange());
+        maybeDiagStorageAccess(S->getDecl().getDecl(), S->getSourceRange(), DC);
+      }
+    }
+    if (auto KP = dyn_cast<KeyPathExpr>(E)) {
+      maybeDiagKeyPath(KP);
     }
     if (auto A = dyn_cast<AssignExpr>(E)) {
       walkAssignExpr(A);
@@ -2281,8 +2372,7 @@ public:
 
   bool diagAvailability(const ValueDecl *D, SourceRange R,
                         const ApplyExpr *call = nullptr,
-                        bool AllowPotentiallyUnavailableProtocol = false,
-                        bool SignalOnPotentialUnavailability = true);
+                        DeclAvailabilityFlags flags = None);
 
 private:
   bool diagnoseIncDecRemoval(const ValueDecl *D, SourceRange R,
@@ -2341,6 +2431,8 @@ private:
   /// Walk a member reference expression, checking for availability.
   void walkMemberRef(MemberRefExpr *E) {
     // Walk the base in a getter context.
+    // FIXME: We may need to look at the setter too, if we're going to do
+    // writeback. The AST should have this information.
     walkInContext(E, E->getBase(), MemberAccessContext::Getter);
 
     ValueDecl *D = E->getMember().getDecl();
@@ -2348,15 +2440,36 @@ private:
     if (diagAvailability(D, E->getNameLoc().getSourceRange()))
       return;
 
-    if (TC.getLangOpts().DisableAvailabilityChecking)
-      return;
+    // Diagnose for appropriate accessors, given the access context.
+    maybeDiagStorageAccess(D, E->getSourceRange(), DC);
+  }
 
-    if (auto *ASD = dyn_cast<AbstractStorageDecl>(D)) {
-      // Diagnose for appropriate accessors, given the access context.
-      diagStorageAccess(ASD, E->getSourceRange(), DC);
+  /// Walk a keypath expression, checking all of its components for
+  /// availability.
+  void maybeDiagKeyPath(KeyPathExpr *KP) {
+    for (auto &component : KP->getComponents()) {
+      switch (component.getKind()) {
+      case KeyPathExpr::Component::Kind::Property:
+      case KeyPathExpr::Component::Kind::Subscript: {
+        auto *decl = component.getDeclRef().getDecl();
+        auto loc = component.getLoc();
+        SourceRange range(loc, loc);
+        diagAvailability(decl, range, nullptr);
+        break;
+      }
+
+      case KeyPathExpr::Component::Kind::Invalid:
+      case KeyPathExpr::Component::Kind::UnresolvedProperty:
+      case KeyPathExpr::Component::Kind::UnresolvedSubscript:
+      case KeyPathExpr::Component::Kind::OptionalChain:
+      case KeyPathExpr::Component::Kind::OptionalWrap:
+      case KeyPathExpr::Component::Kind::OptionalForce:
+      case KeyPathExpr::Component::Kind::Identity:
+        break;
+      }
     }
   }
-  
+
   /// Walk an inout expression, checking for availability.
   void walkInOutExpr(InOutExpr *E) {
     walkInContext(E, E->getSubExpr(), MemberAccessContext::InOut);
@@ -2372,60 +2485,66 @@ private:
 
   /// Emit diagnostics, if necessary, for accesses to storage where
   /// the accessor for the AccessContext is not available.
-  void diagStorageAccess(AbstractStorageDecl *D,
-                         SourceRange ReferenceRange,
-                         const DeclContext *ReferenceDC) const {
-    if (!D->hasAccessorFunctions()) {
+  void maybeDiagStorageAccess(const ValueDecl *VD,
+                              SourceRange ReferenceRange,
+                              const DeclContext *ReferenceDC) const {
+    if (TC.getLangOpts().DisableAvailabilityChecking)
+      return;
+
+    auto *D = dyn_cast<AbstractStorageDecl>(VD);
+    if (!D)
+      return;
+
+    if (!D->hasAnyAccessors()) {
       return;
     }
     
-    // Check availability of accessor functions
+    // Check availability of accessor functions.
+    // TODO: if we're talking about an inlineable storage declaration,
+    // this probably needs to be refined to not assume that the accesses are
+    // specifically using the getter/setter.
     switch (AccessContext) {
     case MemberAccessContext::Getter:
       diagAccessorAvailability(D->getGetter(), ReferenceRange, ReferenceDC,
-                               /*ForInout=*/false);
+                               None);
       break;
 
     case MemberAccessContext::Setter:
       diagAccessorAvailability(D->getSetter(), ReferenceRange, ReferenceDC,
-                               /*ForInout=*/false);
+                               None);
       break;
 
     case MemberAccessContext::InOut:
       diagAccessorAvailability(D->getGetter(), ReferenceRange, ReferenceDC,
-                               /*ForInout=*/true);
+                               DeclAvailabilityFlag::ForInout);
 
       diagAccessorAvailability(D->getSetter(), ReferenceRange, ReferenceDC,
-                               /*ForInout=*/true);
+                               DeclAvailabilityFlag::ForInout);
       break;
     }
   }
 
   /// Emit a diagnostic, if necessary for a potentially unavailable accessor.
-  /// Returns true if a diagnostic was emitted.
   void diagAccessorAvailability(AccessorDecl *D, SourceRange ReferenceRange,
                                 const DeclContext *ReferenceDC,
-                                bool ForInout) const {
-    if (!D) {
+                                DeclAvailabilityFlags Flags) const {
+    Flags &= DeclAvailabilityFlag::ForInout;
+    Flags |= DeclAvailabilityFlag::ContinueOnPotentialUnavailability;
+    if (diagnoseDeclAvailability(D, TC,
+                                 const_cast<DeclContext*>(ReferenceDC),
+                                 ReferenceRange,
+                                 Flags))
       return;
-    }
-    auto MaybeUnavail = TC.checkDeclarationAvailability(D, ReferenceRange.Start,
-                                                        DC);
-    if (MaybeUnavail.hasValue()) {
-      TC.diagnosePotentialAccessorUnavailability(D, ReferenceRange, ReferenceDC,
-                                                 MaybeUnavail.getValue(),
-                                                 ForInout);
-    }
   }
 };
 } // end anonymous namespace
 
 /// Diagnose uses of unavailable declarations. Returns true if a diagnostic
 /// was emitted.
-bool AvailabilityWalker::diagAvailability(const ValueDecl *D, SourceRange R,
-                                          const ApplyExpr *call,
-                                          bool AllowPotentiallyUnavailableProtocol,
-                                          bool SignalOnPotentialUnavailability) {
+bool
+AvailabilityWalker::diagAvailability(const ValueDecl *D, SourceRange R,
+                                     const ApplyExpr *call,
+                                     DeclAvailabilityFlags Flags) {
   if (!D)
     return false;
 
@@ -2436,24 +2555,53 @@ bool AvailabilityWalker::diagAvailability(const ValueDecl *D, SourceRange R,
       return true;
   }
 
-  if (R.isValid())
-    if (TC.diagnoseInlineableDeclRef(R.Start, D, DC))
-      return true;
+  // Keep track if this is an accessor.
+  auto accessor = dyn_cast<AccessorDecl>(D);
 
-  if (TC.diagnoseExplicitUnavailability(D, R, DC, call))
+  if (accessor) {
+    // If the property/subscript is unconditionally unavailable, don't bother
+    // with any of the rest of this.
+    if (AvailableAttr::isUnavailable(accessor->getStorage()))
+      return false;
+  }
+
+  if (FragileKind)
+    if (R.isValid())
+      if (TC.diagnoseInlinableDeclRef(R.Start, D, DC, *FragileKind,
+                                      TreatUsableFromInlineAsPublic))
+        return true;
+
+  if (diagnoseExplicitUnavailability(D, R, DC, call))
     return true;
 
-  // Diagnose for deprecation
-  TC.diagnoseIfDeprecated(R, DC, D, call);
+  // Make sure not to diagnose an accessor's deprecation if we already
+  // complained about the property/subscript.
+  bool isAccessorWithDeprecatedStorage =
+    accessor && TypeChecker::getDeprecated(accessor->getStorage());
 
-  if (AllowPotentiallyUnavailableProtocol && isa<ProtocolDecl>(D))
+  // Diagnose for deprecation
+  if (!isAccessorWithDeprecatedStorage)
+    TC.diagnoseIfDeprecated(R, DC, D, call);
+
+  if (Flags.contains(DeclAvailabilityFlag::AllowPotentiallyUnavailable))
+    return false;
+
+  if (Flags.contains(DeclAvailabilityFlag::AllowPotentiallyUnavailableProtocol)
+        && isa<ProtocolDecl>(D))
     return false;
 
   // Diagnose (and possibly signal) for potential unavailability
   auto maybeUnavail = TC.checkDeclarationAvailability(D, R.Start, DC);
   if (maybeUnavail.hasValue()) {
-    TC.diagnosePotentialUnavailability(D, R, DC, maybeUnavail.getValue());
-    if (SignalOnPotentialUnavailability)
+    if (accessor) {
+      bool forInout = Flags.contains(DeclAvailabilityFlag::ForInout);
+      TC.diagnosePotentialAccessorUnavailability(accessor, R, DC,
+                                                 maybeUnavail.getValue(),
+                                                 forInout);
+    } else {
+      TC.diagnosePotentialUnavailability(D, R, DC, maybeUnavail.getValue());
+    }
+    if (!Flags.contains(DeclAvailabilityFlag::ContinueOnPotentialUnavailability))
       return true;
   }
   return false;
@@ -2518,9 +2666,14 @@ bool AvailabilityWalker::diagnoseIncDecRemoval(const ValueDecl *D,
   }
   
   if (!replacement.empty()) {
+    DeclName Name;
+    unsigned RawAccessorKind;
+    std::tie(RawAccessorKind, Name) = getAccessorKindAndNameForDiagnostics(D);
+
     // If we emit a deprecation diagnostic, produce a fixit hint as well.
     auto diag = TC.diagnose(R.Start, diag::availability_decl_unavailable_msg,
-                            D->getFullName(), "it has been removed in Swift 3");
+                            RawAccessorKind, Name,
+                            "it has been removed in Swift 3");
     if (isa<PrefixUnaryExpr>(call)) {
       // Prefix: remove the ++ or --.
       diag.fixItRemove(call->getFn()->getSourceRange());
@@ -2563,9 +2716,13 @@ bool AvailabilityWalker::diagnoseMemoryLayoutMigration(const ValueDecl *D,
   if (!args)
     return false;
 
+  DeclName Name;
+  unsigned RawAccessorKind;
+  std::tie(RawAccessorKind, Name) = getAccessorKindAndNameForDiagnostics(D);
+
   EncodedDiagnosticMessage EncodedMessage(Attr->Message);
   auto diag = TC.diagnose(R.Start, diag::availability_decl_unavailable_msg,
-                          D->getFullName(), EncodedMessage.Message);
+                          RawAccessorKind, Name, EncodedMessage.Message);
   diag.highlight(R);
 
   auto subject = args->getSubExpr();
@@ -2618,11 +2775,8 @@ bool swift::diagnoseDeclAvailability(const ValueDecl *Decl,
                                      TypeChecker &TC,
                                      DeclContext *DC,
                                      SourceRange R,
-                                     bool AllowPotentiallyUnavailableProtocol,
-                                     bool SignalOnPotentialUnavailability)
+                                     DeclAvailabilityFlags Flags)
 {
   AvailabilityWalker AW(TC, DC);
-  return AW.diagAvailability(Decl, R, nullptr,
-                             AllowPotentiallyUnavailableProtocol,
-                             SignalOnPotentialUnavailability);
+  return AW.diagAvailability(Decl, R, nullptr, Flags);
 }

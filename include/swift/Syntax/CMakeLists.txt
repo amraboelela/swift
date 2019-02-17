@@ -9,7 +9,11 @@ set(generated_include_sources
     SyntaxNodes.h.gyb
     SyntaxBuilders.h.gyb
     SyntaxFactory.h.gyb
-    SyntaxVisitor.h.gyb)
+    SyntaxVisitor.h.gyb
+    TokenKinds.def.gyb
+    Trivia.h.gyb)
 
 add_gyb_target(swift-syntax-generated-headers
     "${generated_include_sources}")
+set_property(TARGET swift-syntax-generated-headers
+    PROPERTY FOLDER "Miscellaneous")

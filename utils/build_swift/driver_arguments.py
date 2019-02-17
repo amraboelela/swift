@@ -105,6 +105,12 @@ def _apply_default_arguments(args):
     if args.swift_stdlib_assertions is None:
         args.swift_stdlib_assertions = args.assertions
 
+    if args.llbuild_assertions is None:
+        args.llbuild_assertions = args.assertions
+
+    if args.lldb_assertions is None:
+        args.lldb_assertions = args.assertions
+
     # Set the default CMake generator.
     if args.cmake_generator is None:
         args.cmake_generator = 'Ninja'
@@ -136,6 +142,7 @@ def _apply_default_arguments(args):
         args.build_external_benchmarks = False
         args.build_lldb = False
         args.build_llbuild = False
+        args.build_libcxx = False
         args.build_swiftpm = False
         args.build_xctest = False
         args.build_foundation = False
@@ -160,6 +167,16 @@ def _apply_default_arguments(args):
     if not args.android or not args.build_android:
         args.build_android = False
 
+    # --test-paths implies --test and/or --validation-test
+    # depending on what directories/files have been specified.
+    if args.test_paths:
+        for path in args.test_paths:
+            if path.startswith('test'):
+                args.test = True
+            elif path.startswith('validation-test'):
+                args.test = True
+                args.validation_test = True
+
     # --validation-test implies --test.
     if args.validation_test:
         args.test = True
@@ -181,6 +198,8 @@ def _apply_default_arguments(args):
         args.test_ios = False
         args.test_tvos = False
         args.test_watchos = False
+        args.test_indexstoredb = False
+        args.test_sourcekitlsp = False
 
     # --skip-test-ios is merely a shorthand for host and simulator tests.
     if not args.test_ios:
@@ -259,8 +278,8 @@ def create_argument_parser():
     option(['-n', '--dry-run'], store_true,
            help='print the commands that would be executed, but do not '
                 'execute them')
-    option('--no-legacy-impl', store_false('legacy_impl'),
-           help='avoid legacy implementation')
+    option('--legacy-impl', store_true('legacy_impl'),
+           help='use legacy implementation')
 
     option('--build-runtime-with-host-compiler', toggle_true,
            help='Use the host compiler, not the self-built one to compile the '
@@ -311,6 +330,8 @@ def create_argument_parser():
                 '(like bin, lib, and include) will be installed.')
     option('--install-symroot', store_path,
            help='the path to install debug symbols into')
+    option('--install-destdir', store_path,
+           help='the path to use as the filesystem root for the installation')
 
     option(['-j', '--jobs'], store_int('build_jobs'),
            default=multiprocessing.cpu_count(),
@@ -352,6 +373,9 @@ def create_argument_parser():
            help='enable Thread Sanitizer on the swift runtime')
     option('--enable-lsan', toggle_true,
            help='enable Leak Sanitizer for swift tools')
+    option('--enable-sanitize-coverage', toggle_true,
+           help='enable sanitizer coverage for swift tools. Necessary for '
+                'fuzzing swiftc')
 
     option('--compiler-vendor', store,
            choices=['none', 'apple'],
@@ -439,8 +463,11 @@ def create_argument_parser():
     option('--enable-sil-ownership', store_true,
            help='Enable the SIL ownership model')
 
-    option('--enable-guaranteed-normal-arguments', store_true,
-           help='Enable guaranteed normal arguments')
+    option('--disable-guaranteed-normal-arguments', store_true,
+           help='Disable guaranteed normal arguments')
+
+    option('--enable-stdlibcore-exclusivity-checking', store_true,
+           help='Enable exclusivity checking in stdlibCore')
 
     option('--force-optimized-typechecker', store_true,
            help='Force the type checker to be built with '
@@ -490,8 +517,25 @@ def create_argument_parser():
     option(['-b', '--llbuild'], store_true('build_llbuild'),
            help='build llbuild')
 
+    option(['--libcxx'], store_true('build_libcxx'),
+           help='build libcxx')
+
     option(['-p', '--swiftpm'], store_true('build_swiftpm'),
            help='build swiftpm')
+
+    option(['--swiftsyntax'], store_true('build_swiftsyntax'),
+           help='build swiftSyntax')
+
+    option(['--skstresstester'], store_true('build_skstresstester'),
+           help='build the SourceKit stress tester')
+
+    option(['--swiftevolve'], store_true('build_swiftevolve'),
+           help='build the swift-evolve tool')
+
+    option(['--indexstore-db'], toggle_true('build_indexstoredb'),
+           help='build IndexStoreDB')
+    option(['--sourcekit-lsp'], toggle_true('build_sourcekitlsp'),
+           help='build SourceKitLSP')
 
     option('--xctest', toggle_true('build_xctest'),
            help='build xctest')
@@ -510,6 +554,9 @@ def create_argument_parser():
 
     option('--build-ninja', toggle_true,
            help='build the Ninja tool')
+
+    option(['--build-libparser-only'], store_true('build_libparser_only'),
+           help='build only libParser for SwiftSyntax')
 
     # -------------------------------------------------------------------------
     in_group('Extra actions to perform before or in addition to building')
@@ -642,6 +689,13 @@ def create_argument_parser():
            const=False,
            help='disable assertions in LLDB')
 
+    option('--llbuild-assertions', store,
+           const=True,
+           help='enable assertions in llbuild')
+    option('--no-llbuild-assertions', store('llbuild_assertions'),
+           const=False,
+           help='disable assertions in llbuild')
+
     # -------------------------------------------------------------------------
     in_group('Select the CMake generator')
 
@@ -689,6 +743,9 @@ def create_argument_parser():
 
     option('--long-test', toggle_true,
            help='run the long test suite')
+
+    option('--stress-test', toggle_true,
+           help='run the stress test suite')
 
     option('--host-test', toggle_true,
            help='run executable tests on host devices (such as iOS or tvOS)')
@@ -834,6 +891,11 @@ def create_argument_parser():
            help='skip testing Android device targets on the host machine (the '
                 'phone itself)')
 
+    option('--skip-test-indexstore-db', toggle_false('test_indexstoredb'),
+           help='skip testing indexstore-db')
+    option('--skip-test-sourcekit-lsp', toggle_false('test_sourcekitlsp'),
+           help='skip testing sourcekit-lsp')
+
     # -------------------------------------------------------------------------
     in_group('Build settings specific for LLVM')
 
@@ -863,19 +925,28 @@ def create_argument_parser():
                 'Swift')
 
     option('--android-icu-uc', store_path,
-           help='Path to a directory containing libicuuc.so')
+           help='Path to libicuuc.so')
     option('--android-icu-uc-include', store_path,
            help='Path to a directory containing headers for libicuuc')
     option('--android-icu-i18n', store_path,
-           help='Path to a directory containing libicui18n.so')
+           help='Path to libicui18n.so')
     option('--android-icu-i18n-include', store_path,
            help='Path to a directory containing headers libicui18n')
+    option('--android-icu-data', store_path,
+           help='Path to libicudata.so')
     option('--android-deploy-device-path', store_path,
            default=android.adb.commands.DEVICE_TEMP_DIR,
            help='Path on an Android device to which built Swift stdlib '
                 'products will be deployed. If running host tests, specify '
                 'the "{}" directory.'.format(
                     android.adb.commands.DEVICE_TEMP_DIR))
+
+    option('--android-arch', store,
+           choices=['armv7', 'aarch64'],
+           default='armv7',
+           help='The Android target architecture when building for Android. '
+                'Currently only armv7 and aarch64 are supported. '
+                '%(default)s is the default.')
 
     # -------------------------------------------------------------------------
     in_group('Unsupported options')
@@ -949,6 +1020,9 @@ SWIFT_SOURCE_ROOT: a directory containing the source for LLVM, Clang, Swift.
                      /lldb                       (optional)
                      /llbuild                    (optional)
                      /swiftpm                    (optional, requires llbuild)
+                     /swift-syntax               (optional, requires swiftpm)
+                     /swift-stress-tester        (optional,
+                                                   requires swift-syntax)
                      /compiler-rt                (optional)
                      /swift-corelibs-xctest      (optional)
                      /swift-corelibs-foundation  (optional)

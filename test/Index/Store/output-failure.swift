@@ -1,4 +1,5 @@
-// RUN: rm -rf %t && mkdir %t
+// XFAIL: CPU=powerpc64le
+// RUN: %empty-directory(%t)
 // RUN: mkdir %t/idx
 
 // Before indexing, do a dry-run to ensure any clang modules are cached. We
