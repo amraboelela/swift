@@ -23,32 +23,32 @@
 // CHECK: swift
 // CHECK: -profile-generate
 
-// OSX: {{(bin/)?ld"? }}
+// OSX: {{(bin/)?ld(.exe)?"? }}
 // OSX: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}darwin{{(\\\\|/)}}libclang_rt.profile_osx.a
 
-// IOS: {{(bin/)?ld"? }}
+// IOS: {{(bin/)?ld(.exe)?"? }}
 // IOS: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}darwin{{(\\\\|/)}}libclang_rt.profile_ios.a
 
-// IOSSIM: {{(bin/)?ld"? }}
+// IOSSIM: {{(bin/)?ld(.exe)?"? }}
 // IOSSIM: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}darwin{{(\\\\|/)}}libclang_rt.profile_iossim.a
 
-// tvOS: {{(bin/)?ld"? }}
+// tvOS: {{(bin/)?ld(.exe)?"? }}
 // tvOS: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}darwin{{(\\\\|/)}}libclang_rt.profile_tvos.a
 
-// tvOS_SIM: {{(bin/)?ld"? }}
+// tvOS_SIM: {{(bin/)?ld(.exe)?"? }}
 // tvOS_SIM: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}darwin{{(\\\\|/)}}libclang_rt.profile_tvossim.a
 
-// watchOS: {{(bin/)?ld"? }}
+// watchOS: {{(bin/)?ld(.exe)?"? }}
 // watchOS: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}darwin{{(\\\\|/)}}libclang_rt.profile_watchos.a
 
-// watchOS_SIM: {{(bin/)?ld"? }}
+// watchOS_SIM: {{(bin/)?ld(.exe)?"? }}
 // watchOS_SIM: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}darwin{{(\\\\|/)}}libclang_rt.profile_watchossim.a
 
-// LINUX: clang++{{(\.exe)?"? }}
+// LINUX: clang{{(\.exe)?"? }}
 // LINUX: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}linux{{(\\\\|/)}}libclang_rt.profile-x86_64.a
 // LINUX: -u__llvm_profile_runtime
 
-// WINDOWS: clang++{{(\.exe)?"? }}
+// WINDOWS: clang{{(\.exe)?"? }}
 // WINDOWS: lib{{(\\\\|/)}}swift{{(\\\\|/)}}clang{{(\\\\|/)}}lib{{(\\\\|/)}}windows{{(\\\\|/)}}clang_rt.profile-x86_64.lib
 // WINDOWS: -u__llvm_profile_runtime
 

@@ -56,15 +56,12 @@ public:
   }
   ~SerializedSILLoader();
 
-  SILFunction *lookupSILFunction(SILFunction *Callee);
+  SILFunction *lookupSILFunction(SILFunction *Callee, bool onlyUpdateLinkage);
   SILFunction *
   lookupSILFunction(StringRef Name, bool declarationOnly = false,
                     Optional<SILLinkage> linkage = None);
   bool hasSILFunction(StringRef Name, Optional<SILLinkage> linkage = None);
-  SILVTable *lookupVTable(Identifier Name);
-  SILVTable *lookupVTable(const ClassDecl *C) {
-    return lookupVTable(C->getName());
-  }
+  SILVTable *lookupVTable(const ClassDecl *C);
   SILWitnessTable *lookupWitnessTable(SILWitnessTable *C);
   SILDefaultWitnessTable *lookupDefaultWitnessTable(SILDefaultWitnessTable *C);
 

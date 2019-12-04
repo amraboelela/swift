@@ -10,19 +10,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/SSAUpdaterImpl.h"
+#include "swift/SILOptimizer/Utils/SILSSAUpdater.h"
 #include "swift/Basic/Malloc.h"
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILBasicBlock.h"
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILUndef.h"
-#include "swift/SILOptimizer/Utils/CFG.h"
-#include "swift/SILOptimizer/Utils/SILSSAUpdater.h"
-
+#include "swift/SILOptimizer/Utils/CFGOptUtils.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/SSAUpdaterImpl.h"
 
 using namespace swift;
 
@@ -34,9 +33,9 @@ void SILSSAUpdater::deallocateSentinel(SILUndef *D) {
   AlignedFree(D);
 }
 
-SILSSAUpdater::SILSSAUpdater(SILModule &M, SmallVectorImpl<SILPhiArgument *> *PHIs)
+SILSSAUpdater::SILSSAUpdater(SmallVectorImpl<SILPhiArgument *> *PHIs)
     : AV(nullptr), PHISentinel(nullptr, deallocateSentinel),
-      InsertedPHIs(PHIs), M(M) {}
+      InsertedPHIs(PHIs) {}
 
 SILSSAUpdater::~SILSSAUpdater() = default;
 
@@ -44,7 +43,7 @@ void SILSSAUpdater::Initialize(SILType Ty) {
   ValType = Ty;
 
   PHISentinel = std::unique_ptr<SILUndef, void (*)(SILUndef *)>(
-      SILUndef::getSentinelValue(Ty, M, this), SILSSAUpdater::deallocateSentinel);
+      SILUndef::getSentinelValue(Ty, this), SILSSAUpdater::deallocateSentinel);
 
   if (!AV)
     AV.reset(new AvailableValsTy());
@@ -213,7 +212,7 @@ SILValue SILSSAUpdater::GetValueInMiddleOfBlock(SILBasicBlock *BB) {
 
   // Return undef for blocks without predecessor.
   if (PredVals.empty())
-    return SILUndef::get(ValType, BB->getModule());
+    return SILUndef::get(ValType, *BB->getParent());
 
   if (SingularValue)
     return SingularValue;
@@ -222,7 +221,7 @@ SILValue SILSSAUpdater::GetValueInMiddleOfBlock(SILBasicBlock *BB) {
   if (!BB->getArguments().empty()) {
     llvm::SmallDenseMap<SILBasicBlock *, SILValue, 8> ValueMap(PredVals.begin(),
                                                                PredVals.end());
-    for (auto *Arg : BB->getPhiArguments())
+    for (auto *Arg : BB->getSILPhiArguments())
       if (isEquivalentPHI(Arg, ValueMap))
         return Arg;
 
@@ -305,7 +304,7 @@ public:
 
   static SILValue GetUndefVal(SILBasicBlock *BB,
                               SILSSAUpdater *Updater) {
-    return SILUndef::get(Updater->ValType, &BB->getModule());
+    return SILUndef::get(Updater->ValType, *BB->getParent());
   }
 
   /// Add an Argument to the basic block.
@@ -439,7 +438,7 @@ UseWrapper::UseWrapper(Operand *Use) {
 }
 
 /// Return the operand we wrap. Reconstructing branch operands.
-UseWrapper::operator Operand *() {
+Operand *UseWrapper::getOperand() {
   switch (Type) {
   case kRegularUse:
     return U;

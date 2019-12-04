@@ -26,8 +26,8 @@ func defarg1(i: Int = 17, d: Double, s: String = "Hello") { }
 
 // CHECK-LABEL: sil hidden [ossa] @$s17default_arguments15testDefaultArg1yyF
 func testDefaultArg1() {
-  // CHECK: [[FLOAT64:%[0-9]+]] = metatype $@thin Double.Type
   // CHECK: [[FLOATLIT:%[0-9]+]] = float_literal $Builtin.FPIEEE{{64|80}}, {{0x4009000000000000|0x4000C800000000000000}}
+  // CHECK: [[FLOAT64:%[0-9]+]] = metatype $@thin Double.Type
   // CHECK: [[LITFN:%[0-9]+]] = function_ref @$sSd20_builtinFloatLiteralSdBf{{[_0-9]*}}__tcfC
   // CHECK: [[FLOATVAL:%[0-9]+]] = apply [[LITFN]]([[FLOATLIT]], [[FLOAT64]])
   // CHECK: [[DEF0FN:%[0-9]+]] = function_ref @$s17default_arguments7defarg1{{.*}}A_
@@ -83,6 +83,25 @@ func testMagicLiterals(file: String = #file,
 // NEGATIVE-NOT: sil hidden [ossa] @$s17default_arguments17testMagicLiteralsySS4file_SS8functionSi4lineSi6columntFfA1_
 //
 // NEGATIVE-NOT: sil hidden [ossa] @$s17default_arguments17testMagicLiteralsySS4file_SS8functionSi4lineSi6columntFfA2_
+
+// SR-11623
+func genericMagicLiteral<T : ExpressibleByIntegerLiteral>(_ x: T = #column) -> T { x }
+
+// CHECK-LABEL: sil hidden [ossa] @$s17default_arguments23testGenericMagicLiteralyyF
+func testGenericMagicLiteral() {
+  // CHECK:      [[RET:%[0-9]+]] = alloc_stack $Int
+  // CHECK-NEXT: [[RAWLIT:%[0-9]+]] = integer_literal $Builtin.IntLiteral, 35
+  // CHECK-NEXT: [[INTTY:%[0-9]+]] = metatype $@thin Int.Type
+  // CHECK-NEXT: // function_ref Swift.Int.init(_builtinIntegerLiteral: Builtin.IntLiteral) -> Swift.Int
+  // CHECK-NEXT: [[LITFN:%[0-9]+]] = function_ref @$sSi22_builtinIntegerLiteralSiBI_tcfC
+  // CHECK-NEXT: [[LIT:%[0-9]+]] = apply [[LITFN]]([[RAWLIT]], [[INTTY]]) : $@convention(method) (Builtin.IntLiteral, @thin Int.Type) -> Int
+  // CHECK-NEXT: [[LITARG:%[0-9]+]] = alloc_stack $Int
+  // CHECK-NEXT: store [[LIT]] to [trivial] [[LITARG]] : $*Int
+  // CHECK-NEXT: // function_ref default_arguments.genericMagicLiteral<A where A: Swift.ExpressibleByIntegerLiteral>(A) -> A
+  // CHECK-NEXT: [[FN:%[0-9]+]] = function_ref @$s17default_arguments19genericMagicLiteralyxxs020ExpressibleByIntegerE0RzlF : $@convention(thin) <τ_0_0 where τ_0_0 : ExpressibleByIntegerLiteral> (@in_guaranteed τ_0_0) -> @out τ_0_0
+  // CHECK-NEXT: apply [[FN]]<Int>([[RET]], [[LITARG]]) : $@convention(thin) <τ_0_0 where τ_0_0 : ExpressibleByIntegerLiteral> (@in_guaranteed τ_0_0) -> @out τ_0_0
+  let _: Int = genericMagicLiteral()
+}
 
 func closure(_: () -> ()) {}
 func autoclosure(_: @autoclosure () -> ()) {}
@@ -199,7 +218,7 @@ func takeDSOHandle(_ handle: UnsafeRawPointer = #dsohandle) { }
 
 // CHECK-LABEL: sil hidden [ossa] @$s17default_arguments13testDSOHandleyyF
 func testDSOHandle() {
-  // CHECK: [[DSO_HANDLE:%[0-9]+]] = global_addr @__dso_handle : $*Builtin.RawPointer
+  // CHECK: [[DSO_HANDLE:%[0-9]+]] = global_addr {{@__dso_handle|@__ImageBase}} : $*Builtin.RawPointer
   takeDSOHandle()
 }
 
@@ -383,3 +402,32 @@ func stupidGames(x: Int = 3) -> Int {
   return x
 }
 stupidGames(x:)()
+
+func genericMagic<T : ExpressibleByStringLiteral>(x: T = #file) -> T {
+  return x
+}
+
+let _: String = genericMagic()
+
+// SR-11778
+struct CallableWithDefault {
+  func callAsFunction(x: Int = 4) {}
+  func callAsFunction(y: Int, z: String = #function) {}
+}
+
+// CHECK-LABEL: sil hidden [ossa] @$s17default_arguments23testCallableWithDefaultyyAA0deF0VF : $@convention(thin) (CallableWithDefault) -> ()
+func testCallableWithDefault(_ x: CallableWithDefault) {
+  // CHECK: [[DEF_FN:%[0-9]+]] = function_ref @$s17default_arguments19CallableWithDefaultV14callAsFunction1xySi_tFfA_ : $@convention(thin) () -> Int
+  // CHECK: [[DEF:%[0-9]+]] = apply [[DEF_FN]]() : $@convention(thin) () -> Int
+  // CHECK: [[CALL_AS_FN:%[0-9]+]] = function_ref @$s17default_arguments19CallableWithDefaultV14callAsFunction1xySi_tF : $@convention(method) (Int, CallableWithDefault) -> ()
+  // CHECK: apply [[CALL_AS_FN]]([[DEF]], {{%[0-9]+}})
+  x()
+
+  // CHECK: [[RAW_I:%[0-9]+]] = integer_literal $Builtin.IntLiteral, 5
+  // CHECK: [[I:%[0-9]+]] = apply {{%[0-9]+}}([[RAW_I]], {{%[0-9]+}}) : $@convention(method) (Builtin.IntLiteral, @thin Int.Type) -> Int
+  // CHECK: [[RAW_STR:%[0-9]+]] = string_literal utf8 "testCallableWithDefault(_:)"
+  // CHECK: [[STR:%[0-9]+]] = apply {{%[0-9]+}}([[RAW_STR]], {{%[0-9]+}}, {{%[0-9]+}}, {{%[0-9]+}}) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+  // CHECK: [[CALL_AS_FN:%[0-9]+]] = function_ref @$s17default_arguments19CallableWithDefaultV14callAsFunction1y1zySi_SStF : $@convention(method) (Int, @guaranteed String, CallableWithDefault) -> ()
+  // CHECK: apply [[CALL_AS_FN]]([[I]], [[STR]], {{%[0-9]+}})
+  x(y: 5)
+}

@@ -158,7 +158,7 @@ void SILInstruction::dropAllReferences() {
   // If we have a function ref inst, we need to especially drop its function
   // argument so that it gets a proper ref decrement.
   if (auto *FRI = dyn_cast<FunctionRefBaseInst>(this)) {
-    if (!FRI->getReferencedFunction())
+    if (!FRI->getInitiallyReferencedFunction())
       return;
     FRI->dropReferencedFunction();
     return;
@@ -277,6 +277,20 @@ void SILInstruction::replaceAllUsesPairwiseWith(
            "Can only replace results with new values of the same type");
     Results[i]->replaceAllUsesWith(NewValues[i]);
   }
+}
+
+Operand *BeginBorrowInst::getSingleNonEndingUse() const {
+  Operand *singleUse = nullptr;
+  for (auto *use : getUses()) {
+    if (isa<EndBorrowInst>(use->getUser()))
+      continue;
+
+    if (singleUse)
+      return nullptr;
+
+    singleUse = use;
+  }
+  return singleUse;
 }
 
 namespace {
@@ -451,16 +465,19 @@ namespace {
 
     bool visitFunctionRefInst(const FunctionRefInst *RHS) {
       auto *X = cast<FunctionRefInst>(LHS);
-      return X->getReferencedFunction() == RHS->getReferencedFunction();
+      return X->getInitiallyReferencedFunction() ==
+             RHS->getInitiallyReferencedFunction();
     }
     bool visitDynamicFunctionRefInst(const DynamicFunctionRefInst *RHS) {
       auto *X = cast<DynamicFunctionRefInst>(LHS);
-      return X->getReferencedFunction() == RHS->getReferencedFunction();
+      return X->getInitiallyReferencedFunction() ==
+             RHS->getInitiallyReferencedFunction();
     }
     bool visitPreviousDynamicFunctionRefInst(
         const PreviousDynamicFunctionRefInst *RHS) {
       auto *X = cast<PreviousDynamicFunctionRefInst>(LHS);
-      return X->getReferencedFunction() == RHS->getReferencedFunction();
+      return X->getInitiallyReferencedFunction() ==
+             RHS->getInitiallyReferencedFunction();
     }
 
     bool visitAllocGlobalInst(const AllocGlobalInst *RHS) {
@@ -717,9 +734,12 @@ namespace {
       return true;
     }
 
-#define LOADABLE_REF_STORAGE_HELPER(Name) \
-    bool visit##Name##ToRefInst(Name##ToRefInst *RHS) { return true; } \
-    bool visitRefTo##Name##Inst(RefTo##Name##Inst *RHS) { return true; }
+#define LOADABLE_REF_STORAGE_HELPER(Name)                                      \
+  bool visit##Name##ToRefInst(Name##ToRefInst *RHS) { return true; }           \
+  bool visitRefTo##Name##Inst(RefTo##Name##Inst *RHS) { return true; }         \
+  bool visitStrongCopy##Name##ValueInst(StrongCopy##Name##ValueInst *RHS) {    \
+    return true;                                                               \
+  }
 #define ALWAYS_OR_SOMETIMES_LOADABLE_CHECKED_REF_STORAGE(Name, ...) \
     LOADABLE_REF_STORAGE_HELPER(Name) \
     bool visitStrongRetain##Name##Inst(const StrongRetain##Name##Inst *RHS) { \
@@ -1152,9 +1172,9 @@ SILInstruction *SILInstruction::clone(SILInstruction *InsertPt) {
 /// additional handling. It is important to know this information when
 /// you perform such optimizations like e.g. jump-threading.
 bool SILInstruction::isTriviallyDuplicatable() const {
-  if (isa<AllocStackInst>(this) || isa<DeallocStackInst>(this)) {
+  if (isAllocatingStack())
     return false;
-  }
+
   if (auto *ARI = dyn_cast<AllocRefInst>(this)) {
     if (ARI->canAllocOnStack())
       return false;
@@ -1192,9 +1212,6 @@ bool SILInstruction::isTriviallyDuplicatable() const {
   // nodes of objc_method type.
   if (isa<DynamicMethodBranchInst>(this))
     return false;
-
-  if (auto *PA = dyn_cast<PartialApplyInst>(this))
-    return !PA->isOnStack();
 
   // If you add more cases here, you should also update SILLoop:canDuplicate.
 

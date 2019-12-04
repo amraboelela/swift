@@ -74,12 +74,6 @@ void HackSwiftObject()
 {
     SwiftObjectDemangledName = "Swift._SwiftObject";
     Class cls = objc_getClass(SwiftObjectDemangledName);
-    // FIXME: Remove this fallback after we enable
-    // SWIFT_DARWIN_ENABLE_STABLE_ABI_BIT everywhere.
-    if (!cls) {
-        SwiftObjectDemangledName = "SwiftObject";
-        cls = objc_getClass(SwiftObjectDemangledName);
-    }
 
     class_addMethod(cls, @selector(perform0), (IMP)Perform0, "@@:");
     class_addMethod(cls, @selector(perform1:), (IMP)Perform1, "@@:@");
@@ -418,7 +412,6 @@ void TestSwiftObjectNSObject(id c, id d)
   expectTrue ([[c description] isEqual:@"SwiftObjectNSObject.C"]);
   expectTrue ([[D description] isEqual:@"SwiftObjectNSObject.D"]);
   expectTrue ([[C description] isEqual:@"SwiftObjectNSObject.C"]);
-  expectTrue ([[S description] isEqual:@(SwiftObjectDemangledName)]);
   expectTrue ([[D_meta description] isEqual:@"SwiftObjectNSObject.D"]);
   expectTrue ([[C_meta description] isEqual:@"SwiftObjectNSObject.C"]);
   expectTrue ([[S_meta description] isEqual:@(SwiftObjectDemangledName)]);
@@ -436,7 +429,6 @@ void TestSwiftObjectNSObject(id c, id d)
   expectTrue ([[c debugDescription] isEqual:@"SwiftObjectNSObject.C"]);
   expectTrue ([[D debugDescription] isEqual:@"SwiftObjectNSObject.D"]);
   expectTrue ([[C debugDescription] isEqual:@"SwiftObjectNSObject.C"]);
-  expectTrue ([[S debugDescription] isEqual:@(SwiftObjectDemangledName)]);
   expectTrue ([[D_meta debugDescription] isEqual:@"SwiftObjectNSObject.D"]);
   expectTrue ([[C_meta debugDescription] isEqual:@"SwiftObjectNSObject.C"]);
   expectTrue ([[S_meta debugDescription] isEqual:@(SwiftObjectDemangledName)]);

@@ -64,8 +64,7 @@ namespace irgen {
 
   /// Extract the method pointer from an archetype's witness table
   /// as a function value.
-  FunctionPointer emitWitnessMethodValue(IRGenFunction &IGF,
-                                         CanType baseTy,
+  FunctionPointer emitWitnessMethodValue(IRGenFunction &IGF, CanType baseTy,
                                          llvm::Value **baseMetadataCache,
                                          SILDeclRef member,
                                          ProtocolConformanceRef conformance);
@@ -176,26 +175,6 @@ namespace irgen {
   llvm::Value *emitWitnessTableRef(IRGenFunction &IGF,
                                    CanType srcType,
                                    ProtocolConformanceRef conformance);
-
-  /// An entry in a list of known protocols.
-  class ProtocolEntry {
-    ProtocolDecl *Protocol;
-    const ProtocolInfo &Impl;
-
-  public:
-    explicit ProtocolEntry(ProtocolDecl *proto, const ProtocolInfo &impl)
-      : Protocol(proto), Impl(impl) {}
-
-    ProtocolDecl *getProtocol() const { return Protocol; }
-    const ProtocolInfo &getInfo() const { return Impl; }
-  };
-
-  using GetWitnessTableFn =
-    llvm::function_ref<llvm::Value*(unsigned originIndex)>;
-  llvm::Value *emitImpliedWitnessTableRef(IRGenFunction &IGF,
-                                          ArrayRef<ProtocolEntry> protos,
-                                          ProtocolDecl *target,
-                                    const GetWitnessTableFn &getWitnessTable);
 
   class MetadataSource {
   public:

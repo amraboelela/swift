@@ -296,7 +296,7 @@
 /// - Note: The `ContiguousArray` and `ArraySlice` types are not bridged;
 ///   instances of those types always have a contiguous block of memory as
 ///   their storage.
-@_fixed_layout
+@frozen
 public struct Array<Element>: _DestructorSafeContainer {
   #if _runtime(_ObjC)
   @usableFromInline
@@ -765,6 +765,12 @@ extension Array: RandomAccessCollection, MutableCollection {
   public var count: Int {
     return _getCount()
   }
+  
+  @inlinable
+  @_alwaysEmitIntoClient
+  public var first: Element? {
+    _getCount() == 0 ? nil : _buffer[0]
+  }
 }
 
 extension Array: ExpressibleByArrayLiteral {
@@ -802,7 +808,7 @@ extension Array: RangeReplaceableCollection {
   ///     print(emptyArray.isEmpty)
   ///     // Prints "true"
   @inlinable
-  @_semantics("array.init")
+  @_semantics("array.init.empty")
   public init() {
     _buffer = _Buffer()
   }
@@ -884,7 +890,7 @@ extension Array: RangeReplaceableCollection {
     return _Buffer(_buffer: newBuffer, shiftedToStartIndex: 0)
   }
 
-  /// Construct a Array of `count` uninitialized elements.
+  /// Construct an Array of `count` uninitialized elements.
   @inlinable
   internal init(_uninitializedCount count: Int) {
     _precondition(count >= 0, "Can't construct Array with count < 0")
@@ -903,7 +909,7 @@ extension Array: RangeReplaceableCollection {
   }
 
   /// Entry point for `Array` literal construction; builds and returns
-  /// a Array of `count` uninitialized elements.
+  /// an Array of `count` uninitialized elements.
   @inlinable
   @_semantics("array.uninitialized")
   internal static func _allocateUninitialized(
@@ -936,7 +942,7 @@ extension Array: RangeReplaceableCollection {
   }
 
   /// Entry point for aborting literal construction: deallocates
-  /// a Array containing only uninitialized elements.
+  /// an Array containing only uninitialized elements.
   @inlinable
   internal mutating func _deallocateUninitialized() {
     // Set the count to zero and just release as normal.
@@ -1162,7 +1168,10 @@ extension Array: RangeReplaceableCollection {
       "newElements.underestimatedCount was an overestimate")
     // can't check for overflow as sequences can underestimate
 
-    _buffer.count += writtenCount
+    // This check prevents a data race writing to _swiftEmptyArrayStorage
+    if writtenCount > 0 {
+      _buffer.count += writtenCount
+    }
 
     if writtenUpTo == buf.endIndex {
       // there may be elements that didn't fit in the existing buffer,
@@ -1366,32 +1375,10 @@ extension Array {
 }
 
 extension Array {
-  /// Creates an array with the specified capacity, then calls the given
-  /// closure with a buffer covering the array's uninitialized memory.
-  ///
-  /// Inside the closure, set the `initializedCount` parameter to the number of
-  /// elements that are initialized by the closure. The memory in the range
-  /// `buffer[0..<initializedCount]` must be initialized at the end of the
-  /// closure's execution, and the memory in the range
-  /// `buffer[initializedCount...]` must be uninitialized.
-  ///
-  /// - Note: While the resulting array may have a capacity larger than the
-  ///   requested amount, the buffer passed to the closure will cover exactly
-  ///   the requested number of elements.
-  ///
-  /// - Parameters:
-  ///   - _unsafeUninitializedCapacity: The number of elements to allocate
-  ///     space for in the new array.
-  ///   - initializer: A closure that initializes elements and sets the count
-  ///     of the new array.
-  ///     - Parameters:
-  ///       - buffer: A buffer covering uninitialized memory with room for the
-  ///         specified number of of elements.
-  ///       - initializedCount: The count of initialized elements in the array,
-  ///         which begins as zero. Set `initializedCount` to the number of
-  ///         elements you initialize.
+  /// Implementation for Array(unsafeUninitializedCapacity:initializingWith:)
+  /// and ContiguousArray(unsafeUninitializedCapacity:initializingWith:)
   @inlinable
-  public init(
+  internal init(
     _unsafeUninitializedCapacity: Int,
     initializingWith initializer: (
       _ buffer: inout UnsafeMutableBufferPointer<Element>,
@@ -1400,21 +1387,62 @@ extension Array {
     var firstElementAddress: UnsafeMutablePointer<Element>
     (self, firstElementAddress) =
       Array._allocateUninitialized(_unsafeUninitializedCapacity)
-    
+
     var initializedCount = 0
+    var buffer = UnsafeMutableBufferPointer<Element>(
+      start: firstElementAddress, count: _unsafeUninitializedCapacity)
     defer {
       // Update self.count even if initializer throws an error.
       _precondition(
         initializedCount <= _unsafeUninitializedCapacity,
         "Initialized count set to greater than specified capacity."
       )
+      _precondition(
+        buffer.baseAddress == firstElementAddress,
+        "Can't reassign buffer in Array(unsafeUninitializedCapacity:initializingWith:)"
+      )
       self._buffer.count = initializedCount
     }
-    var buffer = UnsafeMutableBufferPointer<Element>(
-      start: firstElementAddress, count: _unsafeUninitializedCapacity)
     try initializer(&buffer, &initializedCount)
   }
-  
+
+  /// Creates an array with the specified capacity, then calls the given
+  /// closure with a buffer covering the array's uninitialized memory.
+  ///
+  /// Inside the closure, set the `initializedCount` parameter to the number of
+  /// elements that are initialized by the closure. The memory in the range
+  /// `buffer[0..<initializedCount]` must be initialized at the end of the
+  /// closure's execution, and the memory in the range
+  /// `buffer[initializedCount...]` must be uninitialized. This postcondition
+  /// must hold even if the `initializer` closure throws an error.
+  ///
+  /// - Note: While the resulting array may have a capacity larger than the
+  ///   requested amount, the buffer passed to the closure will cover exactly
+  ///   the requested number of elements.
+  ///
+  /// - Parameters:
+  ///   - unsafeUninitializedCapacity: The number of elements to allocate
+  ///     space for in the new array.
+  ///   - initializer: A closure that initializes elements and sets the count
+  ///     of the new array.
+  ///     - Parameters:
+  ///       - buffer: A buffer covering uninitialized memory with room for the
+  ///         specified number of elements.
+  ///       - initializedCount: The count of initialized elements in the array,
+  ///         which begins as zero. Set `initializedCount` to the number of
+  ///         elements you initialize.
+  @_alwaysEmitIntoClient @inlinable
+  public init(
+    unsafeUninitializedCapacity: Int,
+    initializingWith initializer: (
+      _ buffer: inout UnsafeMutableBufferPointer<Element>,
+      _ initializedCount: inout Int) throws -> Void
+  ) rethrows {
+    self = try Array(
+      _unsafeUninitializedCapacity: unsafeUninitializedCapacity,
+      initializingWith: initializer)
+  }
+
   /// Calls a closure with a pointer to the array's contiguous storage.
   ///
   /// Often, the optimizer can eliminate bounds checks within an array
@@ -1869,7 +1897,7 @@ internal struct _ArrayAnyHashableBox<Element: Hashable>
     return hasher._finalize()
   }
 
-  internal func _unbox<T : Hashable>() -> T? {
+  internal func _unbox<T: Hashable>() -> T? {
     return _value as? T
   }
 

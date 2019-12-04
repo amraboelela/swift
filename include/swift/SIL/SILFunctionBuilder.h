@@ -13,6 +13,7 @@
 #ifndef SWIFT_SIL_SILFUNCTIONBUILDER_H
 #define SWIFT_SIL_SILFUNCTIONBUILDER_H
 
+#include "swift/AST/Availability.h"
 #include "swift/SIL/SILModule.h"
 
 namespace swift {
@@ -42,13 +43,20 @@ class SILGenFunctionBuilder;
 ///    code-reuse in between these different SILFunction creation sites.
 class SILFunctionBuilder {
   SILModule &mod;
+  AvailabilityContext availCtx;
 
   friend class SILParserFunctionBuilder;
   friend class SILSerializationFunctionBuilder;
   friend class SILOptFunctionBuilder;
   friend class Lowering::SILGenFunctionBuilder;
 
-  SILFunctionBuilder(SILModule &mod) : mod(mod) {}
+  SILFunctionBuilder(SILModule &mod)
+      : SILFunctionBuilder(mod,
+                           AvailabilityContext::forDeploymentTarget(
+                             mod.getASTContext())) {}
+
+  SILFunctionBuilder(SILModule &mod, AvailabilityContext availCtx)
+      : mod(mod), availCtx(availCtx) {}
 
   /// Return the declaration of a utility function that can, but needn't, be
   /// shared between different parts of a program.
@@ -98,7 +106,15 @@ class SILFunctionBuilder {
 
   void addFunctionAttributes(SILFunction *F, DeclAttributes &Attrs,
                              SILModule &M, SILDeclRef constant = SILDeclRef());
+
+  /// We do not expose this to everyone, instead we allow for our users to opt
+  /// into this if they need to. Please do not do this in general! We only want
+  /// to use this when deserializing a function body.
+  static void setHasOwnership(SILFunction *F, bool newValue) {
+    F->setHasOwnership(newValue);
+  }
 };
+
 } // namespace swift
 
 #endif

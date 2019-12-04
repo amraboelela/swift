@@ -149,6 +149,7 @@ namespace {
       const TupleFieldInfo &field = asImpl().getFields()[fieldNo];
       switch (field.getKind()) {
       case ElementLayout::Kind::Empty:
+      case ElementLayout::Kind::EmptyTailAllocatedCType:
       case ElementLayout::Kind::Fixed:
         return field.getFixedByteOffset();
       case ElementLayout::Kind::InitialNonFixedSize:
@@ -194,6 +195,7 @@ namespace {
         }
         
         case ElementLayout::Kind::Empty:
+        case ElementLayout::Kind::EmptyTailAllocatedCType:
         case ElementLayout::Kind::InitialNonFixedSize:
         case ElementLayout::Kind::NonFixed:
           continue;
@@ -355,7 +357,7 @@ namespace {
                                      FieldsAreABIAccessible_t fieldsAccessible,
                                           StructLayout &&layout) {
       auto tupleAccessible = IsABIAccessible_t(
-        IGM.getSILModule().isTypeABIAccessible(TheTuple));
+        IGM.isTypeABIAccessible(TheTuple));
       return NonFixedTupleTypeInfo::create(fields, fieldsAccessible,
                                            layout.getType(),
                                            layout.getAlignment(),

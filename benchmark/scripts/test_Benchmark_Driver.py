@@ -17,7 +17,6 @@ import logging
 import os
 import time
 import unittest
-
 from StringIO import StringIO
 from imp import load_source
 
@@ -366,10 +365,10 @@ class TestBenchmarkDriverRunningTests(unittest.TestCase):
         self.assertEqual(log, header + csv_log)
         self.assertEqual(
             out.getvalue(),
-            '  # TEST                      SAMPLES MIN(μs) Q1(μs)' +
-            ' MEDIAN(μs) Q3(μs) MAX(μs) MAX_RSS(B)\n' +
-            '  3 b1                              5     101    102' +
-            '        103    104     105        888\n' +
+            '  # TEST                                     SAMPLES MIN(μs)' +
+            ' Q1(μs) MEDIAN(μs) Q3(μs) MAX(μs) MAX_RSS(B)\n' +
+            '  3 b1                                             5     101' +
+            '    102        103    104     105        888\n' +
             '\n' +
             'Total performance tests executed: 1\n')
 

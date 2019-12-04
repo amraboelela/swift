@@ -28,8 +28,8 @@ benchmark is testing individual method on a concrete type.
 ````
 ⛔️ Dictionary2
 ✅ AngryPhonebook
-✅ Dictionary.AnyHashable.String.update
 ✅ Array.append.Array.Int
+✅ Dictionary.AnyHashable.String.update
 ````
 
 Benchmark names are used to run individual tests when passed as command line
@@ -42,8 +42,8 @@ optional chaining etc.
 
 ````
 ✅ Array.append.Array.Int?
-✅ Flatten.Array.Tuple4.for-in.reserved
 ✅ Bridging.NSArray.as!.Array.NSString
+✅ Flatten.Array.Tuple4.for-in.Reserve
 ````
 
 Note: Special characters that could be interpreted by the shell require escaping
@@ -89,7 +89,7 @@ relative comparison across the different axis of variation.
 
 </details><p><!-- spacer --></p></li>
 <li>
-<strong>Groups and types are <code>UpperCase</code>, methods are
+<strong>Groups, variants and types are <code>UpperCase</code>, methods are
 <code>lowerCase</code>.</strong>
 <details>
 

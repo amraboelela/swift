@@ -22,6 +22,7 @@
 #include "swift/AST/DiagnosticConsumer.h"
 
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Process.h"
 
 namespace swift {
 
@@ -34,19 +35,20 @@ public:
   PrintingDiagnosticConsumer(llvm::raw_ostream &stream = llvm::errs()) :
     Stream(stream) { }
 
-  virtual void handleDiagnostic(SourceManager &SM, SourceLoc Loc,
-                                DiagnosticKind Kind,
-                                StringRef FormatString,
-                                ArrayRef<DiagnosticArgument> FormatArgs,
+  virtual void handleDiagnostic(SourceManager &SM,
                                 const DiagnosticInfo &Info) override;
 
   void forceColors() {
     ForceColors = true;
+    llvm::sys::Process::UseANSIEscapeCodes(true);
   }
 
   bool didErrorOccur() {
     return DidErrorOccur;
   }
+
+private:
+  void printDiagnostic(SourceManager &SM, const DiagnosticInfo &Info);
 };
   
 }

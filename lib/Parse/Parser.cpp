@@ -20,12 +20,12 @@
 #include "swift/AST/DiagnosticsParse.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/PrettyStackTrace.h"
+#include "swift/AST/SourceFile.h"
 #include "swift/Basic/Defer.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Timer.h"
 #include "swift/Parse/Lexer.h"
 #include "swift/Parse/CodeCompletionCallbacks.h"
-#include "swift/Parse/DelayedParsingCallbacks.h"
 #include "swift/Parse/ParseSILSupport.h"
 #include "swift/Parse/SyntaxParseActions.h"
 #include "swift/Parse/SyntaxParsingContext.h"
@@ -108,110 +108,111 @@ void tokenize(const LangOptions &LangOpts, const SourceManager &SM,
 using namespace swift;
 using namespace swift::syntax;
 
-void DelayedParsingCallbacks::anchor() { }
 void SILParserTUStateBase::anchor() { }
 
-namespace {
-/// A visitor that does delayed parsing of function bodies.
-class ParseDelayedFunctionBodies : public ASTWalker {
-  PersistentParserState &ParserState;
-  CodeCompletionCallbacksFactory *CodeCompletionFactory;
+void swift::performCodeCompletionSecondPass(
+    PersistentParserState &ParserState,
+    CodeCompletionCallbacksFactory &Factory) {
+  Parser::performCodeCompletionSecondPass(ParserState, Factory);
+}
 
-public:
-  ParseDelayedFunctionBodies(PersistentParserState &ParserState,
-                             CodeCompletionCallbacksFactory *Factory)
-    : ParserState(ParserState), CodeCompletionFactory(Factory) {}
-
-  bool walkToDeclPre(Decl *D) override {
-    if (auto AFD = dyn_cast<AbstractFunctionDecl>(D)) {
-      if (AFD->getBodyKind() != FuncDecl::BodyKind::Unparsed)
-        return false;
-      parseFunctionBody(AFD);
-      return true;
-    }
-    return true;
-  }
-
-private:
-  void parseFunctionBody(AbstractFunctionDecl *AFD) {
-    assert(AFD->getBodyKind() == FuncDecl::BodyKind::Unparsed);
-
-    SourceFile &SF = *AFD->getDeclContext()->getParentSourceFile();
-    SourceManager &SourceMgr = SF.getASTContext().SourceMgr;
-    unsigned BufferID = SourceMgr.findBufferContainingLoc(AFD->getLoc());
-    Parser TheParser(BufferID, SF, nullptr, &ParserState, nullptr,
-                     /*DelayBodyParsing=*/false);
-    TheParser.SyntaxContext->disable();
-    std::unique_ptr<CodeCompletionCallbacks> CodeCompletion;
-    if (CodeCompletionFactory) {
-      CodeCompletion.reset(
-          CodeCompletionFactory->createCodeCompletionCallbacks(TheParser));
-      TheParser.setCodeCompletionCallbacks(CodeCompletion.get());
-    }
-    if (ParserState.hasFunctionBodyState(AFD))
-      TheParser.parseAbstractFunctionBodyDelayed(AFD);
-
-    if (CodeCompletion)
-      CodeCompletion->doneParsing();
-  }
-};
-
-static void parseDelayedDecl(
-              PersistentParserState &ParserState,
-              CodeCompletionCallbacksFactory *CodeCompletionFactory) {
-  if (!ParserState.hasDelayedDecl())
+void Parser::performCodeCompletionSecondPass(
+    PersistentParserState &ParserState,
+    CodeCompletionCallbacksFactory &Factory) {
+  if (!ParserState.hasCodeCompletionDelayedDeclState())
     return;
 
-  SourceFile &SF = *ParserState.getDelayedDeclContext()->getParentSourceFile();
-  SourceManager &SourceMgr = SF.getASTContext().SourceMgr;
-  unsigned BufferID =
-    SourceMgr.findBufferContainingLoc(ParserState.getDelayedDeclLoc());
-  Parser TheParser(BufferID, SF, nullptr, &ParserState, nullptr,
-                   /*DelayBodyParsing=*/false);
+  auto state = ParserState.takeCodeCompletionDelayedDeclState();
+  auto &SF = *state->ParentContext->getParentSourceFile();
+  auto &Ctx = SF.getASTContext();
 
-  // Disable libSyntax creation in the delayed parsing.
-  TheParser.SyntaxContext->disable();
+  FrontendStatsTracer tracer(Ctx.Stats, "CodeCompletionSecondPass");
 
-  std::unique_ptr<CodeCompletionCallbacks> CodeCompletion;
-  if (CodeCompletionFactory) {
-    CodeCompletion.reset(
-      CodeCompletionFactory->createCodeCompletionCallbacks(TheParser));
-    TheParser.setCodeCompletionCallbacks(CodeCompletion.get());
-  }
+  auto BufferID = Ctx.SourceMgr.findBufferContainingLoc(state->BodyPos.Loc);
+  Parser TheParser(BufferID, SF, nullptr, &ParserState, nullptr);
 
-  switch (ParserState.getDelayedDeclKind()) {
-  case PersistentParserState::DelayedDeclKind::TopLevelCodeDecl:
-    TheParser.parseTopLevelCodeDeclDelayed();
-    break;
+  std::unique_ptr<CodeCompletionCallbacks> CodeCompletion(
+      Factory.createCodeCompletionCallbacks(TheParser));
+  TheParser.setCodeCompletionCallbacks(CodeCompletion.get());
 
-  case PersistentParserState::DelayedDeclKind::Decl:
-    TheParser.parseDeclDelayed();
-    break;
-  }
-
-  if (CodeCompletion)
-    CodeCompletion->doneParsing();
+  TheParser.performCodeCompletionSecondPassImpl(*state);
 }
-} // unnamed namespace
 
+void Parser::performCodeCompletionSecondPassImpl(
+    PersistentParserState::CodeCompletionDelayedDeclState &info) {
+  // Disable libSyntax creation in the delayed parsing.
+  SyntaxContext->disable();
+
+  // Set the parser position to the start of the delayed decl or the body.
+  restoreParserPosition(getParserPosition(info.BodyPos));
+
+  // Do not delay parsing in the second pass.
+  llvm::SaveAndRestore<bool> DisableDelayedBody(DelayBodyParsing, false);
+
+  // Re-enter the lexical scope.
+  Scope S(this, info.takeScope());
+
+  DeclContext *DC = info.ParentContext;
+
+  switch (info.Kind) {
+  case PersistentParserState::CodeCompletionDelayedDeclKind::TopLevelCodeDecl: {
+    // Re-enter the top-level code decl context.
+    // FIXME: this can issue discriminators out-of-order?
+    auto *TLCD = cast<TopLevelCodeDecl>(DC);
+    ContextChange CC(*this, TLCD, &State->getTopLevelContext());
+
+    SourceLoc StartLoc = Tok.getLoc();
+    ASTNode Result;
+    parseExprOrStmt(Result);
+    if (!Result.isNull()) {
+      auto Brace = BraceStmt::create(Context, StartLoc, Result, Tok.getLoc());
+      TLCD->setBody(Brace);
+    }
+    break;
+  }
+
+  case PersistentParserState::CodeCompletionDelayedDeclKind::Decl: {
+    assert((DC->isTypeContext() || DC->isModuleScopeContext()) &&
+           "Delayed decl must be a type member or a top-level decl");
+    ContextChange CC(*this, DC);
+
+    parseDecl(ParseDeclOptions(info.Flags),
+              /*IsAtStartOfLineOrPreviousHadSemi=*/true, [&](Decl *D) {
+                if (auto *NTD = dyn_cast<NominalTypeDecl>(DC)) {
+                  NTD->addMember(D);
+                } else if (auto *ED = dyn_cast<ExtensionDecl>(DC)) {
+                  ED->addMember(D);
+                } else if (auto *SF = dyn_cast<SourceFile>(DC)) {
+                  SF->Decls.push_back(D);
+                } else {
+                  llvm_unreachable("invalid decl context kind");
+                }
+              });
+    break;
+  }
+
+  case PersistentParserState::CodeCompletionDelayedDeclKind::FunctionBody: {
+    auto *AFD = cast<AbstractFunctionDecl>(DC);
+    ParseFunctionBody CC(*this, AFD);
+    setLocalDiscriminatorToParamList(AFD->getParameters());
+
+    auto result = parseBraceItemList(diag::func_decl_without_brace);
+    AFD->setBody(result.getPtrOrNull());
+    break;
+  }
+  }
+
+  assert(!State->hasCodeCompletionDelayedDeclState() &&
+         "Second pass should not set any code completion info");
+
+  CodeCompletion->doneParsing();
+}
 
 swift::Parser::BacktrackingScope::~BacktrackingScope() {
   if (Backtrack) {
     P.backtrackToPosition(PP);
     DT.abort();
   }
-}
-
-void swift::performDelayedParsing(
-    DeclContext *DC, PersistentParserState &PersistentState,
-    CodeCompletionCallbacksFactory *CodeCompletionFactory) {
-  SharedTimer timer("Parsing");
-  ParseDelayedFunctionBodies Walker(PersistentState,
-                                    CodeCompletionFactory);
-  DC->walkContext(Walker);
-
-  if (CodeCompletionFactory)
-    parseDelayedDecl(PersistentState, CodeCompletionFactory);
 }
 
 /// Tokenizes a string literal, taking into account string interpolation.
@@ -318,7 +319,7 @@ swift::tokenizeWithTrivia(const LangOptions &LangOpts, const SourceManager &SM,
       /*SplitTokens=*/ArrayRef<Token>(),
       [&](const Token &Tok, const ParsedTrivia &LeadingTrivia,
           const ParsedTrivia &TrailingTrivia) {
-        CharSourceRange TokRange = Tok.getRangeWithoutBackticks();
+        CharSourceRange TokRange = Tok.getRange();
         SourceLoc LeadingTriviaLoc =
           TokRange.getStart().getAdvancedLoc(-LeadingTrivia.getLength());
         SourceLoc TrailingTriviaLoc =
@@ -327,7 +328,7 @@ swift::tokenizeWithTrivia(const LangOptions &LangOpts, const SourceManager &SM,
           LeadingTrivia.convertToSyntaxTrivia(LeadingTriviaLoc, SM, BufferID);
         Trivia syntaxTrailingTrivia =
           TrailingTrivia.convertToSyntaxTrivia(TrailingTriviaLoc, SM, BufferID);
-        auto Text = OwnedString::makeRefCounted(Tok.getText());
+        auto Text = OwnedString::makeRefCounted(Tok.getRawText());
         auto ThisToken =
             RawSyntax::make(Tok.getKind(), Text, syntaxLeadingTrivia.Pieces,
                             syntaxTrailingTrivia.Pieces,
@@ -356,6 +357,7 @@ static LexerMode sourceFileKindToLexerMode(SourceFileKind kind) {
     case swift::SourceFileKind::REPL:
       return LexerMode::Swift;
   }
+  llvm_unreachable("covered switch");
 }
 
 Parser::Parser(unsigned BufferID, SourceFile &SF, SILParserTUStateBase *SIL,
@@ -522,7 +524,7 @@ Parser::Parser(std::unique_ptr<Lexer> Lex, SourceFile &SF,
                                            std::move(SPActions))) {
   State = PersistentState;
   if (!State) {
-    OwnedState.reset(new PersistentParserState(Context));
+    OwnedState.reset(new PersistentParserState());
     State = OwnedState.get();
   }
 
@@ -574,7 +576,7 @@ SourceLoc Parser::consumeToken() {
   return consumeTokenWithoutFeedingReceiver();
 }
 
-SourceLoc Parser::getEndOfPreviousLoc() {
+SourceLoc Parser::getEndOfPreviousLoc() const {
   return Lexer::getLocForEndOfToken(SourceMgr, PreviousLoc);
 }
 
@@ -741,6 +743,39 @@ void Parser::skipUntilDeclStmtRBrace(tok T1, tok T2) {
   }
 }
 
+void Parser::skipListUntilDeclRBrace(SourceLoc startLoc, tok T1, tok T2) {
+  while (Tok.isNot(T1, T2, tok::eof, tok::r_brace, tok::pound_endif,
+                   tok::pound_else, tok::pound_elseif)) {
+    bool hasDelimiter = Tok.getLoc() == startLoc || consumeIf(tok::comma);
+    bool possibleDeclStartsLine = Tok.isAtStartOfLine();
+    
+    if (isStartOfDecl()) {
+      
+      // Could have encountered something like `_ var:` 
+      // or `let foo:` or `var:`
+      if (Tok.isAny(tok::kw_var, tok::kw_let)) {
+        if (possibleDeclStartsLine && !hasDelimiter) {
+          break;
+        }
+        
+        Parser::BacktrackingScope backtrack(*this);
+        // Consume the let or var
+        consumeToken();
+        
+        // If the following token is either <identifier> or :, it means that
+        // this `var` or `let` shoud be interpreted as a label
+        if ((Tok.canBeArgumentLabel() && peekToken().is(tok::colon)) ||
+             peekToken().is(tok::colon)) {
+          backtrack.cancelBacktrack();
+          continue;
+        }
+      }
+      break;
+    }
+    skipSingle();
+  }
+}
+
 void Parser::skipUntilDeclRBrace(tok T1, tok T2) {
   while (Tok.isNot(T1, T2, tok::eof, tok::r_brace, tok::pound_endif,
                    tok::pound_else, tok::pound_elseif) &&
@@ -864,7 +899,12 @@ bool Parser::parseSpecificIdentifier(StringRef expected, SourceLoc &loc,
 /// its name in Result.  Otherwise, emit an error and return true.
 bool Parser::parseAnyIdentifier(Identifier &Result, SourceLoc &Loc,
                                 const Diagnostic &D) {
-  if (Tok.is(tok::identifier) || Tok.isAnyOperator()) {
+  if (Tok.is(tok::identifier)) {
+    Loc = consumeIdentifier(&Result);
+    return false;
+  }
+
+  if (Tok.isAnyOperator()) {
     Result = Context.getIdentifier(Tok.getText());
     Loc = Tok.getLoc();
     consumeToken();
@@ -908,9 +948,6 @@ bool Parser::parseToken(tok K, SourceLoc &TokLoc, const Diagnostic &D) {
   return true;
 }
 
-/// parseMatchingToken - Parse the specified expected token and return its
-/// location on success.  On failure, emit the specified error diagnostic, and a
-/// note at the specified note location.
 bool Parser::parseMatchingToken(tok K, SourceLoc &TokLoc, Diag<> ErrorDiag,
                                 SourceLoc OtherLoc) {
   Diag<> OtherNote;
@@ -923,23 +960,54 @@ bool Parser::parseMatchingToken(tok K, SourceLoc &TokLoc, Diag<> ErrorDiag,
   if (parseToken(K, TokLoc, ErrorDiag)) {
     diagnose(OtherLoc, OtherNote);
 
-    TokLoc = PreviousLoc;
+    TokLoc = getLocForMissingMatchingToken();
     return true;
   }
 
   return false;
 }
 
+bool Parser::parseUnsignedInteger(unsigned &Result, SourceLoc &Loc,
+                                  const Diagnostic &D) {
+  auto IntTok = Tok;
+  if (parseToken(tok::integer_literal, Loc, D))
+    return true;
+  if (IntTok.getText().getAsInteger(0, Result)) {
+    diagnose(IntTok.getLoc(), D);
+    return true;
+  }
+  return false;
+}
+
+SourceLoc Parser::getLocForMissingMatchingToken() const {
+  // At present, use the same location whether it's an error or whether
+  // the matching token is missing.
+  // Both cases supply a location for something the user didn't type.
+  return getErrorOrMissingLoc();
+}
+
+SourceLoc Parser::getErrorOrMissingLoc() const {
+  // The next token might start a new enclosing construct,
+  // and SourceLoc's are always at the start of a token (for example, for
+  // fixits, so use the previous token's SourceLoc and allow a subnode to end
+  // right at the same place as its supernode.
+
+  // The tricky case is when the previous token is an InterpolatedStringLiteral.
+  // Then, there will be names in scope whose SourceLoc is *after* the
+  // the location of a missing close brace.
+  // ASTScope tree creation will have to cope.
+
+  return PreviousLoc;
+}
+
 static SyntaxKind getListElementKind(SyntaxKind ListKind) {
   switch (ListKind) {
-  case SyntaxKind::FunctionCallArgumentList:
-    return SyntaxKind::FunctionCallArgument;
+  case SyntaxKind::TupleExprElementList:
+    return SyntaxKind::TupleExprElement;
   case SyntaxKind::ArrayElementList:
     return SyntaxKind::ArrayElement;
   case SyntaxKind::DictionaryElementList:
     return SyntaxKind::DictionaryElement;
-  case SyntaxKind::TupleElementList:
-    return SyntaxKind::TupleElement;
   case SyntaxKind::FunctionParameterList:
     return SyntaxKind::FunctionParameter;
   case SyntaxKind::TupleTypeElementList:
@@ -1001,7 +1069,7 @@ Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
     // If we haven't made progress, or seeing any error, skip ahead.
     if (Tok.getLoc() == StartLoc || Status.isError()) {
       assert(Status.isError() && "no progress without error");
-      skipUntilDeclRBrace(RightK, tok::comma);
+      skipListUntilDeclRBrace(LeftLoc, RightK, tok::comma);
       if (Tok.is(RightK) || Tok.isNot(tok::comma))
         break;
     }
@@ -1035,7 +1103,8 @@ Parser::parseList(tok RightK, SourceLoc LeftLoc, SourceLoc &RightLoc,
 
   if (Status.isError()) {
     // If we've already got errors, don't emit missing RightK diagnostics.
-    RightLoc = Tok.is(RightK) ? consumeToken() : PreviousLoc;
+    RightLoc =
+        Tok.is(RightK) ? consumeToken() : getLocForMissingMatchingToken();
   } else if (parseMatchingToken(RightK, RightLoc, ErrorDiag, LeftLoc)) {
     Status.setIsParseError();
   }
@@ -1078,6 +1147,7 @@ Parser::getStringLiteralIfNotInterpolated(SourceLoc Loc,
 struct ParserUnit::Implementation {
   std::shared_ptr<SyntaxParseActions> SPActions;
   LangOptions LangOpts;
+  TypeCheckerOptions TypeCheckerOpts;
   SearchPathOptions SearchPathOpts;
   DiagnosticEngine Diags;
   ASTContext &Ctx;
@@ -1085,19 +1155,16 @@ struct ParserUnit::Implementation {
   std::unique_ptr<Parser> TheParser;
 
   Implementation(SourceManager &SM, SourceFileKind SFKind, unsigned BufferID,
-                 const LangOptions &Opts, StringRef ModuleName,
+                 const LangOptions &Opts, const TypeCheckerOptions &TyOpts,
+                 StringRef ModuleName,
                  std::shared_ptr<SyntaxParseActions> spActions)
-    : SPActions(std::move(spActions)),
-      LangOpts(Opts),
-      Diags(SM),
-      Ctx(*ASTContext::get(LangOpts, SearchPathOpts, SM, Diags)),
-      SF(new (Ctx) SourceFile(
-            *ModuleDecl::create(Ctx.getIdentifier(ModuleName), Ctx),
-            SFKind, BufferID,
-            SourceFile::ImplicitModuleImportKind::None,
-            Opts.CollectParsedToken,
-            Opts.BuildSyntaxTree)) {
-  }
+      : SPActions(std::move(spActions)),
+        LangOpts(Opts), TypeCheckerOpts(TyOpts), Diags(SM),
+        Ctx(*ASTContext::get(LangOpts, TypeCheckerOpts, SearchPathOpts, SM, Diags)),
+        SF(new (Ctx) SourceFile(
+            *ModuleDecl::create(Ctx.getIdentifier(ModuleName), Ctx), SFKind,
+            BufferID, SourceFile::ImplicitModuleImportKind::None,
+            Opts.CollectParsedToken, Opts.BuildSyntaxTree)) {}
 
   ~Implementation() {
     // We need to delete the parser before the context so that it can finalize
@@ -1108,15 +1175,18 @@ struct ParserUnit::Implementation {
 };
 
 ParserUnit::ParserUnit(SourceManager &SM, SourceFileKind SFKind, unsigned BufferID)
-  : ParserUnit(SM, SFKind, BufferID, LangOptions(), "input") {
+  : ParserUnit(SM, SFKind, BufferID,
+               LangOptions(), TypeCheckerOptions(), "input") {
 }
 
 ParserUnit::ParserUnit(SourceManager &SM, SourceFileKind SFKind, unsigned BufferID,
-                       const LangOptions &LangOpts, StringRef ModuleName,
+                       const LangOptions &LangOpts,
+                       const TypeCheckerOptions &TypeCheckOpts,
+                       StringRef ModuleName,
                        std::shared_ptr<SyntaxParseActions> spActions,
                        SyntaxParsingCache *SyntaxCache)
-    : Impl(*new Implementation(SM, SFKind, BufferID, LangOpts, ModuleName,
-                               std::move(spActions))) {
+    : Impl(*new Implementation(SM, SFKind, BufferID, LangOpts, TypeCheckOpts,
+                               ModuleName, std::move(spActions))) {
 
   Impl.SF->SyntaxParsingCache = SyntaxCache;
   Impl.TheParser.reset(new Parser(BufferID, *Impl.SF, /*SIL=*/nullptr,
@@ -1126,8 +1196,8 @@ ParserUnit::ParserUnit(SourceManager &SM, SourceFileKind SFKind, unsigned Buffer
 
 ParserUnit::ParserUnit(SourceManager &SM, SourceFileKind SFKind, unsigned BufferID,
                        unsigned Offset, unsigned EndOffset)
-  : Impl(*new Implementation(SM, SFKind, BufferID, LangOptions(), "input",
-                             nullptr)) {
+  : Impl(*new Implementation(SM, SFKind, BufferID, LangOptions(),
+                             TypeCheckerOptions(), "input", nullptr)) {
 
   std::unique_ptr<Lexer> Lex;
   Lex.reset(new Lexer(Impl.LangOpts, SM,
@@ -1152,11 +1222,7 @@ OpaqueSyntaxNode ParserUnit::parse() {
     P.parseTopLevel();
     Done = P.Tok.is(tok::eof);
   }
-  auto rawNode = P.finalizeSyntaxTree();
-  if (rawNode.isNull()) {
-    return nullptr;
-  }
-  return rawNode.getOpaqueNode();
+  return P.finalizeSyntaxTree();
 }
 
 Parser &ParserUnit::getParser() {

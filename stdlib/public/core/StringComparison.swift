@@ -239,7 +239,7 @@ private func _findBoundary(
   }
 
   // Back up to scalar boundary
-  while _isContinuation(utf8[_unchecked: idx]) {
+  while UTF8.isContinuation(utf8[_unchecked: idx]) {
     idx &-= 1
   }
 
@@ -253,7 +253,7 @@ private func _findBoundary(
   }
 }
 
-@_frozen
+@frozen
 @usableFromInline
 internal enum _StringComparisonResult {
   case equal
@@ -328,10 +328,10 @@ extension _StringGutsSlice {
     if _fastPath(self.isFastUTF8 && other.isFastUTF8) {
       return self.withFastUTF8 { leftUTF8 in
         other.withFastUTF8 { rightUTF8 in
-          let leftStartIndex = String.Index(encodedOffset: 0)
-          let rightStartIndex = String.Index(encodedOffset: 0)
-          let leftEndIndex = String.Index(encodedOffset: leftUTF8.count)
-          let rightEndIndex = String.Index(encodedOffset: rightUTF8.count)
+          let leftStartIndex = String.Index(_encodedOffset: 0)
+          let rightStartIndex = String.Index(_encodedOffset: 0)
+          let leftEndIndex = String.Index(_encodedOffset: leftUTF8.count)
+          let rightEndIndex = String.Index(_encodedOffset: rightUTF8.count)
           return _normalizedCompareImpl(
             left_outputBuffer: _castOutputBuffer(&left_output),
             left_icuInputBuffer: _castOutputBuffer(&left_icuInput),

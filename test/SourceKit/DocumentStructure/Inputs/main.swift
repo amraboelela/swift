@@ -129,3 +129,39 @@ enum MySecondEnum {
 }
 
 func someFunc(input :Int?, completion: () throws -> Void) rethrows {}
+
+class OneMore {
+  @IBSegueAction func testAction(coder: AnyObject, _ ident: String) -> AnyObject {
+    fatalError()
+  }
+}
+
+class Chain<A> {
+  func + (lhs: Chain<A>, rhs: Chain<A>) -> Chain<A> { fatalError() }
+}
+
+public init() {
+    fatalError()
+}
+
+deinit {
+    fatalError()
+}
+
+#if false
+extension Result {
+  func foo() {}
+}
+
+extension Outer {
+  class Inner {
+    deinit {}
+  }
+}
+
+public extension Outer2 {
+  class Inner2 {
+    deinit {}
+  }
+}
+#endif

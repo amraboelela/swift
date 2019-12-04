@@ -61,9 +61,7 @@ function(handle_swift_sources
   endif()
 
   if(swift_sources)
-    compute_library_subdir(SWIFTSOURCES_LIBRARY_SUBDIR
-      "${SWIFTSOURCES_SDK}" "${SWIFTSOURCES_ARCHITECTURE}")
-    set(objsubdir "/${SWIFTSOURCES_LIBRARY_SUBDIR}")
+    set(objsubdir "/${SWIFTSOURCES_SDK}/${SWIFTSOURCES_ARCHITECTURE}")
 
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}${objsubdir}")
 
@@ -197,6 +195,7 @@ function(_compile_swift_files
 
   # Compute flags for the Swift compiler.
   set(swift_flags)
+  set(swift_module_flags)
 
   _add_variant_swift_compile_flags(
       "${SWIFTFILE_SDK}"
@@ -227,18 +226,14 @@ function(_compile_swift_files
     list(APPEND swift_flags "-Xfrontend" "-sil-verify-all")
   endif()
 
-  # The standard library and overlays are always built with resilience.
+  # The standard library and overlays are always built resiliently.
   if(SWIFTFILE_IS_STDLIB)
-    list(APPEND swift_flags "-Xfrontend" "-enable-resilience")
+    list(APPEND swift_flags "-enable-library-evolution")
+    list(APPEND swift_flags "-Xfrontend" "-enable-ownership-stripping-after-serialization")
   endif()
 
   if(SWIFT_STDLIB_USE_NONATOMIC_RC)
     list(APPEND swift_flags "-Xfrontend" "-assume-single-threaded")
-  endif()
-
-  if(SWIFTFILE_IS_STDLIB)
-    list(APPEND swift_flags "-Xfrontend" "-enable-sil-ownership")
-    list(APPEND swift_flags "-Xfrontend" "-enable-mandatory-semantic-arc-opts")
   endif()
 
   if(NOT SWIFT_ENABLE_STDLIBCORE_EXCLUSIVITY_CHECKING AND SWIFTFILE_IS_STDLIB)
@@ -255,20 +250,27 @@ function(_compile_swift_files
         "-nostdimport" "-parse-stdlib" "-module-name" "Swift")
     list(APPEND swift_flags "-Xfrontend" "-group-info-path"
                             "-Xfrontend" "${GROUP_INFO_JSON_FILE}")
+  else()
+    list(APPEND swift_flags "-module-name" "${SWIFTFILE_MODULE_NAME}")
   endif()
 
-  # Force swift 5 mode for Standard Library.
+  # Force swift 5 mode for Standard Library and overlays.
   if (SWIFTFILE_IS_STDLIB)
     list(APPEND swift_flags "-swift-version" "5")
   endif()
-  
-  # Force swift 4 compatibility mode for overlays.
   if (SWIFTFILE_IS_SDK_OVERLAY)
-    list(APPEND swift_flags "-swift-version" "4")
+    list(APPEND swift_flags "-swift-version" "5")
   endif()
 
   if(SWIFTFILE_IS_SDK_OVERLAY)
     list(APPEND swift_flags "-autolink-force-load")
+  endif()
+
+  # Don't need to link runtime compatibility libraries for older runtimes 
+  # into the new runtime.
+  if (SWIFTFILE_IS_STDLIB OR SWIFTFILE_IS_SDK_OVERLAY)
+    list(APPEND swift_flags "-runtime-compatibility-version" "none")
+    list(APPEND swift_flags "-disable-autolinking-runtime-compatibility-dynamic-replacements")
   endif()
 
   if (SWIFTFILE_IS_STDLIB_CORE OR SWIFTFILE_IS_SDK_OVERLAY)
@@ -283,17 +285,10 @@ function(_compile_swift_files
 
   list(APPEND swift_flags ${SWIFTFILE_FLAGS})
 
-  set(obj_dirs)
+  set(dirs_to_create)
   foreach(output ${SWIFTFILE_OUTPUT})
     get_filename_component(objdir "${output}" PATH)
-    list(APPEND obj_dirs "${objdir}")
-  endforeach()
-  list(REMOVE_DUPLICATES obj_dirs)
-
-  set(command_create_dirs)
-  foreach(objdir ${obj_dirs})
-    list(APPEND command_create_dirs
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${objdir}")
+    list(APPEND dirs_to_create "${objdir}")
   endforeach()
 
   set(module_file)
@@ -313,19 +308,35 @@ function(_compile_swift_files
     list(APPEND swift_flags "-parse-as-library")
 
     set(module_base "${module_dir}/${SWIFTFILE_MODULE_NAME}")
+    if(SWIFTFILE_SDK IN_LIST SWIFT_APPLE_PLATFORMS)
+      set(specific_module_dir "${module_base}.swiftmodule")
+      set(specific_module_project_dir "${specific_module_dir}/Project")
+      set(source_info_file "${specific_module_project_dir}/${SWIFTFILE_ARCHITECTURE}.swiftsourceinfo")
+      set(module_base "${module_base}.swiftmodule/${SWIFTFILE_ARCHITECTURE}")
+    else()
+      set(specific_module_dir)
+      set(specific_module_project_dir)
+      set(source_info_file "${module_base}.swiftsourceinfo")
+    endif()
     set(module_file "${module_base}.swiftmodule")
+    set(module_doc_file "${module_base}.swiftdoc")
+
+    # FIXME: These don't really belong inside the swiftmodule, but there's not
+    # an obvious alternate place to put them.
     set(sib_file "${module_base}.Onone.sib")
     set(sibopt_file "${module_base}.O.sib")
     set(sibgen_file "${module_base}.sibgen")
-    set(module_doc_file "${module_base}.swiftdoc")
 
-    if(SWIFT_ENABLE_PARSEABLE_MODULE_INTERFACES)
+    if(SWIFT_ENABLE_MODULE_INTERFACES)
       set(interface_file "${module_base}.swiftinterface")
-      list(APPEND swift_flags "-emit-parseable-module-interface")
+      list(APPEND swift_module_flags
+           "-emit-module-interface-path" "${interface_file}")
     endif()
 
-    list(APPEND command_create_dirs
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${module_dir}")
+    if (NOT SWIFTFILE_IS_STDLIB_CORE)
+      list(APPEND swift_module_flags
+           "-Xfrontend" "-experimental-skip-non-inlinable-function-bodies")
+    endif()
 
     # If we have extra regexp flags, check if we match any of the regexps. If so
     # add the relevant flags to our swift_flags.
@@ -343,16 +354,17 @@ function(_compile_swift_files
     list(APPEND module_outputs "${interface_file}")
   endif()
 
-  set(optional_arg)
-  if(sdk IN_LIST SWIFT_APPLE_PLATFORMS)
-    # Allow installation of stdlib without building all variants on Darwin.
-    set(optional_arg "OPTIONAL")
+  if(SWIFTFILE_SDK IN_LIST SWIFT_APPLE_PLATFORMS)
+    swift_install_in_component(DIRECTORY "${specific_module_dir}"
+                               DESTINATION "lib${LLVM_LIBDIR_SUFFIX}/swift/${library_subdir}"
+                               COMPONENT "${SWIFTFILE_INSTALL_IN_COMPONENT}"
+                               OPTIONAL
+                               PATTERN "Project" EXCLUDE)
+  else()
+    swift_install_in_component(FILES ${module_outputs}
+                               DESTINATION "lib${LLVM_LIBDIR_SUFFIX}/swift/${library_subdir}"
+                               COMPONENT "${SWIFTFILE_INSTALL_IN_COMPONENT}")
   endif()
-
-  swift_install_in_component("${SWIFTFILE_INSTALL_IN_COMPONENT}"
-    FILES ${module_outputs}
-    DESTINATION "lib${LLVM_LIBDIR_SUFFIX}/swift/${library_subdir}"
-    "${optional_arg}")
 
   set(line_directive_tool "${SWIFT_SOURCE_DIR}/utils/line-directive")
   set(swift_compiler_tool "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/swiftc")
@@ -380,7 +392,7 @@ function(_compile_swift_files
   endif()
 
   if (SWIFT_REPORT_STATISTICS)
-    list(GET obj_dirs 0 first_obj_dir)
+    list(GET dirs_to_create 0 first_obj_dir)
     list(APPEND swift_flags "-stats-output-dir" ${first_obj_dir})
   endif()
 
@@ -415,12 +427,12 @@ function(_compile_swift_files
   endif()
 
   # First generate the obj dirs
+  list(REMOVE_DUPLICATES dirs_to_create)
   add_custom_command_target(
-      obj_dirs_dependency_target
-      ${command_create_dirs}
-      COMMAND ""
-      OUTPUT ${obj_dirs}
-      COMMENT "Generating obj dirs for ${first_output}")
+      create_dirs_dependency_target
+      COMMAND "${CMAKE_COMMAND}" -E make_directory ${dirs_to_create}
+      OUTPUT ${dirs_to_create}
+      COMMENT "Generating dirs for ${first_output}")
 
   # Then we can compile both the object files and the swiftmodule files
   # in parallel in this target for the object file, and ...
@@ -433,7 +445,7 @@ function(_compile_swift_files
   set(file_path "${CMAKE_CURRENT_BINARY_DIR}/${file_name}.txt")
   string(REPLACE ";" "'\n'" source_files_quoted "${source_files}")
   file(WRITE "${file_path}" "'${source_files_quoted}'")
-  
+
   # If this platform/architecture combo supports backward deployment to old
   # Objective-C runtimes, we need to copy a YAML file with legacy type layout
   # information to the build directory so that the compiler can find it.
@@ -460,7 +472,7 @@ function(_compile_swift_files
         ${swift_compiler_tool_dep}
         ${file_path} ${source_files} ${SWIFTFILE_DEPENDS}
         ${swift_ide_test_dependency}
-        ${obj_dirs_dependency_target}
+        ${create_dirs_dependency_target}
         ${copy_legacy_layouts_dep}
       COMMENT "Compiling ${first_output}")
   set("${dependency_target_out_var_name}" "${dependency_target}" PARENT_SCOPE)
@@ -486,16 +498,21 @@ function(_compile_swift_files
         COMMAND
           "${CMAKE_COMMAND}" "-E" "remove" "-f" ${module_outputs}
         COMMAND
+          "${CMAKE_COMMAND}" "-E" "make_directory" ${module_dir}
+          ${specific_module_dir}
+          ${specific_module_project_dir}
+        COMMAND
           "${PYTHON_EXECUTABLE}" "${line_directive_tool}" "@${file_path}" --
           "${swift_compiler_tool}" "-emit-module" "-o" "${module_file}"
-          ${swift_flags} "@${file_path}"
+          "-emit-module-source-info-path" "${source_info_file}"
+          ${swift_flags} ${swift_module_flags} "@${file_path}"
         ${command_touch_module_outputs}
         OUTPUT ${module_outputs}
         DEPENDS
           ${swift_compiler_tool_dep}
           ${source_files} ${SWIFTFILE_DEPENDS}
           ${swift_ide_test_dependency}
-          ${obj_dirs_dependency_target}
+          ${create_dirs_dependency_target}
         COMMENT "Generating ${module_file}")
     set("${dependency_module_target_out_var_name}" "${module_dependency_target}" PARENT_SCOPE)
 
@@ -511,7 +528,7 @@ function(_compile_swift_files
         DEPENDS
           ${swift_compiler_tool_dep}
           ${source_files} ${SWIFTFILE_DEPENDS}
-          ${obj_dirs_dependency_target}
+          ${create_dirs_dependency_target}
         COMMENT "Generating ${sib_file}"
         EXCLUDE_FROM_ALL)
     set("${dependency_sib_target_out_var_name}" "${sib_dependency_target}" PARENT_SCOPE)
@@ -527,7 +544,7 @@ function(_compile_swift_files
         DEPENDS
           ${swift_compiler_tool_dep}
           ${source_files} ${SWIFTFILE_DEPENDS}
-          ${obj_dirs_dependency_target}
+          ${create_dirs_dependency_target}
         COMMENT "Generating ${sibopt_file}"
         EXCLUDE_FROM_ALL)
     set("${dependency_sibopt_target_out_var_name}" "${sibopt_dependency_target}" PARENT_SCOPE)
@@ -544,7 +561,7 @@ function(_compile_swift_files
         DEPENDS
           ${swift_compiler_tool_dep}
           ${source_files} ${SWIFTFILE_DEPENDS}
-          ${obj_dirs_dependency_target}
+          ${create_dirs_dependency_target}
           COMMENT "Generating ${sibgen_file}"
           EXCLUDE_FROM_ALL)
     set("${dependency_sibgen_target_out_var_name}" "${sibgen_dependency_target}" PARENT_SCOPE)

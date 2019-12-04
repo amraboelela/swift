@@ -36,7 +36,7 @@ struct A: Hashable {
   func hash(into hasher: inout Hasher) { fatalError() }
 }
 struct B {}
-struct C<T> {
+struct C<T> { // expected-note 3 {{'T' declared as parameter to type 'C'}}
   var value: T
   subscript() -> T { get { return value } }
   subscript(sub: Sub) -> T { get { return value } set { } }
@@ -122,20 +122,21 @@ func testKeyPath(sub: Sub, optSub: OptSub,
   // expected-error@+1{{}}
   _ = \(() -> ()).noMember
 
+  let _: (A) -> Prop = \.property
   let _: PartialKeyPath<A> = \.property
   let _: KeyPath<A, Prop> = \.property
   let _: WritableKeyPath<A, Prop> = \.property
-  // expected-error@+1{{ambiguous}} (need to improve diagnostic)
   let _: ReferenceWritableKeyPath<A, Prop> = \.property
+  //expected-error@-1 {{cannot convert value of type 'WritableKeyPath<A, Prop>' to specified type 'ReferenceWritableKeyPath<A, Prop>'}}
 
-  // FIXME: shouldn't be ambiguous
-  // expected-error@+1{{ambiguous}}
+  let _: (A) -> A = \.[sub]
   let _: PartialKeyPath<A> = \.[sub]
   let _: KeyPath<A, A> = \.[sub]
   let _: WritableKeyPath<A, A> = \.[sub]
-  // expected-error@+1{{ambiguous}} (need to improve diagnostic)
   let _: ReferenceWritableKeyPath<A, A> = \.[sub]
+  //expected-error@-1 {{cannot convert value of type 'WritableKeyPath<A, A>' to specified type 'ReferenceWritableKeyPath<A, A>'}}
 
+  let _: (A) -> Prop? = \.optProperty?
   let _: PartialKeyPath<A> = \.optProperty?
   let _: KeyPath<A, Prop?> = \.optProperty?
   // expected-error@+1{{cannot convert}}
@@ -143,6 +144,7 @@ func testKeyPath(sub: Sub, optSub: OptSub,
   // expected-error@+1{{cannot convert}}
   let _: ReferenceWritableKeyPath<A, Prop?> = \.optProperty?
 
+  let _: (A) -> A? = \.optProperty?[sub]
   let _: PartialKeyPath<A> = \.optProperty?[sub]
   let _: KeyPath<A, A?> = \.optProperty?[sub]
   // expected-error@+1{{cannot convert}}
@@ -155,18 +157,21 @@ func testKeyPath(sub: Sub, optSub: OptSub,
   let _: KeyPath<A, Prop?> = \.property[optSub]?.optProperty!
   let _: KeyPath<A, A?> = \.property[optSub]?.optProperty![sub]
 
+  let _: (C<A>) -> A = \.value
   let _: PartialKeyPath<C<A>> = \.value
   let _: KeyPath<C<A>, A> = \.value
   let _: WritableKeyPath<C<A>, A> = \.value
-  // expected-error@+1{{ambiguous}} (need to improve diagnostic)
   let _: ReferenceWritableKeyPath<C<A>, A> = \.value
+  // expected-error@-1 {{cannot convert value of type 'WritableKeyPath<C<A>, A>' to specified type 'ReferenceWritableKeyPath<C<A>, A>'}}
 
+  let _: (C<A>) -> A = \C.value
   let _: PartialKeyPath<C<A>> = \C.value
   let _: KeyPath<C<A>, A> = \C.value
   let _: WritableKeyPath<C<A>, A> = \C.value
   // expected-error@+1{{cannot convert}}
   let _: ReferenceWritableKeyPath<C<A>, A> = \C.value
 
+  let _: (Prop) -> B = \.nonMutatingProperty
   let _: PartialKeyPath<Prop> = \.nonMutatingProperty
   let _: KeyPath<Prop, B> = \.nonMutatingProperty
   let _: WritableKeyPath<Prop, B> = \.nonMutatingProperty
@@ -175,8 +180,9 @@ func testKeyPath(sub: Sub, optSub: OptSub,
   var m = [\A.property, \A.[sub], \A.optProperty!]
   expect(&m, toHaveType: Exactly<[PartialKeyPath<A>]>.self)
 
-  // FIXME: shouldn't be ambiguous
-  // expected-error@+1{{ambiguous}}
+  // \.optProperty returns an optional of Prop and `\.[sub]` returns `A`
+  // expected-error@+2 {{key path value type 'Prop?' cannot be converted to contextual type 'Prop'}}
+  // expected-error@+1 {{key path value type 'A' cannot be converted to contextual type 'Prop'}}
   var n = [\A.property, \.optProperty, \.[sub], \.optProperty!]
   expect(&n, toHaveType: Exactly<[PartialKeyPath<A>]>.self)
 
@@ -190,7 +196,7 @@ func testKeyPath(sub: Sub, optSub: OptSub,
   let _: AnyKeyPath = \A.property
   let _: AnyKeyPath = \C<A>.value
   let _: AnyKeyPath = \.property // expected-error{{ambiguous}}
-  let _: AnyKeyPath = \C.value // expected-error{{cannot convert}} (need to improve diagnostic)
+  let _: AnyKeyPath = \C.value // expected-error{{generic parameter 'T' could not be inferred}}
   let _: AnyKeyPath = \.value // expected-error{{ambiguous}}
 
   let _ = \Prop.[nonHashableSub] // expected-error{{subscript index of type 'NonHashableSub' in a key path must be Hashable}}
@@ -220,13 +226,13 @@ func testKeyPathInGenericContext<H: Hashable, X>(hashable: H, anything: X) {
 func testDisembodiedStringInterpolation(x: Int) {
   \(x) // expected-error{{string interpolation}} expected-error{{}}
   \(x, radix: 16) // expected-error{{string interpolation}} expected-error{{}}
-
-  _ = \(Int, Int).0 // expected-error{{cannot reference tuple elements}}
 }
 
 func testNoComponents() {
   let _: KeyPath<A, A> = \A // expected-error{{must have at least one component}}
   let _: KeyPath<C, A> = \C // expected-error{{must have at least one component}} expected-error{{}}
+  // expected-error@-1 {{generic parameter 'T' could not be inferred}}
+  // expected-error@-2 {{cannot convert value of type 'KeyPath<Root, Value>' to specified type 'KeyPath<C<T>, A>'}}
 }
 
 struct TupleStruct {
@@ -234,21 +240,58 @@ struct TupleStruct {
   var labeled: (foo: Int, bar: String)
 }
 
-func tupleComponent() {
-  // TODO: Customized diagnostic
-  let _ = \(Int, String).0 // expected-error{{}}
-  let _ = \(Int, String).1 // expected-error{{}}
-  let _ = \TupleStruct.unlabeled.0 // expected-error{{}}
-  let _ = \TupleStruct.unlabeled.1 // expected-error{{}}
+typealias UnlabeledGenericTuple<T, U> = (T, U)
+typealias LabeledGenericTuple<T, U> = (a: T, b: U)
 
-  let _ = \(foo: Int, bar: String).0 // expected-error{{}}
-  let _ = \(foo: Int, bar: String).1 // expected-error{{}}
-  let _ = \(foo: Int, bar: String).foo // expected-error{{}}
-  let _ = \(foo: Int, bar: String).bar // expected-error{{}}
-  let _ = \TupleStruct.labeled.0 // expected-error{{}}
-  let _ = \TupleStruct.labeled.1 // expected-error{{}}
-  let _ = \TupleStruct.labeled.foo // expected-error{{}}
-  let _ = \TupleStruct.labeled.bar // expected-error{{}}
+func tupleComponent<T, U>(_: T, _: U) {
+  let _ = \(Int, String).0
+  let _ = \(Int, String).1
+  let _ = \TupleStruct.unlabeled.0
+  let _ = \TupleStruct.unlabeled.1
+
+  let _ = \(foo: Int, bar: String).0
+  let _ = \(foo: Int, bar: String).1
+  let _ = \(foo: Int, bar: String).foo
+  let _ = \(foo: Int, bar: String).bar
+  let _ = \TupleStruct.labeled.0
+  let _ = \TupleStruct.labeled.1
+  let _ = \TupleStruct.labeled.foo
+  let _ = \TupleStruct.labeled.bar
+
+  let _ = \(T, U).0
+  let _ = \(T, U).1
+  let _ = \UnlabeledGenericTuple<T, U>.0
+  let _ = \UnlabeledGenericTuple<T, U>.1
+
+  let _ = \(a: T, b: U).0
+  let _ = \(a: T, b: U).1
+  let _ = \(a: T, b: U).a
+  let _ = \(a: T, b: U).b
+  let _ = \LabeledGenericTuple<T, U>.0
+  let _ = \LabeledGenericTuple<T, U>.1
+  let _ = \LabeledGenericTuple<T, U>.a
+  let _ = \LabeledGenericTuple<T, U>.b
+}
+
+func tuple_el_0<T, U>() -> KeyPath<(T, U), T> {
+  return \.0
+}
+
+func tuple_el_1<T, U>() -> KeyPath<(T, U), U> {
+  return \.1
+}
+
+func tupleGeneric<T, U>(_ v: (T, U)) {
+  _ = (1, "hello")[keyPath: tuple_el_0()]
+  _ = (1, "hello")[keyPath: tuple_el_1()]
+
+  _ = v[keyPath: tuple_el_0()]
+  _ = v[keyPath: tuple_el_1()]
+
+  _ = ("tuple", "too", "big")[keyPath: tuple_el_1()]
+  // expected-note@-12 {{}}
+  // expected-error@-2 {{generic parameter 'T' could not be inferred}}
+  // expected-error@-3 {{generic parameter 'U' could not be inferred}}
 }
 
 struct Z { }
@@ -314,9 +357,9 @@ func testKeyPathSubscript(readonly: ZwithSubscript, writable: inout ZwithSubscri
   sink = writable[keyPath: wkp]
   sink = readonly[keyPath: rkp]
   sink = writable[keyPath: rkp]
-  readonly[keyPath: kp] = sink // expected-error{{cannot assign through subscript: subscript is get-only}}
-  writable[keyPath: kp] = sink // expected-error{{cannot assign through subscript: subscript is get-only}}
-  readonly[keyPath: wkp] = sink // expected-error{{cannot assign through subscript: subscript is get-only}}
+  readonly[keyPath: kp] = sink  // expected-error {{cannot assign through subscript: subscript is get-only}}
+  writable[keyPath: kp] = sink  // expected-error {{cannot assign through subscript: subscript is get-only}}
+  readonly[keyPath: wkp] = sink // expected-error {{cannot assign through subscript: subscript is get-only}}
   // FIXME: silently falls back to keypath application, which seems inconsistent
   writable[keyPath: wkp] = sink
   // FIXME: silently falls back to keypath application, which seems inconsistent
@@ -464,8 +507,11 @@ func testLabeledSubscript() {
   let k = \AA.[labeled: 0]
 
   // TODO: These ought to work without errors.
-  let _ = \AA.[keyPath: k] // expected-error{{}}
-  let _ = \AA.[keyPath: \AA.[labeled: 0]] // expected-error{{}}
+  let _ = \AA.[keyPath: k] // expected-error {{extraneous argument label 'keyPath:' in call}}
+  // expected-error@-1 {{cannot convert value of type 'KeyPath<AA, Int>' to expected argument type 'Int'}}
+
+  let _ = \AA.[keyPath: \AA.[labeled: 0]] // expected-error {{extraneous argument label 'keyPath:' in call}}
+  // expected-error@-1 {{cannot convert value of type 'KeyPath<AA, Int>' to expected argument type 'Int'}}
 }
 
 func testInvalidKeyPathComponents() {
@@ -478,9 +524,9 @@ class X {
 }
 
 func testStaticKeyPathComponent() {
-  _ = \X.a // expected-error{{}}
+  _ = \X.a // expected-error{{cannot refer to static member}}
   _ = \X.Type.a // expected-error{{cannot refer to static member}}
-  _ = \X.b // expected-error{{}}
+  _ = \X.b // expected-error{{cannot refer to static member}}
   _ = \X.Type.b // expected-error{{cannot refer to static member}}
 }
 
@@ -501,23 +547,19 @@ func testImplicitConversionInSubscriptIndex() {
   _ = \BassSubscript.["hello"] // expected-error{{must be Hashable}}
 }
 
-// Crash in diagnostics
-struct AmbiguousSubscript {
+// Crash in diagnostics + SR-11438
+struct UnambiguousSubscript {
   subscript(sub: Sub) -> Int { get { } set { } }
-  // expected-note@-1 {{'subscript(_:)' declared here}}
-
   subscript(y y: Sub) -> Int { get { } set { } }
-  // expected-note@-1 {{'subscript(y:)' declared here}}
 }
 
-func useAmbiguousSubscript(_ sub: Sub) {
-  let _: PartialKeyPath<AmbiguousSubscript> = \.[sub]
-  // expected-error@-1 {{ambiguous reference to member 'subscript'}}
+func useUnambiguousSubscript(_ sub: Sub) {
+  let _: PartialKeyPath<UnambiguousSubscript> = \.[sub]
 }
 
 struct BothUnavailableSubscript {
   @available(*, unavailable)
-  subscript(sub: Sub) -> Int { get { } set { } }
+  subscript(sub: Sub) -> Int { get { } set { } } // expected-note {{'subscript(_:)' has been explicitly marked unavailable here}}
 
   @available(*, unavailable)
   subscript(y y: Sub) -> Int { get { } set { } }
@@ -525,7 +567,7 @@ struct BothUnavailableSubscript {
 
 func useBothUnavailableSubscript(_ sub: Sub) {
   let _: PartialKeyPath<BothUnavailableSubscript> = \.[sub]
-  // expected-error@-1 {{type of expression is ambiguous without more context}}
+  // expected-error@-1 {{'subscript(_:)' is unavailable}}
 }
 
 // SR-6106
@@ -648,7 +690,9 @@ func testSubtypeKeypathClass(_ keyPath: ReferenceWritableKeyPath<Base, Int>) {
 }
 
 func testSubtypeKeypathProtocol(_ keyPath: ReferenceWritableKeyPath<PP, Int>) {
-  testSubtypeKeypathProtocol(\Base.i) // expected-error {{type 'PP' has no member 'i'}}
+  testSubtypeKeypathProtocol(\Base.i)
+  // expected-error@-1 {{cannot convert value of type 'ReferenceWritableKeyPath<Base, Int>' to expected argument type 'ReferenceWritableKeyPath<PP, Int>'}}
+  // expected-note@-2 {{arguments to generic parameter 'Root' ('Base' and 'PP') are expected to be equal}}
 }
 
 // rdar://problem/32057712
@@ -669,8 +713,156 @@ var identity8: PartialKeyPath = \Container.self
 var identity9: PartialKeyPath<Container> = \Container.self
 var identity10: PartialKeyPath<Container> = \.self
 var identity11: AnyKeyPath = \Container.self
+var identity12: (Container) -> Container = \Container.self
+var identity13: (Container) -> Container = \.self
 
 var interleavedIdentityComponents = \Container.self.base.self?.self.i.self
+
+protocol P_With_Static_Members {
+  static var x: Int { get }
+  static var arr: [Int] { get }
+}
+
+func test_keypath_with_static_members(_ p: P_With_Static_Members) {
+  let _ = p[keyPath: \.x]
+  // expected-error@-1 {{key path cannot refer to static member 'x'}}
+  let _: KeyPath<P_With_Static_Members, Int> = \.x
+  // expected-error@-1 {{key path cannot refer to static member 'x'}}
+  let _ = \P_With_Static_Members.arr.count
+  // expected-error@-1 {{key path cannot refer to static member 'arr'}}
+  let _ = p[keyPath: \.arr.count]
+  // expected-error@-1 {{key path cannot refer to static member 'arr'}}
+
+  struct S {
+    static var foo: String = "Hello"
+    var bar: Bar
+  }
+
+  struct Bar {
+    static var baz: Int = 42
+  }
+
+  func foo(_ s: S) {
+    let _ = \S.Type.foo
+    // expected-error@-1 {{key path cannot refer to static member 'foo'}}
+    let _ = s[keyPath: \.foo]
+    // expected-error@-1 {{key path cannot refer to static member 'foo'}}
+    let _: KeyPath<S, String> = \.foo
+    // expected-error@-1 {{key path cannot refer to static member 'foo'}}
+    let _ = \S.foo
+    // expected-error@-1 {{key path cannot refer to static member 'foo'}}
+    let _ = \S.bar.baz
+    // expected-error@-1 {{key path cannot refer to static member 'baz'}}
+    let _ = s[keyPath: \.bar.baz]
+    // expected-error@-1 {{key path cannot refer to static member 'baz'}}
+  }
+}
+
+func test_keypath_with_mutating_getter() {
+  struct S {
+    var foo: Int {
+      mutating get { return 42 }
+    }
+
+    subscript(_: Int) -> [Int] {
+      mutating get { return [] }
+    }
+  }
+
+  _ = \S.foo
+  // expected-error@-1 {{key path cannot refer to 'foo', which has a mutating getter}}
+  let _: KeyPath<S, Int> = \.foo
+  // expected-error@-1 {{key path cannot refer to 'foo', which has a mutating getter}}
+  _ = \S.[0]
+  // expected-error@-1 {{key path cannot refer to 'subscript(_:)', which has a mutating getter}}
+  _ = \S.[0].count
+  // expected-error@-1 {{key path cannot refer to 'subscript(_:)', which has a mutating getter}}
+
+  func test_via_subscript(_ s: S) {
+    _ = s[keyPath: \.foo]
+    // expected-error@-1 {{key path cannot refer to 'foo', which has a mutating getter}}
+    _ = s[keyPath: \.[0].count]
+    // expected-error@-1 {{key path cannot refer to 'subscript(_:)', which has a mutating getter}}
+  }
+}
+
+func test_keypath_with_method_refs() {
+  struct S {
+    func foo() -> Int { return 42 }
+    static func bar() -> Int { return 0 }
+  }
+
+  let _: KeyPath<S, Int> = \.foo // expected-error {{key path cannot refer to instance method 'foo()'}}
+  let _: KeyPath<S, Int> = \.bar // expected-error {{key path cannot refer to static member 'bar()'}}
+  let _ = \S.Type.bar // expected-error {{key path cannot refer to static method 'bar()'}}
+
+  struct A {
+    func foo() -> B { return B() }
+    static func faz() -> B { return B() }
+  }
+
+  struct B {
+    var bar: Int = 42
+  }
+
+  let _: KeyPath<A, Int> = \.foo.bar // expected-error {{key path cannot refer to instance method 'foo()'}}
+  let _: KeyPath<A, Int> = \.faz.bar // expected-error {{key path cannot refer to static member 'faz()'}}
+  let _ = \A.foo.bar // expected-error {{key path cannot refer to instance method 'foo()'}}
+  let _ = \A.Type.faz.bar // expected-error {{key path cannot refer to static method 'faz()'}}
+}
+
+// SR-10467 - Argument type 'KeyPath<String, Int>' does not conform to expected type 'Any'
+func test_keypath_in_any_context() {
+  func foo(_: Any) {}
+  _ = foo(\String.count) // Ok
+}
+
+protocol PWithTypeAlias {
+  typealias Key = WritableKeyPath<Self, Int?>
+  static var fooKey: Key? { get }
+  static var barKey: Key! { get }
+  static var fazKey: Key?? { get }
+  static var bazKey: Key?! { get }
+}
+
+func test_keypath_inference_with_optionals() {
+  final class S : PWithTypeAlias {
+    static var fooKey: Key? { return \.foo }
+    static var barKey: Key! { return \.foo }
+    static var fazKey: Key?? { return \.foo }
+    static var bazKey: Key?! { return \.foo }
+
+    var foo: Int? = nil
+  }
+}
+
+func sr11562() {
+  struct S1 {
+    subscript(x x: Int) -> Int { x }
+  }
+
+  _ = \S1.[5] // expected-error {{missing argument label 'x:' in call}} {{12-12=x: }}
+
+  struct S2 {
+    subscript(x x: Int) -> Int { x } // expected-note {{incorrect labels for candidate (have: '(_:)', expected: '(x:)')}}
+    subscript(y y: Int) -> Int { y } // expected-note {{incorrect labels for candidate (have: '(_:)', expected: '(y:)')}}
+  }
+
+  _ = \S2.[5] // expected-error {{no exact matches in call to subscript}}
+
+  struct S3 {
+    subscript(x x: Int, y y: Int) -> Int { x }
+  }
+
+  _ = \S3.[y: 5, x: 5] // expected-error {{argument 'x' must precede argument 'y'}}
+
+  struct S4 {
+    subscript(x: (Int, Int)) -> Int { x.0 }
+  }
+
+  _ = \S4.[1, 4] // expected-error {{subscript expects a single parameter of type '(Int, Int)'}} {{12-12=(}} {{16-16=)}}
+  // expected-error@-1 {{subscript index of type '(Int, Int)' in a key path must be Hashable}}
+}
 
 func testSyntaxErrors() { // expected-note{{}}
   _ = \.  ; // expected-error{{expected member name following '.'}}

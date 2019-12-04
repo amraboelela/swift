@@ -98,7 +98,7 @@ extension String {
   ///         print(snowy[range])
   ///     }
   ///     // Prints "Let it snow!"
-  @_fixed_layout
+  @frozen
   public struct UTF16View {
     @usableFromInline
     internal var _guts: _StringGuts
@@ -128,55 +128,57 @@ extension String.UTF16View: BidirectionalCollection {
 
   /// The position of the first code unit if the `String` is
   /// nonempty; identical to `endIndex` otherwise.
-  @inlinable
-  public var startIndex: Index {
-    @inline(__always) get { return _guts.startIndex }
-  }
+  @inlinable @inline(__always)
+  public var startIndex: Index { return _guts.startIndex }
 
   /// The "past the end" position---that is, the position one greater than
   /// the last valid subscript argument.
   ///
   /// In an empty UTF-16 view, `endIndex` is equal to `startIndex`.
-  @inlinable
-  public var endIndex: Index {
-    @inline(__always) get { return _guts.endIndex }
-  }
+  @inlinable @inline(__always)
+  public var endIndex: Index { return _guts.endIndex }
 
   @inlinable @inline(__always)
-  public func index(after i: Index) -> Index {
-    if _slowPath(_guts.isForeign) { return _foreignIndex(after: i) }
-    if _guts.isASCII { return i.nextEncoded }
+  public func index(after idx: Index) -> Index {
+    if _slowPath(_guts.isForeign) { return _foreignIndex(after: idx) }
+    if _guts.isASCII { return idx.nextEncoded }
 
     // For a BMP scalar (1-3 UTF-8 code units), advance past it. For a non-BMP
     // scalar, use a transcoded offset first.
-    let len = _guts.fastUTF8ScalarLength(startingAt: i.encodedOffset)
-    if len == 4 && i.transcodedOffset == 0 {
-      return i.nextTranscoded
+
+    // TODO: do the ugly if non-transcoded make sure to scalar align thing...
+    // Also, can we just jump ahead 4 is transcoded is 1?
+
+    let idx = _utf16AlignNativeIndex(idx)
+    let len = _guts.fastUTF8ScalarLength(startingAt: idx._encodedOffset)
+    if len == 4 && idx.transcodedOffset == 0 {
+      return idx.nextTranscoded
     }
-    return i.strippingTranscoding.encoded(offsetBy: len)
+    return idx.strippingTranscoding.encoded(offsetBy: len)._scalarAligned
   }
 
   @inlinable @inline(__always)
-  public func index(before i: Index) -> Index {
-    precondition(!i.isZeroPosition)
-    if _slowPath(_guts.isForeign) { return _foreignIndex(before: i) }
-    if _guts.isASCII { return i.priorEncoded }
+  public func index(before idx: Index) -> Index {
+    precondition(!idx.isZeroPosition)
+    if _slowPath(_guts.isForeign) { return _foreignIndex(before: idx) }
+    if _guts.isASCII { return idx.priorEncoded }
 
-    if i.transcodedOffset != 0 {
-      _internalInvariant(i.transcodedOffset == 1)
-      return i.strippingTranscoding
+    if idx.transcodedOffset != 0 {
+      _internalInvariant(idx.transcodedOffset == 1)
+      return idx.strippingTranscoding
     }
 
-    let len = _guts.fastUTF8ScalarLength(endingAt: i.encodedOffset)
+    let idx = _utf16AlignNativeIndex(idx)
+    let len = _guts.fastUTF8ScalarLength(endingAt: idx._encodedOffset)
     if len == 4 {
       // 2 UTF-16 code units comprise this scalar; advance to the beginning and
       // start mid-scalar transcoding
-      return i.encoded(offsetBy: -len).nextTranscoded
+      return idx.encoded(offsetBy: -len).nextTranscoded
     }
 
     // Single UTF-16 code unit
     _internalInvariant((1...3) ~= len)
-    return i.encoded(offsetBy: -len)
+    return idx.encoded(offsetBy: -len)._scalarAligned
   }
 
   public func index(_ i: Index, offsetBy n: Int) -> Index {
@@ -242,27 +244,22 @@ extension String.UTF16View: BidirectionalCollection {
   ///
   /// - Parameter position: A valid index of the view. `position` must be
   ///   less than the view's end index.
-  @inlinable
-  public subscript(i: Index) -> UTF16.CodeUnit {
-    @inline(__always) get {
-      String(_guts)._boundsCheck(i)
+  @inlinable @inline(__always)
+  public subscript(idx: Index) -> UTF16.CodeUnit {
+    String(_guts)._boundsCheck(idx)
 
-      if _fastPath(_guts.isFastUTF8) {
-        let scalar = _guts.fastUTF8Scalar(
-          startingAt: _guts.scalarAlign(i).encodedOffset)
-        if scalar.value <= 0xFFFF {
-          return UInt16(truncatingIfNeeded: scalar.value)
-        }
-        return scalar.utf16[i.transcodedOffset]
-      }
-
-      return _foreignSubscript(position: i)
+    if _fastPath(_guts.isFastUTF8) {
+      let scalar = _guts.fastUTF8Scalar(
+        startingAt: _guts.scalarAlign(idx)._encodedOffset)
+      return scalar.utf16[idx.transcodedOffset]
     }
+
+    return _foreignSubscript(position: idx)
   }
 }
 
 extension String.UTF16View {
-  @_fixed_layout
+  @frozen
   public struct Iterator: IteratorProtocol {
     @usableFromInline
     internal var _guts: _StringGuts
@@ -314,10 +311,8 @@ extension String.UTF16View {
 
 
 extension String.UTF16View: CustomStringConvertible {
-  @inlinable
-  public var description: String {
-    @inline(__always) get { return String(_guts) }
-  }
+  @inlinable @inline(__always)
+  public var description: String { return String(_guts) }
 }
 
 extension String.UTF16View: CustomDebugStringConvertible {
@@ -412,7 +407,7 @@ extension String.UTF16View.Index {
 }
 
 // Reflection
-extension String.UTF16View : CustomReflectable {
+extension String.UTF16View: CustomReflectable {
   /// Returns a mirror that reflects the UTF-16 view of a string.
   public var customMirror: Mirror {
     return Mirror(self, unlabeledChildren: self)
@@ -434,28 +429,31 @@ extension String.UTF16View {
   @_effects(releasenone)
   internal func _foreignIndex(after i: Index) -> Index {
     _internalInvariant(_guts.isForeign)
-    return i.nextEncoded
+    return i.strippingTranscoding.nextEncoded
   }
 
   @usableFromInline @inline(never)
   @_effects(releasenone)
   internal func _foreignIndex(before i: Index) -> Index {
     _internalInvariant(_guts.isForeign)
-    return i.priorEncoded
+    return i.strippingTranscoding.priorEncoded
   }
 
   @usableFromInline @inline(never)
   @_effects(releasenone)
   internal func _foreignSubscript(position i: Index) -> UTF16.CodeUnit {
     _internalInvariant(_guts.isForeign)
-    return _guts.foreignErrorCorrectedUTF16CodeUnit(at: i)
+    return _guts.foreignErrorCorrectedUTF16CodeUnit(at: i.strippingTranscoding)
   }
 
   @usableFromInline @inline(never)
   @_effects(releasenone)
   internal func _foreignDistance(from start: Index, to end: Index) -> Int {
     _internalInvariant(_guts.isForeign)
-    return end.encodedOffset - start.encodedOffset
+
+    // Ignore transcoded offsets, i.e. scalar align if-and-only-if from a
+    // transcoded view
+    return end._encodedOffset - start._encodedOffset
   }
 
   @usableFromInline @inline(never)
@@ -464,25 +462,38 @@ extension String.UTF16View {
     _ i: Index, offsetBy n: Int, limitedBy limit: Index
   ) -> Index? {
     _internalInvariant(_guts.isForeign)
-    let l = limit.encodedOffset - i.encodedOffset
+    let l = limit._encodedOffset - i._encodedOffset
     if n > 0 ? l >= 0 && l < n : l <= 0 && n < l {
       return nil
     }
-    return i.encoded(offsetBy: n)
+    return i.strippingTranscoding.encoded(offsetBy: n)
   }
 
   @usableFromInline @inline(never)
   @_effects(releasenone)
   internal func _foreignIndex(_ i: Index, offsetBy n: Int) -> Index {
     _internalInvariant(_guts.isForeign)
-    return i.encoded(offsetBy: n)
+    return i.strippingTranscoding.encoded(offsetBy: n)
   }
 
   @usableFromInline @inline(never)
   @_effects(releasenone)
   internal func _foreignCount() -> Int {
     _internalInvariant(_guts.isForeign)
-    return endIndex.encodedOffset - startIndex.encodedOffset
+    return endIndex._encodedOffset - startIndex._encodedOffset
+  }
+
+  // Align a native UTF-8 index to a valid UTF-16 position. If there is a
+  // transcoded offset already, this is already a valid UTF-16 position
+  // (referring to the second surrogate) and returns `idx`. Otherwise, this will
+  // scalar-align the index. This is needed because we may be passed a
+  // non-scalar-aligned index from the UTF8View.
+  @_alwaysEmitIntoClient // Swift 5.1
+  @inline(__always)
+  internal func _utf16AlignNativeIndex(_ idx: String.Index) -> String.Index {
+    _internalInvariant(!_guts.isForeign)
+    guard idx.transcodedOffset == 0 else { return idx }
+    return _guts.scalarAlign(idx)
   }
 }
 
@@ -500,8 +511,8 @@ extension String.Index {
 // Breadcrumb-aware acceleration
 extension String.UTF16View {
   // A simple heuristic we can always tweak later. Not needed for correctness
-  @inlinable
-  internal var _shortHeuristic: Int {  @inline(__always) get { return 32 } }
+  @inlinable @inline(__always)
+  internal var _shortHeuristic: Int { return 32 }
 
   @usableFromInline
   @_effects(releasenone)
@@ -511,10 +522,11 @@ extension String.UTF16View {
 
     if _guts.isASCII {
       _internalInvariant(idx.transcodedOffset == 0)
-      return idx.encodedOffset
+      return idx._encodedOffset
     }
 
-    if idx.encodedOffset < _shortHeuristic || !_guts.hasBreadcrumbs {
+    let idx = _utf16AlignNativeIndex(idx)
+    if idx._encodedOffset < _shortHeuristic || !_guts.hasBreadcrumbs {
       return _distance(from: startIndex, to: idx)
     }
 
@@ -534,7 +546,7 @@ extension String.UTF16View {
     // Trivial and common: start
     if offset == 0 { return startIndex }
 
-    if _guts.isASCII { return Index(encodedOffset: offset) }
+    if _guts.isASCII { return Index(_encodedOffset: offset) }
 
     if offset < _shortHeuristic || !_guts.hasBreadcrumbs {
       return _index(startIndex, offsetBy: offset)
@@ -550,7 +562,7 @@ extension String.UTF16View {
     if remaining == 0 { return crumb }
 
     return _guts.withFastUTF8 { utf8 in
-      var readIdx = crumb.encodedOffset
+      var readIdx = crumb._encodedOffset
       let readEnd = utf8.count
       _internalInvariant(readIdx < readEnd)
 
@@ -575,22 +587,27 @@ extension String.UTF16View {
             _internalInvariant(utf16Len == 2)
             return Index(encodedOffset: readIdx, transcodedOffset: 1)
           }
-          return Index(encodedOffset: readIdx &+ len)
+          return Index(_encodedOffset: readIdx &+ len)._scalarAligned
         }
 
         readIdx &+= len
       }
     }
   }
-}
 
-extension String {
-  @usableFromInline // @testable
-  internal func _nativeCopyUTF16CodeUnits(
+  // Copy (i.e. transcode to UTF-16) our contents into a buffer. `alignedRange`
+  // means that the indices are part of the UTF16View.indices -- they are either
+  // scalar-aligned or transcoded (e.g. derived from the UTF-16 view). They do
+  // not need to go through an alignment check.
+  internal func _nativeCopy(
     into buffer: UnsafeMutableBufferPointer<UInt16>,
-    range: Range<String.Index>
+    alignedRange range: Range<String.Index>
   ) {
     _internalInvariant(_guts.isFastUTF8)
+    _internalInvariant(
+      range.lowerBound == _utf16AlignNativeIndex(range.lowerBound))
+    _internalInvariant(
+      range.upperBound == _utf16AlignNativeIndex(range.upperBound))
 
     if _slowPath(range.isEmpty) { return }
 
@@ -598,8 +615,8 @@ extension String {
     return _guts.withFastUTF8 { utf8 in
       var writeIdx = 0
       let writeEnd = buffer.count
-      var readIdx = range.lowerBound.encodedOffset
-      let readEnd = range.upperBound.encodedOffset
+      var readIdx = range.lowerBound._encodedOffset
+      let readEnd = range.upperBound._encodedOffset
 
       if isASCII {
         _internalInvariant(range.lowerBound.transcodedOffset == 0)
@@ -645,8 +662,6 @@ extension String {
         writeIdx &+= 1
       }
       _internalInvariant(writeIdx <= writeEnd)
-
     }
   }
 }
-

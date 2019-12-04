@@ -10,6 +10,7 @@ add_swift_host_library(swiftSIL STATIC
   Linker.cpp
   LinearLifetimeChecker.cpp
   LoopInfo.cpp
+  MemoryLifetime.cpp
   Notifications.cpp
   OperandOwnership.cpp
   OptimizationRemark.cpp
@@ -30,6 +31,7 @@ add_swift_host_library(swiftSIL STATIC
   SILGlobalVariable.cpp
   SILInstruction.cpp
   SILInstructions.cpp
+  SILInstructionWorklist.cpp
   SILLocation.cpp
   SILModule.cpp
   SILFunctionBuilder.cpp
@@ -46,11 +48,10 @@ add_swift_host_library(swiftSIL STATIC
   SILWitnessTable.cpp
   TypeLowering.cpp
   ValueOwnership.cpp
-  ValueUtils.cpp
-  LINK_LIBRARIES
-    swiftSerialization
-    swiftSema
-)
+  ValueUtils.cpp)
+target_link_libraries(swiftSIL PRIVATE
+  swiftSema
+  swiftSerialization)
 
 # intrinsics_gen is the LLVM tablegen target that generates the include files
 # where intrinsics and attributes are declared. swiftSIL depends on these

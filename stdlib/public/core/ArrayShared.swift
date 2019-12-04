@@ -9,9 +9,15 @@
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 
-/// This type is used as a result of the _checkSubscript call to associate the
+/// This type is used as a result of the `_checkSubscript` call to associate the
 /// call with the array access call it guards.
-@_fixed_layout
+///
+/// In order for the optimizer see that a call to `_checkSubscript` is semantically
+/// associated with an array access, a value of this type is returned and later passed
+/// to the accessing function.  For example, a typical call to `_getElement` looks like
+///   let token = _checkSubscript(index, ...)
+///   return _getElement(index, ... , matchingSubscriptCheck: token)
+@frozen
 public struct _DependenceToken {
   @inlinable
   public init() {
@@ -27,6 +33,7 @@ public struct _DependenceToken {
 /// - Precondition: `storage` is `_ContiguousArrayStorage`.
 @inlinable // FIXME(inline-always)
 @inline(__always)
+@_semantics("array.uninitialized_intrinsic")
 public // COMPILER_INTRINSIC
 func _allocateUninitializedArray<Element>(_  builtinCount: Builtin.Word)
     -> (Array<Element>, Builtin.RawPointer) {

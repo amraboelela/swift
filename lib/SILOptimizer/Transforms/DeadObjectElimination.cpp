@@ -24,8 +24,10 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "dead-object-elim"
-#include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/AST/ResilienceExpansion.h"
+#include "swift/SIL/BasicBlockUtils.h"
+#include "swift/SIL/DebugUtils.h"
+#include "swift/SIL/InstructionUtils.h"
 #include "swift/SIL/Projection.h"
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILDeclRef.h"
@@ -33,14 +35,13 @@
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILUndef.h"
-#include "swift/SIL/DebugUtils.h"
-#include "swift/SIL/InstructionUtils.h"
-#include "swift/SIL/BasicBlockUtils.h"
 #include "swift/SILOptimizer/Analysis/ArraySemantic.h"
-#include "swift/SILOptimizer/Utils/IndexTrie.h"
-#include "swift/SILOptimizer/Utils/Local.h"
-#include "swift/SILOptimizer/Utils/SILSSAUpdater.h"
+#include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
+#include "swift/SILOptimizer/Utils/IndexTrie.h"
+#include "swift/SILOptimizer/Utils/InstOptUtils.h"
+#include "swift/SILOptimizer/Utils/SILSSAUpdater.h"
+#include "swift/SILOptimizer/Utils/ValueLifetime.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Debug.h"
 
@@ -51,6 +52,9 @@ STATISTIC(DeadAllocRefEliminated,
 
 STATISTIC(DeadAllocStackEliminated,
           "number of AllocStack instructions removed");
+
+STATISTIC(DeadKeyPathEliminated,
+          "number of keypath instructions removed");
 
 STATISTIC(DeadAllocApplyEliminated,
           "number of allocating Apply instructions removed");
@@ -208,6 +212,9 @@ static bool canZapInstruction(SILInstruction *Inst, bool acceptRefCountInsts,
   if (isa<InjectEnumAddrInst>(Inst))
     return true;
 
+  if (isa<KeyPathInst>(Inst))
+    return true;
+
   // We know that the destructor has no side effects so we can remove the
   // deallocation instruction too.
   if (isa<DeallocationInst>(Inst) || isa<AllocationInst>(Inst))
@@ -355,7 +362,7 @@ private:
 // Record a store into this object.
 void DeadObjectAnalysis::
 addStore(StoreInst *Store, IndexTrieNode *AddressNode) {
-  if (Store->getSrc()->getType().isTrivial(Store->getModule()))
+  if (Store->getSrc()->getType().isTrivial(*Store->getFunction()))
     return;
 
   // SSAUpdater cannot handle multiple defs in the same blocks. Therefore, we
@@ -568,7 +575,7 @@ static bool removeAndReleaseArray(SingleValueInstruction *NewArrayValue,
   if (!ArrayDef)
     return false; // No Array object to delete.
 
-  assert(!ArrayDef->getType().isTrivial(ArrayDef->getModule()) &&
+  assert(!ArrayDef->getType().isTrivial(*ArrayDef->getFunction()) &&
          "Array initialization should produce the proper tuple type.");
 
   // Analyze the array object uses.
@@ -588,7 +595,7 @@ static bool removeAndReleaseArray(SingleValueInstruction *NewArrayValue,
     removeInstructions(DeadArray.getAllUsers());
     return true;
   }
-  assert(StorageAddress->getType().isTrivial(ArrayDef->getModule()) &&
+  assert(StorageAddress->getType().isTrivial(*ArrayDef->getFunction()) &&
          "Array initialization should produce the proper tuple type.");
 
   // Analyze the array storage uses.
@@ -605,7 +612,7 @@ static bool removeAndReleaseArray(SingleValueInstruction *NewArrayValue,
       return false;
   }
   // For each store location, insert releases.
-  SILSSAUpdater SSAUp(ArrayDef->getModule());
+  SILSSAUpdater SSAUp;
   ValueLifetimeAnalysis::Frontier ArrayFrontier;
   if (!VLA.computeFrontier(ArrayFrontier,
                            ValueLifetimeAnalysis::UsersMustPostDomDef,
@@ -643,17 +650,20 @@ class DeadObjectElimination : public SILFunctionTransform {
   llvm::SmallVector<SILInstruction*, 16> Allocations;
 
   void collectAllocations(SILFunction &Fn) {
-    for (auto &BB : Fn)
+    for (auto &BB : Fn) {
       for (auto &II : BB) {
-        if (isa<AllocationInst>(&II))
+        if (isa<AllocationInst>(&II) ||
+            isAllocatingApply(&II) ||
+            isa<KeyPathInst>(&II)) {
           Allocations.push_back(&II);
-        else if (isAllocatingApply(&II))
-          Allocations.push_back(&II);
+        }
       }
+    }
   }
 
   bool processAllocRef(AllocRefInst *ARI);
   bool processAllocStack(AllocStackInst *ASI);
+  bool processKeyPath(KeyPathInst *KPI);
   bool processAllocBox(AllocBoxInst *ABI){ return false;}
   bool processAllocApply(ApplyInst *AI, DeadEndBlocks &DEBlocks);
 
@@ -668,6 +678,8 @@ class DeadObjectElimination : public SILFunctionTransform {
         Changed |= processAllocRef(A);
       else if (auto *A = dyn_cast<AllocStackInst>(II))
         Changed |= processAllocStack(A);
+      else if (auto *KPI = dyn_cast<KeyPathInst>(II))
+        Changed |= processKeyPath(KPI);
       else if (auto *A = dyn_cast<AllocBoxInst>(II))
         Changed |= processAllocBox(A);
       else if (auto *A = dyn_cast<ApplyInst>(II))
@@ -732,7 +744,7 @@ bool DeadObjectElimination::processAllocRef(AllocRefInst *ARI) {
 
 bool DeadObjectElimination::processAllocStack(AllocStackInst *ASI) {
   // Trivial types don't have destructors.
-  bool isTrivialType = ASI->getElementType().isTrivial(ASI->getModule());
+  bool isTrivialType = ASI->getElementType().isTrivial(*ASI->getFunction());
   UserList UsersToRemove;
   if (hasUnremovableUsers(ASI, UsersToRemove, /*acceptRefCountInsts=*/ true,
       /*onlyAcceptTrivialStores*/!isTrivialType)) {
@@ -746,6 +758,30 @@ bool DeadObjectElimination::processAllocStack(AllocStackInst *ASI) {
   LLVM_DEBUG(llvm::dbgs() << "    Success! Eliminating alloc_stack.\n");
 
   ++DeadAllocStackEliminated;
+  return true;
+}
+
+bool DeadObjectElimination::processKeyPath(KeyPathInst *KPI) {
+  UserList UsersToRemove;
+  if (hasUnremovableUsers(KPI, UsersToRemove, /*acceptRefCountInsts=*/ true,
+      /*onlyAcceptTrivialStores*/ false)) {
+    LLVM_DEBUG(llvm::dbgs() << "    Found a use that cannot be zapped...\n");
+    return false;
+  }
+
+  // For simplicity just bail if the keypath has a non-trivial operands.
+  // TODO: don't bail but insert compensating destroys for such operands.
+  for (const Operand &Op : KPI->getAllOperands()) {
+    if (!Op.get()->getType().isTrivial(*KPI->getFunction()))
+      return false;
+  }
+
+  // Remove the keypath and all of its users.
+  removeInstructions(
+    ArrayRef<SILInstruction*>(UsersToRemove.begin(), UsersToRemove.end()));
+  LLVM_DEBUG(llvm::dbgs() << "    Success! Eliminating keypath.\n");
+
+  ++DeadKeyPathEliminated;
   return true;
 }
 

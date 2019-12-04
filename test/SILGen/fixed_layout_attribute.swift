@@ -1,8 +1,8 @@
 // RUN: %target-swift-emit-silgen -parse-as-library %s | %FileCheck %s --check-prefix=FRAGILE --check-prefix=CHECK
-// RUN: %target-swift-emit-silgen -enable-resilience -parse-as-library %s | %FileCheck %s --check-prefix=RESILIENT --check-prefix=CHECK
+// RUN: %target-swift-emit-silgen -enable-library-evolution -parse-as-library %s | %FileCheck %s --check-prefix=RESILIENT --check-prefix=CHECK
 
 // RUN: %target-swift-emit-silgen -parse-as-library -enable-testing %s
-// RUN: %target-swift-emit-silgen -parse-as-library -enable-testing -enable-resilience %s
+// RUN: %target-swift-emit-silgen -parse-as-library -enable-testing -enable-library-evolution %s
 
 public let global = 0
 
@@ -27,7 +27,7 @@ public struct NonFixedStruct {
 // CHECK: function_ref @$s22fixed_layout_attribute6globalSivau
 // CHECK: return
 
-@_fixed_layout
+@frozen
 public struct FixedStruct {
   public var storedProperty = global
 }
@@ -52,7 +52,7 @@ struct AnotherInternalStruct {
 
 // Static properties in fixed-layout type is still resilient
 
-@_fixed_layout
+@frozen
 public struct HasStaticProperty {
   public static var staticProperty: Int = 0
 }

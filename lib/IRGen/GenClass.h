@@ -50,12 +50,10 @@ namespace irgen {
   
   enum class ClassDeallocationKind : unsigned char;
   enum class FieldAccess : uint8_t;
-  
-  OwnedAddress projectPhysicalClassMemberAddress(IRGenFunction &IGF,
-                                                 llvm::Value *base,
-                                                 SILType baseType,
-                                                 SILType fieldType,
-                                                 VarDecl *field);
+
+  OwnedAddress projectPhysicalClassMemberAddress(
+      IRGenFunction &IGF, llvm::Value *base,
+      SILType baseType, SILType fieldType, VarDecl *field);
 
   /// Return a strategy for accessing the given stored class property.
   ///
@@ -73,6 +71,45 @@ namespace irgen {
   enum HasUpdateCallback_t : bool {
     DoesNotHaveUpdateCallback = false,
     HasUpdateCallback = true
+  };
+
+  /// Creates a layout for the class \p classType with allocated tail elements
+  /// \p tailTypes.
+  ///
+  /// The caller is responsible for deleting the returned StructLayout.
+  StructLayout *getClassLayoutWithTailElems(IRGenModule &IGM, SILType classType,
+                                            llvm::ArrayRef<SILType> tailTypes);
+
+  ClassDecl *getRootClassForMetaclass(IRGenModule &IGM, ClassDecl *theClass);
+
+  enum class ClassMetadataStrategy {
+    /// Does the given class have resilient ancestry, or is the class itself
+    /// generic?
+    Resilient,
+
+    /// Does the class require at in-place initialization because of
+    /// non-fixed size properties or generic ancestry? The class does not
+    /// export a static symbol visible to Objective-C code.
+    Singleton,
+
+    /// A more restricted case of the above. Does the class require at in-place
+    /// initialization because of non-fixed size properties, while exporting a
+    /// static symbol visible to Objective-C code? The Objective-C runtime is
+    /// able to initialize the metadata by calling the update callback stored
+    /// in rodata. This strategy can only be used if the class availability
+    /// restricts its use to newer Objective-C runtimes that support this
+    /// feature.
+    Update,
+
+    /// An even more restricted case of the above. The class requires in-place
+    /// initialization on newer Objective-C runtimes, but the metadata is
+    /// statically valid on older runtimes because field offsets were computed
+    /// assuming type layouts loaded from a legacy type info YAML file.
+    FixedOrUpdate,
+
+    /// The class metadata is completely static and only Objective-C runtime
+    /// realization (and possibly field offset sliding) must be performed.
+    Fixed
   };
 
   std::pair<Size,Size>
@@ -131,13 +168,19 @@ namespace irgen {
                                     llvm::Value *selfValue,
                                     llvm::Value *metadataValue);
 
+  /// We emit Objective-C class stubs for non-generic classes with resilient
+  /// ancestry. This lets us attach categories to the class even though it
+  /// does not have statically-emitted metadata.
+  bool hasObjCResilientClassStub(IRGenModule &IGM, ClassDecl *D);
+
+  /// Emit a resilient class stub.
+  void emitObjCResilientClassStub(IRGenModule &IGM, ClassDecl *D);
+
   /// Emit the constant fragile offset of the given property inside an instance
   /// of the class.
-  llvm::Constant *
-  tryEmitConstantClassFragilePhysicalMemberOffset(IRGenModule &IGM,
-                                                  SILType baseType,
-                                                  VarDecl *field);
-                                                  
+  llvm::Constant *tryEmitConstantClassFragilePhysicalMemberOffset(
+      IRGenModule &IGM, SILType baseType, VarDecl *field);
+
   FieldAccess getClassFieldAccess(IRGenModule &IGM,
                                   SILType baseType,
                                   VarDecl *field);
@@ -145,32 +188,6 @@ namespace irgen {
   Size getClassFieldOffset(IRGenModule &IGM,
                            SILType baseType,
                            VarDecl *field);
-
-  /// Creates a layout for the class \p classType with allocated tail elements
-  /// \p tailTypes.
-  ///
-  /// The caller is responsible for deleting the returned StructLayout.
-  StructLayout *getClassLayoutWithTailElems(IRGenModule &IGM, SILType classType,
-                                            llvm::ArrayRef<SILType> tailTypes);
-
-  ClassDecl *getRootClassForMetaclass(IRGenModule &IGM, ClassDecl *theClass);
-
-  /// Does the given class have resilient ancestry, or is the class itself
-  /// generic?
-  bool doesClassMetadataRequireRelocation(IRGenModule &IGM,
-                                          ClassDecl *theClass);
-
-  /// Does the class require at least in-place initialization because of
-  /// non-fixed size properties or generic ancestry? If the class requires
-  /// relocation, this also returns true.
-  bool doesClassMetadataRequireInitialization(IRGenModule &IGM,
-                                              ClassDecl *theClass);
-
-  /// Does the class require at least an in-place update on newer Objective-C
-  /// runtimes? If the class requires full initialization or relocation, this
-  /// also returns true.
-  bool doesClassMetadataRequireUpdate(IRGenModule &IGM,
-                                      ClassDecl *theClass);
 
   /// Load the instance size and alignment mask from a reference to
   /// class type metadata of the given type.
@@ -187,10 +204,8 @@ namespace irgen {
 
   /// Given an instance pointer (or, for a static method, a class
   /// pointer), emit the callee for the given method.
-  FunctionPointer emitVirtualMethodValue(IRGenFunction &IGF,
-                                         llvm::Value *base,
-                                         SILType baseType,
-                                         SILDeclRef method,
+  FunctionPointer emitVirtualMethodValue(IRGenFunction &IGF, llvm::Value *base,
+                                         SILType baseType, SILDeclRef method,
                                          CanSILFunctionType methodType,
                                          bool useSuperVTable);
 

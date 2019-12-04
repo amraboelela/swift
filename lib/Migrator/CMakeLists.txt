@@ -43,9 +43,9 @@ add_custom_target("symlink_migrator_data"
     DEPENDS "${output_dir}" "${outputs}"
     COMMENT "Symlinking migrator data to ${output_dir}")
 
-swift_install_in_component(compiler
-  FILES ${datafiles}
-DESTINATION "lib/swift/migrator")
+swift_install_in_component(FILES ${datafiles}
+                           DESTINATION "lib/swift/migrator"
+                           COMPONENT compiler)
 
 add_swift_host_library(swiftMigrator STATIC
   APIDiffMigratorPass.cpp
@@ -54,8 +54,10 @@ add_swift_host_library(swiftMigrator STATIC
   Migrator.cpp
   MigrationState.cpp
   OptionalTryMigratorPass.cpp
-  RewriteBufferEditsReceiver.cpp
-  LINK_LIBRARIES swiftSyntax swiftIDE)
+  RewriteBufferEditsReceiver.cpp)
+target_link_libraries(swiftMigrator PRIVATE
+  swiftIDE
+  swiftSyntax)
 
 add_dependencies(swiftMigrator
   "symlink_migrator_data")

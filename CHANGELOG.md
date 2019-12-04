@@ -4,25 +4,455 @@ CHANGELOG
 <details>
 <summary>Note: This is in reverse chronological order, so newer entries are added to the top.</summary>
 
-| Contents               |
-| :--------------------- |
-| [Swift 5.0](#swift-50) |
-| [Swift 4.2](#swift-42) |
-| [Swift 4.1](#swift-41) |
-| [Swift 4.0](#swift-40) |
-| [Swift 3.1](#swift-31) |
-| [Swift 3.0](#swift-30) |
-| [Swift 2.2](#swift-22) |
-| [Swift 2.1](#swift-21) |
-| [Swift 2.0](#swift-20) |
-| [Swift 1.2](#swift-12) |
-| [Swift 1.1](#swift-11) |
-| [Swift 1.0](#swift-10) |
+| Version                | Released   | Toolchain   |
+| :--------------------- | :--------- | :---------- |
+| [Swift 5.2](#swift-52) |            |             |
+| [Swift 5.1](#swift-51) | 2019-09-20 | Xcode 11.0  |
+| [Swift 5.0](#swift-50) | 2019-03-25 | Xcode 10.2  |
+| [Swift 4.2](#swift-42) | 2018-09-17 | Xcode 10.0  |
+| [Swift 4.1](#swift-41) | 2018-03-29 | Xcode 9.3   |
+| [Swift 4.0](#swift-40) | 2017-09-19 | Xcode 9.0   |
+| [Swift 3.1](#swift-31) | 2017-03-27 | Xcode 8.3   |
+| [Swift 3.0](#swift-30) | 2016-09-13 | Xcode 8.0   |
+| [Swift 2.2](#swift-22) | 2016-03-21 | Xcode 7.3   |
+| [Swift 2.1](#swift-21) | 2015-10-21 | Xcode 7.1   |
+| [Swift 2.0](#swift-20) | 2015-09-17 | Xcode 7.0   |
+| [Swift 1.2](#swift-12) | 2015-04-08 | Xcode 6.3   |
+| [Swift 1.1](#swift-11) | 2014-12-02 | Xcode 6.1.1 |
+| [Swift 1.0](#swift-10) | 2014-09-15 | Xcode 6.0   |
 
 </details>
 
+Swift 5.2
+---------
+
+* [SR-2790][]:
+
+  The compiler will now emit a warning when attempting to pass a temporary
+  pointer argument produced from an array, string, or inout argument to a
+  parameter which is known to escape it. This includes the various initializers 
+  for the `UnsafePointer`/`UnsafeBufferPointer` family of types, as well as
+  memberwise initializers.
+
+  ```swift
+  struct S {
+    var ptr: UnsafePointer<Int8>
+  }
+
+  func foo() {
+    var i: Int8 = 0
+    let ptr = UnsafePointer(&i)
+    // warning: initialization of 'UnsafePointer<Int8>' results in a 
+    // dangling pointer
+    
+    let s1 = S(ptr: [1, 2, 3]) 
+    // warning: passing '[Int8]' to parameter, but argument 'ptr' should be a
+    // pointer that outlives the call to 'init(ptr:)'
+    
+    let s2 = S(ptr: "hello")
+    // warning: passing 'String' to parameter, but argument 'ptr' should be a
+    // pointer that outlives the call to 'init(ptr:)'
+  }
+  ```
+
+  All 3 of the above examples are unsound because each argument produces a
+  temporary pointer only valid for the duration of the call they are passed to.
+  Therefore the returned value in each case references a dangling pointer.
+
+* [SR-2189][]:
+
+  The compiler now supports local functions whose default arguments capture
+  values from outer scopes.
+
+  ```swift
+  func outer(x: Int) -> (Int, Int) {
+    func inner(y: Int = x) -> Int {
+      return y
+    }
+
+    return (inner(), inner(y: 0))
+  }
+  ```
+
+* [SR-11429][]:
+
+  The compiler will now correctly strip argument labels from function references
+  used with the `as` operator in a function call. As a result, the `as` operator
+  can now be used to disambiguate a call to a function with argument labels. 
+  
+  ```swift
+  func foo(x: Int) {}
+  func foo(x: UInt) {}
+  
+  (foo as (Int) -> Void)(5)  // Calls foo(x: Int)
+  (foo as (UInt) -> Void)(5) // Calls foo(x: UInt)
+  ```
+  
+  Previously this was only possible for functions without argument labels.
+  
+  This change also means that a generic type alias can no longer be used to
+  preserve the argument labels of a function reference through the `as`
+  operator. The following is now rejected:
+  
+  ```swift
+  typealias Magic<T> = T
+  func foo(x: Int) {}
+  (foo as Magic)(x: 5) // error: Extraneous argument label 'x:' in call
+  ```
+  
+  The function value must instead be called without argument labels:
+  
+  ```swift
+  (foo as Magic)(5)
+  ```
+
+* [SR-11298][]:
+
+  A class-constrained protocol extension, where the extended protocol does
+  not impose a class constraint, will now infer the constraint implicitly.
+
+  ```swift
+  protocol Foo {}
+  class Bar: Foo {
+    var someProperty: Int = 0
+  }
+
+  // Even though 'Foo' does not impose a class constraint, it is automatically
+  // inferred due to the Self: Bar constraint.
+  extension Foo where Self: Bar {
+    var anotherProperty: Int {
+      get { return someProperty }
+      // As a result, the setter is now implicitly nonmutating, just like it would
+      // be if 'Foo' had a class constraint.
+      set { someProperty = newValue }
+    }
+  }
+  ```
+
+* [SE-0253][]:
+
+  Values of types that declare `func callAsFunction` methods can be called
+  like functions. The call syntax is shorthand for applying
+  `func callAsFunction` methods.
+
+  ```swift
+  struct Adder {
+    var base: Int
+    func callAsFunction(_ x: Int) -> Int {
+      return x + base
+    }
+  }
+  var adder = Adder(base: 3)
+  adder(10) // returns 13, same as `adder.callAsFunction(10)`
+  ```
+
+  * `func callAsFunction` argument labels are required at call sites.
+  * Multiple `func callAsFunction` methods on a single type are supported.
+  * `mutating func callAsFunction` is supported.
+  * `func callAsFunction` works with `throws` and `rethrows`.
+  * `func callAsFunction` works with trailing closures.
+
+* [SR-4206][]:
+
+  A method override is no longer allowed to have a generic signature with
+  requirements not imposed by the base method. For example:
+
+  ```
+  protocol P {}
+  
+  class Base {
+    func foo<T>(arg: T) {}
+  }
+  
+  class Derived: Base {
+    override func foo<T: P>(arg: T) {}
+  }
+  ```
+
+  will now be diagnosed as an error.
+
+* [SR-6118][]:
+
+  Subscripts can now declare default arguments:
+
+  ```swift
+  struct Subscriptable {
+    subscript(x: Int, y: Int = 0) {
+      ...
+    }
+  }
+
+  let s = Subscriptable()
+  print(s[0])
+  ```
+
+**Add new entries to the top of this section, not here!**
+
+Swift 5.1
+---------
+
+### 2019-09-20 (Xcode 11.0)
+
+* [SR-8974][]:
+
+  Duplicate tuple element labels are no longer allowed, because it leads
+  to incorrect behavior. For example:
+
+  ```
+  let dupLabels: (foo: Int, foo: Int) = (foo: 1, foo: 2)
+
+  enum Foo { case bar(x: Int, x: Int) }
+  let f: Foo = .bar(x: 0, x: 1)
+  ```
+
+  will now be diagnosed as an error. 
+
+  Note: You can still use duplicate argument labels when declaring functions and
+  subscripts, as long as the internal parameter names are different. For example:
+
+  ```
+  func foo(bar x: Int, bar y: Int) {}
+  subscript(a x: Int, a y: Int) -> Int {}
+  ```
+
+* [SE-0244][]:
+
+  Functions can now hide their concrete return type by declaring what protocols
+  it conforms to instead of specifying the exact return type:
+
+  ```
+  func makeMeACollection() -> some Collection {
+    return [1, 2, 3]
+  }
+  ```
+
+  Code that calls the function can use the interface of the protocol, but
+  does not have visibility into the underlying type.
+
+* [SE-0254][]:
+
+  Subscripts can now be declared `static` or (inside classes) `class`.
+
+* [SE-0252][]:
+
+  The existing `@dynamicMemberLookup` attribute has been extended with a
+  support for strongly-typed keypath implementations:
+
+  ```swift
+  @dynamicMemberLookup
+  struct Lens<T> {
+    let getter: () -> T
+    let setter: (T) -> Void
+
+    var value: T {
+      get {
+        return getter()
+      }
+      set {
+        setter(newValue)
+      }
+    }
+
+    subscript<U>(dynamicMember keyPath: WritableKeyPath<T, U>) -> Lens<U> {
+      return Lens<U>(
+          getter: { self.value[keyPath: keyPath] },
+          setter: { self.value[keyPath: keyPath] = $0 })
+    }
+  }
+  ```
+
+* [SR-8546][], [SR-9043][]:
+
+  More thorough checking has been implemented for restrictions around
+  escaping closures capturing `inout` parameters or values of noescape type.
+  While most code should not be affected, there are edge cases where
+  the Swift 5.0 compiler would accept code violating these restrictions.
+  This could result in runtime crashes or silent data corruption.
+  
+  An example of invalid code which was incorrectly accepted by the Swift 5.0
+  compiler is an `@escaping` closure calling a local function which
+  references an `inout` parameter from an outer scope:
+
+  ```swift
+  struct BadCaptureExample {
+    var escapingClosure: () -> ()
+
+    mutating func takesInOut(_ x: inout Int) {
+      func localFunction() {
+        x += 1
+      }
+
+      escapingClosure = { localFunction() }
+    }
+  }
+  ```
+
+  The compiler now correctly diagnoses the above code by pointing out that
+  the capture of `x` by `localFunction()` is invalid, since `localFunction()`
+  is referenced from an `@escaping` closure.
+
+  This also addresses certain cases where the compiler incorrectly diagnosed
+  certain code as invalid, when in fact no violation of restrictions had
+  taken place. For example,
+
+  ```swift
+  func takesNoEscape(_ fn: () -> ()) {
+    func localFunction() {
+      fn()
+    }
+
+    { localFunction() }()
+  }
+  ```
+
+* [SR-2672][]:
+
+  Conversions between tuple types are now fully implemented.
+  Previously, the following would diagnose an error:
+
+  ```swift
+  let values: (Int, Int) = (10, 15)
+  let converted: (Int?, Any) = values
+
+* [SE-0242][]:
+
+  The memberwise initializer for structures now provide default values for variables that hold default expressions.
+
+  ```swift
+  struct Dog {
+    var name = "Generic dog name"
+    var age = 0
+
+    // The synthesized memberwise initializer
+    init(name: String = "Generic dog name", age: Int = 0)
+  }
+
+  let sparky = Dog(name: "Sparky") // Dog(name: "Sparky", age: 0)
+  ```
+
+* [SE-0068][]:
+
+  It is now possible to use `Self` to refer to the innermost nominal
+  type inside struct, enum and class declarations. For example, the
+  two method declarations inside this struct are equivalent:
+  
+  ```swift
+  struct Box<Value> {
+    func transform1() -> Self { return self }
+    func transform2() -> Box<Value> { return self }
+  }
+  ```
+
+  In classes, `Self` is the dynamic type of the `self` value, as before.
+  Existing restrictions on `Self` in declaration types still apply;
+  that is, `Self` can only appear as the return type of a method.
+  However, `Self` can now be used inside the body of a method
+  without limitation.
+
+* [SR-7799][]:
+
+  Enum cases can now be matched against an optional enum without
+  requiring a '?' at the end of the pattern.
+
+  ```swift
+  enum Foo { case zero, one }
+
+  let foo: Foo? = .zero
+
+  switch foo {
+    case .zero: break
+    case .one: break
+    case .none: break
+  }
+  ```
+
+* [SR-9827][]:
+
+  `weak` and `unowned` stored properties no longer inhibit the
+   automatic synthesis of `Equatable` or `Hashable` conformance.
+
+* [SR-2688][]:
+
+  An `@autoclosure` parameter can now be declared with a typealias type.
+
+  ```swift
+  class Foo {
+    typealias FooClosure = () -> String
+    func fooFunction(closure: @autoclosure FooClosure) {}
+  }
+  ```
+
+* [SR-7601][]:
+
+  Methods declared `@objc` inside a class can now return `Self`:
+
+  ```swift
+  class MyClass : NSObject {
+    @objc func clone() -> Self { return self }
+  }
+  ```
+
+* [SR-2176][]:
+
+  Assigning '.none' to an optional enum which also has a 'none' case
+  or comparing such an enum with '.none' will now warn. Such expressions
+  create an ambiguity because the compiler chooses Optional.none
+  over Foo.none.
+
+  ```swift
+  enum Foo { case none }
+
+  // Assigned Optional.none instead of Foo.none
+  let foo: Foo? = .none
+  // Comparing with Optional.none instead of Foo.none
+  let isEqual = foo == .none
+  ```
+
+  The compiler will provide a warning along with a fix-it to
+  replace '.none' with 'Optional.none' or 'Foo.none' to resolve
+  the ambiguity.
+
+* Key path expressions can now include references to tuple elements.
+
+* Single-parameter functions accepting values of type `Any` are no
+  longer preferred over other functions.
+
+  ```swift
+  func foo(_: Any) { print("Any") }
+  func foo<T>(_: T) { print("T") }
+  foo(0) // prints "Any" in Swift < 5.1, "T" in Swift 5.1
+  ```
+
+* [SE-0245][]:
+
+  `Array` and `ContiguousArray` now have `init(unsafeUninitializedCapacity:initializingWith:)`,
+  which provides access to the array's uninitialized storage.
+
+**Add new entries to the top of this section, not here!**
+
 Swift 5.0
 ---------
+
+### 2019-03-25 (Xcode 10.2)
+
+* [SE-0235][]:
+
+  The standard library now contains a `Result` type for manually propagating errors.
+  
+  ```swift
+  enum Result<Success, Failure: Error> {
+      case success(Success)
+      case failure(Failure)
+  }
+  ```
+  
+  This type serves a complementary role to that of throwing functions and initializers. 
+  Use `Result` in situations where automatic error propagation or `try`-`catch` 
+  blocks are undesirable, such as in asynchronous code or when accumulating the 
+  results of successive error-producing operations.
+  
+* `Error` now conforms to itself. This allows for the use of `Error` itself as 
+  the argument for a generic parameter constrained to `Error`.
 
 * Swift 3 mode has been removed. Supported values for the `-swift-version`
   flag are `4`, `4.2`, and `5`.
@@ -264,8 +694,6 @@ Swift 5.0
     }
   }
   ```
-
-**Add new entries to the top of this section, not here!**
 
 Swift 4.2
 ---------
@@ -7406,6 +7834,13 @@ Swift 1.0
 [SE-0227]: <https://github.com/apple/swift-evolution/blob/master/proposals/0227-identity-keypath.md>
 [SE-0228]: <https://github.com/apple/swift-evolution/blob/master/proposals/0228-fix-expressiblebystringinterpolation.md>
 [SE-0230]: <https://github.com/apple/swift-evolution/blob/master/proposals/0230-flatten-optional-try.md>
+[SE-0235]: <https://github.com/apple/swift-evolution/blob/master/proposals/0235-add-result.md>
+[SE-0242]: <https://github.com/apple/swift-evolution/blob/master/proposals/0242-default-values-memberwise.md>
+[SE-0244]: <https://github.com/apple/swift-evolution/blob/master/proposals/0244-opaque-result-types.md>
+[SE-0245]: <https://github.com/apple/swift-evolution/blob/master/proposals/0245-array-uninitialized-initializer.md>
+[SE-0252]: <https://github.com/apple/swift-evolution/blob/master/proposals/0252-keypath-dynamic-member-lookup.md>
+[SE-0253]: <https://github.com/apple/swift-evolution/blob/master/proposals/0253-callable.md>
+[SE-0254]: <https://github.com/apple/swift-evolution/blob/master/proposals/0254-static-subscripts.md>
 
 [SR-106]: <https://bugs.swift.org/browse/SR-106>
 [SR-419]: <https://bugs.swift.org/browse/SR-419>
@@ -7415,12 +7850,27 @@ Swift 1.0
 [SR-1446]: <https://bugs.swift.org/browse/SR-1446>
 [SR-1529]: <https://bugs.swift.org/browse/SR-1529>
 [SR-2131]: <https://bugs.swift.org/browse/SR-2131>
+[SR-2176]: <https://bugs.swift.org/browse/SR-2176>
+[SR-2189]: <https://bugs.swift.org/browse/SR-2189>
 [SR-2388]: <https://bugs.swift.org/browse/SR-2388>
 [SR-2394]: <https://bugs.swift.org/browse/SR-2394>
 [SR-2608]: <https://bugs.swift.org/browse/SR-2608>
+[SR-2672]: <https://bugs.swift.org/browse/SR-2672>
+[SR-2688]: <https://bugs.swift.org/browse/SR-2688>
+[SR-2790]: <https://bugs.swift.org/browse/SR-2790>
+[SR-4206]: <https://bugs.swift.org/browse/SR-4206>
 [SR-4248]: <https://bugs.swift.org/browse/SR-4248>
 [SR-5581]: <https://bugs.swift.org/browse/SR-5581>
 [SR-5719]: <https://bugs.swift.org/browse/SR-5719>
+[SR-6118]: <https://bugs.swift.org/browse/SR-6118>
 [SR-7139]: <https://bugs.swift.org/browse/SR-7139>
 [SR-7251]: <https://bugs.swift.org/browse/SR-7251>
+[SR-7601]: <https://bugs.swift.org/browse/SR-7601>
+[SR-7799]: <https://bugs.swift.org/browse/SR-7799>
 [SR-8109]: <https://bugs.swift.org/browse/SR-8109>
+[SR-8546]: <https://bugs.swift.org/browse/SR-8546>
+[SR-8974]: <https://bugs.swift.org/browse/SR-8974>
+[SR-9043]: <https://bugs.swift.org/browse/SR-9043>
+[SR-9827]: <https://bugs.swift.org/browse/SR-9827>
+[SR-11298]: <https://bugs.swift.org/browse/SR-11298>
+[SR-11429]: <https://bugs.swift.org/browse/SR-11429>

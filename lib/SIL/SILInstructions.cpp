@@ -150,8 +150,10 @@ StringRef TailAllocatedDebugVariable::getName(const char *buf) const {
 AllocStackInst::AllocStackInst(SILDebugLocation Loc, SILType elementType,
                                ArrayRef<SILValue> TypeDependentOperands,
                                SILFunction &F,
-                               Optional<SILDebugVariable> Var)
-    : InstructionBase(Loc, elementType.getAddressType()) {
+                               Optional<SILDebugVariable> Var,
+                               bool hasDynamicLifetime)
+    : InstructionBase(Loc, elementType.getAddressType()),
+    dynamicLifetime(hasDynamicLifetime) {
   SILInstruction::Bits.AllocStackInst.NumOperands =
     TypeDependentOperands.size();
   assert(SILInstruction::Bits.AllocStackInst.NumOperands ==
@@ -166,17 +168,19 @@ AllocStackInst *
 AllocStackInst::create(SILDebugLocation Loc,
                        SILType elementType, SILFunction &F,
                        SILOpenedArchetypesState &OpenedArchetypes,
-                       Optional<SILDebugVariable> Var) {
+                       Optional<SILDebugVariable> Var,
+                       bool hasDynamicLifetime) {
   SmallVector<SILValue, 8> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
                                elementType.getASTType());
   void *Buffer = allocateDebugVarCarryingInst<AllocStackInst>(
       F.getModule(), Var, TypeDependentOperands);
   return ::new (Buffer)
-      AllocStackInst(Loc, elementType, TypeDependentOperands, F, Var);
+      AllocStackInst(Loc, elementType, TypeDependentOperands, F, Var,
+                     hasDynamicLifetime);
 }
 
-VarDecl *AllocStackInst::getDecl() const {
+VarDecl *AllocationInst::getDecl() const {
   return getLoc().getAsASTNode<VarDecl>();
 }
 
@@ -256,28 +260,34 @@ AllocRefDynamicInst::create(SILDebugLocation DebugLoc, SILFunction &F,
 
 AllocBoxInst::AllocBoxInst(SILDebugLocation Loc, CanSILBoxType BoxType,
                            ArrayRef<SILValue> TypeDependentOperands,
-                           SILFunction &F, Optional<SILDebugVariable> Var)
+                           SILFunction &F, Optional<SILDebugVariable> Var,
+                           bool hasDynamicLifetime)
     : InstructionBaseWithTrailingOperands(TypeDependentOperands, Loc,
                                       SILType::getPrimitiveObjectType(BoxType)),
-      VarInfo(Var, getTrailingObjects<char>()) {
+      VarInfo(Var, getTrailingObjects<char>()),
+      dynamicLifetime(hasDynamicLifetime) {
 }
 
 AllocBoxInst *AllocBoxInst::create(SILDebugLocation Loc,
                                    CanSILBoxType BoxType,
                                    SILFunction &F,
                                    SILOpenedArchetypesState &OpenedArchetypes,
-                                   Optional<SILDebugVariable> Var) {
+                                   Optional<SILDebugVariable> Var,
+                                   bool hasDynamicLifetime) {
   SmallVector<SILValue, 8> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
                                BoxType);
   auto Sz = totalSizeToAlloc<swift::Operand, char>(TypeDependentOperands.size(),
                                                    Var ? Var->Name.size() : 0);
   auto Buf = F.getModule().allocateInst(Sz, alignof(AllocBoxInst));
-  return ::new (Buf) AllocBoxInst(Loc, BoxType, TypeDependentOperands, F, Var);
+  return ::new (Buf) AllocBoxInst(Loc, BoxType, TypeDependentOperands, F, Var,
+                                  hasDynamicLifetime);
 }
 
-VarDecl *AllocBoxInst::getDecl() const {
-  return getLoc().getAsASTNode<VarDecl>();
+SILType AllocBoxInst::getAddressType() const {
+  return getSILBoxFieldType(TypeExpansionContext(*this->getFunction()),
+                            getBoxType(), getModule().Types, 0)
+      .getAddressType();
 }
 
 DebugValueInst::DebugValueInst(SILDebugLocation DebugLoc, SILValue Operand,
@@ -404,8 +414,8 @@ ApplyInst::create(SILDebugLocation Loc, SILValue Callee, SubstitutionMap Subs,
                   Optional<SILModuleConventions> ModuleConventions,
                   SILFunction &F, SILOpenedArchetypesState &OpenedArchetypes,
                   const GenericSpecializationInformation *SpecializationInfo) {
-  SILType SubstCalleeSILTy =
-      Callee->getType().substGenericArgs(F.getModule(), Subs);
+  SILType SubstCalleeSILTy = Callee->getType().substGenericArgs(
+      F.getModule(), Subs, F.getTypeExpansionContext());
   auto SubstCalleeTy = SubstCalleeSILTy.getAs<SILFunctionType>();
   SILFunctionConventions Conv(SubstCalleeTy,
                               ModuleConventions.hasValue()
@@ -450,8 +460,8 @@ BeginApplyInst::create(SILDebugLocation loc, SILValue callee,
                        SILFunction &F,
                        SILOpenedArchetypesState &openedArchetypes,
                   const GenericSpecializationInformation *specializationInfo) {
-  SILType substCalleeSILType =
-      callee->getType().substGenericArgs(F.getModule(), subs);
+  SILType substCalleeSILType = callee->getType().substGenericArgs(
+      F.getModule(), subs, F.getTypeExpansionContext());
   auto substCalleeType = substCalleeSILType.castTo<SILFunctionType>();
 
   SILFunctionConventions conv(substCalleeType,
@@ -467,11 +477,11 @@ BeginApplyInst::create(SILDebugLocation loc, SILValue callee,
     auto convention = SILArgumentConvention(yield.getConvention());
     resultTypes.push_back(yieldType);
     resultOwnerships.push_back(
-      ValueOwnershipKind(F.getModule(), yieldType, convention));
+      ValueOwnershipKind(F, yieldType, convention));
   }
 
   resultTypes.push_back(SILType::getSILTokenType(F.getASTContext()));
-  resultOwnerships.push_back(ValueOwnershipKind::Any);
+  resultOwnerships.push_back(ValueOwnershipKind::None);
 
   SmallVector<SILValue, 32> typeDependentOperands;
   collectTypeDependentOperands(typeDependentOperands, openedArchetypes, F,
@@ -487,9 +497,38 @@ BeginApplyInst::create(SILDebugLocation loc, SILValue callee,
                                       isNonThrowing, specializationInfo);
 }
 
+void BeginApplyInst::getCoroutineEndPoints(
+    SmallVectorImpl<EndApplyInst *> &endApplyInsts,
+    SmallVectorImpl<AbortApplyInst *> &abortApplyInsts) const {
+  for (auto *tokenUse : getTokenResult()->getUses()) {
+    auto *user = tokenUse->getUser();
+    if (auto *end = dyn_cast<EndApplyInst>(user)) {
+      endApplyInsts.push_back(end);
+      continue;
+    }
+
+    abortApplyInsts.push_back(cast<AbortApplyInst>(user));
+  }
+}
+
+void BeginApplyInst::getCoroutineEndPoints(
+    SmallVectorImpl<Operand *> &endApplyInsts,
+    SmallVectorImpl<Operand *> &abortApplyInsts) const {
+  for (auto *tokenUse : getTokenResult()->getUses()) {
+    auto *user = tokenUse->getUser();
+    if (isa<EndApplyInst>(user)) {
+      endApplyInsts.push_back(tokenUse);
+      continue;
+    }
+
+    assert(isa<AbortApplyInst>(user));
+    abortApplyInsts.push_back(tokenUse);
+  }
+}
+
 bool swift::doesApplyCalleeHaveSemantics(SILValue callee, StringRef semantics) {
   if (auto *FRI = dyn_cast<FunctionRefBaseInst>(callee))
-    if (auto *F = FRI->getReferencedFunction())
+    if (auto *F = FRI->getReferencedFunctionOrNull())
       return F->hasSemanticsAttr(semantics);
   return false;
 }
@@ -512,10 +551,11 @@ PartialApplyInst *PartialApplyInst::create(
     SILOpenedArchetypesState &OpenedArchetypes,
     const GenericSpecializationInformation *SpecializationInfo,
     OnStackKind onStack) {
-  SILType SubstCalleeTy =
-      Callee->getType().substGenericArgs(F.getModule(), Subs);
+  SILType SubstCalleeTy = Callee->getType().substGenericArgs(
+      F.getModule(), Subs, F.getTypeExpansionContext());
   SILType ClosureType = SILBuilder::getPartialApplyResultType(
-      SubstCalleeTy, Args.size(), F.getModule(), {}, CalleeConvention, onStack);
+      F.getTypeExpansionContext(), SubstCalleeTy, Args.size(), F.getModule(), {},
+      CalleeConvention, onStack);
 
   SmallVector<SILValue, 32> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
@@ -550,8 +590,8 @@ TryApplyInst *TryApplyInst::create(
     ArrayRef<SILValue> args, SILBasicBlock *normalBB, SILBasicBlock *errorBB,
     SILFunction &F, SILOpenedArchetypesState &openedArchetypes,
     const GenericSpecializationInformation *specializationInfo) {
-  SILType substCalleeTy =
-      callee->getType().substGenericArgs(F.getModule(), subs);
+  SILType substCalleeTy = callee->getType().substGenericArgs(
+      F.getModule(), subs, F.getTypeExpansionContext());
 
   SmallVector<SILValue, 32> typeDependentOperands;
   collectTypeDependentOperands(typeDependentOperands, openedArchetypes, F,
@@ -567,37 +607,42 @@ TryApplyInst *TryApplyInst::create(
 
 FunctionRefBaseInst::FunctionRefBaseInst(SILInstructionKind Kind,
                                          SILDebugLocation DebugLoc,
-                                         SILFunction *F)
-    : LiteralInst(Kind, DebugLoc, F->getLoweredType()), f(F) {
+                                         SILFunction *F,
+                                         TypeExpansionContext context)
+    : LiteralInst(Kind, DebugLoc, F->getLoweredTypeInContext(context)), f(F) {
   F->incrementRefCount();
 }
 
 void FunctionRefBaseInst::dropReferencedFunction() {
-  if (auto *Function = getReferencedFunction())
+  if (auto *Function = getInitiallyReferencedFunction())
     Function->decrementRefCount();
   f = nullptr;
 }
 
 FunctionRefBaseInst::~FunctionRefBaseInst() {
-  if (getReferencedFunction())
-    getReferencedFunction()->decrementRefCount();
+  if (getInitiallyReferencedFunction())
+    getInitiallyReferencedFunction()->decrementRefCount();
 }
 
-FunctionRefInst::FunctionRefInst(SILDebugLocation Loc, SILFunction *F)
-    : FunctionRefBaseInst(SILInstructionKind::FunctionRefInst, Loc, F) {
+FunctionRefInst::FunctionRefInst(SILDebugLocation Loc, SILFunction *F,
+                                 TypeExpansionContext context)
+    : FunctionRefBaseInst(SILInstructionKind::FunctionRefInst, Loc, F,
+                          context) {
   assert(!F->isDynamicallyReplaceable());
 }
 
 DynamicFunctionRefInst::DynamicFunctionRefInst(SILDebugLocation Loc,
-                                               SILFunction *F)
-    : FunctionRefBaseInst(SILInstructionKind::DynamicFunctionRefInst, Loc, F) {
+                                               SILFunction *F,
+                                               TypeExpansionContext context)
+    : FunctionRefBaseInst(SILInstructionKind::DynamicFunctionRefInst, Loc, F,
+                          context) {
   assert(F->isDynamicallyReplaceable());
 }
 
 PreviousDynamicFunctionRefInst::PreviousDynamicFunctionRefInst(
-    SILDebugLocation Loc, SILFunction *F)
+    SILDebugLocation Loc, SILFunction *F, TypeExpansionContext context)
     : FunctionRefBaseInst(SILInstructionKind::PreviousDynamicFunctionRefInst,
-                          Loc, F) {
+                          Loc, F, context) {
   assert(!F->isDynamicallyReplaceable());
 }
 
@@ -607,15 +652,18 @@ AllocGlobalInst::AllocGlobalInst(SILDebugLocation Loc,
       Global(Global) {}
 
 GlobalAddrInst::GlobalAddrInst(SILDebugLocation DebugLoc,
-                               SILGlobalVariable *Global)
-    : InstructionBase(DebugLoc, Global->getLoweredType().getAddressType(),
+                               SILGlobalVariable *Global,
+                               TypeExpansionContext context)
+    : InstructionBase(DebugLoc,
+                      Global->getLoweredTypeInContext(context).getAddressType(),
                       Global) {}
 
 GlobalValueInst::GlobalValueInst(SILDebugLocation DebugLoc,
-                                 SILGlobalVariable *Global)
-    : InstructionBase(DebugLoc, Global->getLoweredType().getObjectType(),
+                                 SILGlobalVariable *Global,
+                                 TypeExpansionContext context)
+    : InstructionBase(DebugLoc,
+                      Global->getLoweredTypeInContext(context).getObjectType(),
                       Global) {}
-
 
 const IntrinsicInfo &BuiltinInst::getIntrinsicInfo() const {
   return getModule().getIntrinsicInfo(getName());
@@ -773,6 +821,21 @@ StringLiteralInst *StringLiteralInst::create(SILDebugLocation Loc,
   return ::new (buf) StringLiteralInst(Loc, text, encoding, Ty);
 }
 
+CondFailInst::CondFailInst(SILDebugLocation DebugLoc, SILValue Operand,
+                           StringRef Message)
+      : UnaryInstructionBase(DebugLoc, Operand),
+        MessageSize(Message.size()) {
+  memcpy(getTrailingObjects<char>(), Message.data(), Message.size());
+}
+
+CondFailInst *CondFailInst::create(SILDebugLocation DebugLoc, SILValue Operand,
+                                   StringRef Message, SILModule &M) {
+
+  auto Size = totalSizeToAlloc<char>(Message.size());
+  auto Buffer = M.allocateInst(Size, alignof(CondFailInst));
+  return ::new (Buffer) CondFailInst(DebugLoc, Operand, Message);
+}
+
 uint64_t StringLiteralInst::getCodeUnitCount() {
   auto E = unsigned(Encoding::UTF16);
   if (SILInstruction::Bits.StringLiteralInst.TheEncoding == E)
@@ -813,9 +876,20 @@ StringRef swift::getSILAccessEnforcementName(SILAccessEnforcement enforcement) {
 }
 
 AssignInst::AssignInst(SILDebugLocation Loc, SILValue Src, SILValue Dest,
-                       AssignOwnershipQualifier Qualifier)
-    : InstructionBase(Loc), Operands(this, Src, Dest) {
+                       AssignOwnershipQualifier Qualifier) :
+    AssignInstBase(Loc, Src, Dest) {
   SILInstruction::Bits.AssignInst.OwnershipQualifier = unsigned(Qualifier);
+}
+
+AssignByWrapperInst::AssignByWrapperInst(SILDebugLocation Loc,
+                                           SILValue Src, SILValue Dest,
+                                           SILValue Initializer,
+                                           SILValue Setter,
+                                          AssignOwnershipQualifier Qualifier) :
+    AssignInstBase(Loc, Src, Dest, Initializer, Setter) {
+  assert(Initializer->getType().is<SILFunctionType>());
+  SILInstruction::Bits.AssignByWrapperInst.OwnershipQualifier =
+      unsigned(Qualifier);
 }
 
 MarkFunctionEscapeInst *
@@ -876,7 +950,7 @@ StructInst::StructInst(SILDebugLocation Loc, SILType Ty,
     : InstructionBaseWithTrailingOperands(
           Elems, Loc, Ty,
           HasOwnership ? *mergeSILValueOwnership(Elems)
-                       : ValueOwnershipKind(ValueOwnershipKind::Any)) {
+                       : ValueOwnershipKind(ValueOwnershipKind::None)) {
   assert(!Ty.getStructOrBoundGenericStruct()->hasUnreferenceableStorage());
 }
 
@@ -899,15 +973,15 @@ TupleInst *TupleInst::create(SILDebugLocation Loc, SILType Ty,
 }
 
 bool TupleExtractInst::isTrivialEltOfOneRCIDTuple() const {
-  SILModule &Mod = getModule();
+  auto *F = getFunction();
 
   // If we are not trivial, bail.
-  if (!getType().isTrivial(Mod))
+  if (!getType().isTrivial(*F))
     return false;
 
   // If the elt we are extracting is trivial, we cannot have any non trivial
   // fields.
-  if (getOperand()->getType().isTrivial(Mod))
+  if (getOperand()->getType().isTrivial(*F))
     return false;
 
   // Ok, now we know that our tuple has non-trivial fields. Make sure that our
@@ -924,7 +998,7 @@ bool TupleExtractInst::isTrivialEltOfOneRCIDTuple() const {
 
     // Otherwise check if we have a non-trivial type. If we don't have one,
     // continue.
-    if (OpTy.getTupleElementType(i).isTrivial(Mod))
+    if (OpTy.getTupleElementType(i).isTrivial(*F))
       continue;
 
     // Ok, this type is non-trivial. If we have not seen a non-trivial field
@@ -946,11 +1020,11 @@ bool TupleExtractInst::isTrivialEltOfOneRCIDTuple() const {
 }
 
 bool TupleExtractInst::isEltOnlyNonTrivialElt() const {
-  SILModule &Mod = getModule();
+  auto *F = getFunction();
 
   // If the elt we are extracting is trivial, we cannot be a non-trivial
   // field... return false.
-  if (getType().isTrivial(Mod))
+  if (getType().isTrivial(*F))
     return false;
 
   // Ok, we know that the elt we are extracting is non-trivial. Make sure that
@@ -966,7 +1040,7 @@ bool TupleExtractInst::isEltOnlyNonTrivialElt() const {
 
     // Otherwise check if we have a non-trivial type. If we don't have one,
     // continue.
-    if (OpTy.getTupleElementType(i).isTrivial(Mod))
+    if (OpTy.getTupleElementType(i).isTrivial(*F))
       continue;
 
     // If we do have a non-trivial type, return false. We have multiple
@@ -979,18 +1053,33 @@ bool TupleExtractInst::isEltOnlyNonTrivialElt() const {
   return true;
 }
 
+unsigned FieldIndexCacheBase::cacheFieldIndex() {
+  unsigned i = 0;
+  for (VarDecl *property : getParentDecl()->getStoredProperties()) {
+    if (field == property) {
+      SILInstruction::Bits.FieldIndexCacheBase.FieldIndex = i;
+      return i;
+    }
+    ++i;
+  }
+  llvm_unreachable("The field decl for a struct_extract, struct_element_addr, "
+                   "or ref_element_addr must be an accessible stored property "
+                   "of the operand's type");
+}
+
+// FIXME: this should be cached during cacheFieldIndex().
 bool StructExtractInst::isTrivialFieldOfOneRCIDStruct() const {
-  SILModule &Mod = getModule();
+  auto *F = getFunction();
 
   // If we are not trivial, bail.
-  if (!getType().isTrivial(Mod))
+  if (!getType().isTrivial(*F))
     return false;
 
   SILType StructTy = getOperand()->getType();
 
   // If the elt we are extracting is trivial, we cannot have any non trivial
   // fields.
-  if (StructTy.isTrivial(Mod))
+  if (StructTy.isTrivial(*F))
     return false;
 
   // Ok, now we know that our tuple has non-trivial fields. Make sure that our
@@ -1000,12 +1089,13 @@ bool StructExtractInst::isTrivialFieldOfOneRCIDStruct() const {
   // For each element index of the tuple...
   for (VarDecl *D : getStructDecl()->getStoredProperties()) {
     // If the field is the one we are extracting, skip it...
-    if (Field == D)
+    if (getField() == D)
       continue;
 
     // Otherwise check if we have a non-trivial type. If we don't have one,
     // continue.
-    if (StructTy.getFieldType(D, Mod).isTrivial(Mod))
+    if (StructTy.getFieldType(D, F->getModule(), TypeExpansionContext(*F))
+            .isTrivial(*F))
       continue;
 
     // Ok, this type is non-trivial. If we have not seen a non-trivial field
@@ -1029,12 +1119,14 @@ bool StructExtractInst::isTrivialFieldOfOneRCIDStruct() const {
 /// Return true if we are extracting the only non-trivial field of out parent
 /// struct. This implies that a ref count operation on the aggregate is
 /// equivalent to a ref count operation on this field.
+///
+/// FIXME: this should be cached during cacheFieldIndex().
 bool StructExtractInst::isFieldOnlyNonTrivialField() const {
-  SILModule &Mod = getModule();
+  auto *F = getFunction();
 
   // If the field we are extracting is trivial, we cannot be a non-trivial
   // field... return false.
-  if (getType().isTrivial(Mod))
+  if (getType().isTrivial(*F))
     return false;
 
   SILType StructTy = getOperand()->getType();
@@ -1042,13 +1134,14 @@ bool StructExtractInst::isFieldOnlyNonTrivialField() const {
   // Ok, we are visiting a non-trivial field. Then for every stored field...
   for (VarDecl *D : getStructDecl()->getStoredProperties()) {
     // If we are visiting our own field continue.
-    if (Field == D)
+    if (getField() == D)
       continue;
 
     // Ok, we have a field that is not equal to the field we are
     // extracting. If that field is trivial, we do not care about
     // it... continue.
-    if (StructTy.getFieldType(D, Mod).isTrivial(Mod))
+    if (StructTy.getFieldType(D, F->getModule(), TypeExpansionContext(*F))
+            .isTrivial(*F))
       continue;
 
     // We have found a non trivial member that is not the member we are
@@ -1126,9 +1219,9 @@ bool TermInst::isProgramTerminating() const {
 
 TermInst::SuccessorBlockArgumentsListTy
 TermInst::getSuccessorBlockArguments() const {
-  function_ref<PhiArgumentArrayRef(const SILSuccessor &)> op;
-  op = [](const SILSuccessor &succ) -> PhiArgumentArrayRef {
-    return succ.getBB()->getPhiArguments();
+  function_ref<SILPhiArgumentArrayRef(const SILSuccessor &)> op;
+  op = [](const SILSuccessor &succ) -> SILPhiArgumentArrayRef {
+    return succ.getBB()->getSILPhiArguments();
   };
   return SuccessorBlockArgumentsListTy(getSuccessors(), op);
 }
@@ -1140,6 +1233,19 @@ YieldInst *YieldInst::create(SILDebugLocation loc,
   auto Size = totalSizeToAlloc<swift::Operand>(yieldedValues.size());
   void *Buffer = F.getModule().allocateInst(Size, alignof(YieldInst));
   return ::new (Buffer) YieldInst(loc, yieldedValues, normalBB, unwindBB);
+}
+
+SILYieldInfo YieldInst::getYieldInfoForOperand(const Operand &op) const {
+  // We expect op to be our operand.
+  assert(op.getUser() == this);
+  auto conv = getFunction()->getConventions();
+  return conv.getYieldInfoForOperandIndex(op.getOperandNumber());
+}
+
+SILArgumentConvention
+YieldInst::getArgumentConventionForOperand(const Operand &op) const {
+  auto conv = getYieldInfoForOperand(op).getConvention();
+  return SILArgumentConvention(conv);
 }
 
 BranchInst *BranchInst::create(SILDebugLocation Loc, SILBasicBlock *DestBB,
@@ -1327,7 +1433,7 @@ SelectValueInst::SelectValueInst(SILDebugLocation DebugLoc, SILValue Operand,
     : InstructionBaseWithTrailingOperands(
           Operand, CaseValuesAndResults, DebugLoc, Type,
           HasOwnership ? *mergeSILValueOwnership(CaseValuesAndResults)
-                       : ValueOwnershipKind(ValueOwnershipKind::Any)) {}
+                       : ValueOwnershipKind(ValueOwnershipKind::None)) {}
 
 SelectValueInst *
 SelectValueInst::create(SILDebugLocation Loc, SILValue Operand, SILType Type,
@@ -1766,7 +1872,7 @@ OpenExistentialRefInst::OpenExistentialRefInst(SILDebugLocation DebugLoc,
     : UnaryInstructionBase(DebugLoc, Operand, Ty,
                            HasOwnership
                                ? Operand.getOwnershipKind()
-                               : ValueOwnershipKind(ValueOwnershipKind::Any)) {
+                               : ValueOwnershipKind(ValueOwnershipKind::None)) {
   assert(Operand->getType().isObject() && "Operand must be an object.");
   assert(Ty.isObject() && "Result type must be an object type.");
 }
@@ -1853,65 +1959,77 @@ UncheckedBitwiseCastInst::create(SILDebugLocation DebugLoc, SILValue Operand,
 }
 
 UnconditionalCheckedCastInst *UnconditionalCheckedCastInst::create(
-    SILDebugLocation DebugLoc, SILValue Operand, SILType DestTy, SILFunction &F,
-    SILOpenedArchetypesState &OpenedArchetypes) {
+    SILDebugLocation DebugLoc, SILValue Operand,
+    SILType DestLoweredTy, CanType DestFormalTy,
+    SILFunction &F, SILOpenedArchetypesState &OpenedArchetypes) {
   SILModule &Mod = F.getModule();
   SmallVector<SILValue, 8> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
-                               DestTy.getASTType());
+                               DestFormalTy);
   unsigned size =
       totalSizeToAlloc<swift::Operand>(1 + TypeDependentOperands.size());
   void *Buffer = Mod.allocateInst(size, alignof(UnconditionalCheckedCastInst));
   return ::new (Buffer) UnconditionalCheckedCastInst(DebugLoc, Operand,
-                                                     TypeDependentOperands, DestTy);
+                                                     TypeDependentOperands,
+                                                     DestLoweredTy,
+                                                     DestFormalTy);
 }
 
 UnconditionalCheckedCastValueInst *UnconditionalCheckedCastValueInst::create(
-    SILDebugLocation DebugLoc, SILValue Operand, SILType DestTy, SILFunction &F,
-    SILOpenedArchetypesState &OpenedArchetypes) {
+    SILDebugLocation DebugLoc,
+    SILValue Operand, CanType SrcFormalTy,
+    SILType DestLoweredTy, CanType DestFormalTy,
+    SILFunction &F, SILOpenedArchetypesState &OpenedArchetypes) {
   SILModule &Mod = F.getModule();
   SmallVector<SILValue, 8> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
-                               DestTy.getASTType());
+                               DestFormalTy);
   unsigned size =
       totalSizeToAlloc<swift::Operand>(1 + TypeDependentOperands.size());
   void *Buffer =
       Mod.allocateInst(size, alignof(UnconditionalCheckedCastValueInst));
   return ::new (Buffer) UnconditionalCheckedCastValueInst(
-      DebugLoc, Operand, TypeDependentOperands, DestTy);
+      DebugLoc, Operand, SrcFormalTy, TypeDependentOperands,
+      DestLoweredTy, DestFormalTy);
 }
 
 CheckedCastBranchInst *CheckedCastBranchInst::create(
-    SILDebugLocation DebugLoc, bool IsExact, SILValue Operand, SILType DestTy,
+    SILDebugLocation DebugLoc, bool IsExact, SILValue Operand,
+    SILType DestLoweredTy, CanType DestFormalTy,
     SILBasicBlock *SuccessBB, SILBasicBlock *FailureBB, SILFunction &F,
     SILOpenedArchetypesState &OpenedArchetypes, ProfileCounter Target1Count,
     ProfileCounter Target2Count) {
   SILModule &Mod = F.getModule();
   SmallVector<SILValue, 8> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
-                               DestTy.getASTType());
+                               DestFormalTy);
   unsigned size =
       totalSizeToAlloc<swift::Operand>(1 + TypeDependentOperands.size());
   void *Buffer = Mod.allocateInst(size, alignof(CheckedCastBranchInst));
   return ::new (Buffer) CheckedCastBranchInst(
-      DebugLoc, IsExact, Operand, TypeDependentOperands, DestTy, SuccessBB,
-      FailureBB, Target1Count, Target2Count);
+      DebugLoc, IsExact, Operand, TypeDependentOperands,
+      DestLoweredTy, DestFormalTy, SuccessBB, FailureBB,
+      Target1Count, Target2Count);
 }
 
 CheckedCastValueBranchInst *
-CheckedCastValueBranchInst::create(SILDebugLocation DebugLoc, SILValue Operand,
-                                   SILType DestTy, SILBasicBlock *SuccessBB,
-                                   SILBasicBlock *FailureBB, SILFunction &F,
+CheckedCastValueBranchInst::create(SILDebugLocation DebugLoc,
+                                   SILValue Operand, CanType SrcFormalTy,
+                                   SILType DestLoweredTy, CanType DestFormalTy,
+                                   SILBasicBlock *SuccessBB, SILBasicBlock *FailureBB,
+                                   SILFunction &F,
                                    SILOpenedArchetypesState &OpenedArchetypes) {
   SILModule &Mod = F.getModule();
   SmallVector<SILValue, 8> TypeDependentOperands;
   collectTypeDependentOperands(TypeDependentOperands, OpenedArchetypes, F,
-                               DestTy.getASTType());
+                               DestFormalTy);
   unsigned size =
       totalSizeToAlloc<swift::Operand>(1 + TypeDependentOperands.size());
   void *Buffer = Mod.allocateInst(size, alignof(CheckedCastValueBranchInst));
   return ::new (Buffer) CheckedCastValueBranchInst(
-      DebugLoc, Operand, TypeDependentOperands, DestTy, SuccessBB, FailureBB);
+      DebugLoc, Operand, SrcFormalTy, TypeDependentOperands,
+      DestLoweredTy, DestFormalTy,
+      SuccessBB, FailureBB);
 }
 
 MetatypeInst *MetatypeInst::create(SILDebugLocation Loc, SILType Ty,
@@ -1994,7 +2112,7 @@ ConvertFunctionInst *ConvertFunctionInst::create(
     (void)opTI;
     CanSILFunctionType resTI = CFI->getType().castTo<SILFunctionType>();
     (void)resTI;
-    assert(opTI->isABICompatibleWith(resTI).isCompatible() &&
+    assert(opTI->isABICompatibleWith(resTI, F).isCompatible() &&
            "Can not convert in between ABI incompatible function types");
   }
   return CFI;
@@ -2024,9 +2142,9 @@ ConvertEscapeToNoEscapeInst *ConvertEscapeToNoEscapeInst::create(
     (void)opTI;
     CanSILFunctionType resTI = CFI->getType().castTo<SILFunctionType>();
     (void)resTI;
-    assert(
-        opTI->isABICompatibleWith(resTI).isCompatibleUpToNoEscapeConversion() &&
-        "Can not convert in between ABI incompatible function types");
+    assert(opTI->isABICompatibleWith(resTI, F)
+               .isCompatibleUpToNoEscapeConversion() &&
+           "Can not convert in between ABI incompatible function types");
   }
   return CFI;
 }
@@ -2038,6 +2156,7 @@ bool KeyPathPatternComponent::isComputedSettablePropertyMutating() const {
   case Kind::OptionalChain:
   case Kind::OptionalWrap:
   case Kind::OptionalForce:
+  case Kind::TupleElement:
     llvm_unreachable("not a settable computed property");
   case Kind::SettableProperty: {
     auto setter = getComputedPropertySetter();
@@ -2056,6 +2175,7 @@ forEachRefcountableReference(const KeyPathPatternComponent &component,
   case KeyPathPatternComponent::Kind::OptionalChain:
   case KeyPathPatternComponent::Kind::OptionalWrap:
   case KeyPathPatternComponent::Kind::OptionalForce:
+  case KeyPathPatternComponent::Kind::TupleElement:
     return;
   case KeyPathPatternComponent::Kind::SettableProperty:
     forFunction(component.getComputedPropertySetter());
@@ -2112,6 +2232,7 @@ KeyPathPattern::get(SILModule &M, CanGenericSignature signature,
     case KeyPathPatternComponent::Kind::OptionalChain:
     case KeyPathPatternComponent::Kind::OptionalWrap:
     case KeyPathPatternComponent::Kind::OptionalForce:
+    case KeyPathPatternComponent::Kind::TupleElement:
       break;
     
     case KeyPathPatternComponent::Kind::GettableProperty:
@@ -2191,7 +2312,11 @@ void KeyPathPattern::Profile(llvm::FoldingSetNodeID &ID,
     case KeyPathPatternComponent::Kind::StoredProperty:
       ID.AddPointer(component.getStoredPropertyDecl());
       break;
-            
+    
+    case KeyPathPatternComponent::Kind::TupleElement:
+      ID.AddInteger(component.getTupleIndex());
+      break;
+    
     case KeyPathPatternComponent::Kind::SettableProperty:
       ID.AddPointer(component.getComputedPropertySetter());
       LLVM_FALLTHROUGH;
@@ -2294,6 +2419,46 @@ void KeyPathInst::dropReferencedPattern() {
   Pattern = nullptr;
 }
 
+void KeyPathPatternComponent::
+visitReferencedFunctionsAndMethods(
+      std::function<void (SILFunction *)> functionCallBack,
+      std::function<void (SILDeclRef)> methodCallBack) const {
+  switch (getKind()) {
+  case KeyPathPatternComponent::Kind::SettableProperty:
+    functionCallBack(getComputedPropertySetter());
+    LLVM_FALLTHROUGH;
+  case KeyPathPatternComponent::Kind::GettableProperty: {
+    functionCallBack(getComputedPropertyGetter());
+    auto id = getComputedPropertyId();
+    switch (id.getKind()) {
+    case KeyPathPatternComponent::ComputedPropertyId::DeclRef: {
+      methodCallBack(id.getDeclRef());
+      break;
+    }
+    case KeyPathPatternComponent::ComputedPropertyId::Function:
+      functionCallBack(id.getFunction());
+      break;
+    case KeyPathPatternComponent::ComputedPropertyId::Property:
+      break;
+    }
+
+    if (auto equals = getSubscriptIndexEquals())
+      functionCallBack(equals);
+    if (auto hash = getSubscriptIndexHash())
+      functionCallBack(hash);
+
+    break;
+  }
+  case KeyPathPatternComponent::Kind::StoredProperty:
+  case KeyPathPatternComponent::Kind::OptionalChain:
+  case KeyPathPatternComponent::Kind::OptionalForce:
+  case KeyPathPatternComponent::Kind::OptionalWrap:
+  case KeyPathPatternComponent::Kind::TupleElement:
+    break;
+  }
+}
+
+
 GenericSpecializationInformation::GenericSpecializationInformation(
     SILFunction *Caller, SILFunction *Parent, SubstitutionMap Subs)
     : Caller(Caller), Parent(Parent), Subs(Subs) {}
@@ -2337,33 +2502,38 @@ GenericSpecializationInformation::create(SILInstruction *Inst, SILBuilder &B) {
 }
 
 static void computeAggregateFirstLevelSubtypeInfo(
-    SILModule &M, SILValue Operand, llvm::SmallVectorImpl<SILType> &Types,
+    const SILFunction &F, SILValue Operand,
+    llvm::SmallVectorImpl<SILType> &Types,
     llvm::SmallVectorImpl<ValueOwnershipKind> &OwnershipKinds) {
+  auto &M = F.getModule();
   SILType OpType = Operand->getType();
 
   // TODO: Create an iterator for accessing first level projections to eliminate
   // this SmallVector.
   llvm::SmallVector<Projection, 8> Projections;
-  Projection::getFirstLevelProjections(OpType, M, Projections);
+  Projection::getFirstLevelProjections(OpType, M, F.getTypeExpansionContext(),
+                                       Projections);
 
   auto OpOwnershipKind = Operand.getOwnershipKind();
   for (auto &P : Projections) {
-    SILType ProjType = P.getType(OpType, M);
+    SILType ProjType = P.getType(OpType, M, F.getTypeExpansionContext());
     Types.emplace_back(ProjType);
     OwnershipKinds.emplace_back(
-        OpOwnershipKind.getProjectedOwnershipKind(M, ProjType));
+        OpOwnershipKind.getProjectedOwnershipKind(F, ProjType));
   }
 }
 
-DestructureStructInst *DestructureStructInst::create(SILModule &M,
+DestructureStructInst *DestructureStructInst::create(const SILFunction &F,
                                                      SILDebugLocation Loc,
                                                      SILValue Operand) {
+  auto &M = F.getModule();
+
   assert(Operand->getType().getStructOrBoundGenericStruct() &&
          "Expected a struct typed operand?!");
 
   llvm::SmallVector<SILType, 8> Types;
   llvm::SmallVector<ValueOwnershipKind, 8> OwnershipKinds;
-  computeAggregateFirstLevelSubtypeInfo(M, Operand, Types, OwnershipKinds);
+  computeAggregateFirstLevelSubtypeInfo(F, Operand, Types, OwnershipKinds);
   assert(Types.size() == OwnershipKinds.size() &&
          "Expected same number of Types and OwnerKinds");
 
@@ -2378,15 +2548,17 @@ DestructureStructInst *DestructureStructInst::create(SILModule &M,
       DestructureStructInst(M, Loc, Operand, Types, OwnershipKinds);
 }
 
-DestructureTupleInst *DestructureTupleInst::create(SILModule &M,
+DestructureTupleInst *DestructureTupleInst::create(const SILFunction &F,
                                                    SILDebugLocation Loc,
                                                    SILValue Operand) {
+  auto &M = F.getModule();
+
   assert(Operand->getType().is<TupleType>() &&
          "Expected a tuple typed operand?!");
 
   llvm::SmallVector<SILType, 8> Types;
   llvm::SmallVector<ValueOwnershipKind, 8> OwnershipKinds;
-  computeAggregateFirstLevelSubtypeInfo(M, Operand, Types, OwnershipKinds);
+  computeAggregateFirstLevelSubtypeInfo(F, Operand, Types, OwnershipKinds);
   assert(Types.size() == OwnershipKinds.size() &&
          "Expected same number of Types and OwnerKinds");
 

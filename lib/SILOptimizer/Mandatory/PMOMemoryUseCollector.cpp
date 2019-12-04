@@ -34,7 +34,9 @@ PMOMemoryObjectInfo::PMOMemoryObjectInfo(AllocationInst *allocation)
   if (auto *abi = dyn_cast<AllocBoxInst>(MemoryInst)) {
     assert(abi->getBoxType()->getLayout()->getFields().size() == 1 &&
            "analyzing multi-field boxes not implemented");
-    MemorySILType = abi->getBoxType()->getFieldType(module, 0);
+    MemorySILType =
+        getSILBoxFieldType(TypeExpansionContext(*abi->getFunction()),
+                           abi->getBoxType(), module.Types, 0);
   } else {
     MemorySILType = cast<AllocStackInst>(MemoryInst)->getElementType();
   }
@@ -95,7 +97,7 @@ static void scalarizeLoadBorrow(LoadBorrowInst *lbi,
   SmallVector<SILValue, 4> elementTmps;
 
   for (unsigned i : indices(elementAddrs)) {
-    if (elementAddrs[i]->getType().isTrivial(lbi->getModule())) {
+    if (elementAddrs[i]->getType().isTrivial(*lbi->getFunction())) {
       elementTmps.push_back(b.createLoad(lbi->getLoc(), elementAddrs[i],
                                          LoadOwnershipQualifier::Trivial));
       continue;
@@ -297,7 +299,7 @@ bool ElementUseCollector::collectUses(SILValue Pointer) {
           // initializations, unless they have trivial type (which we classify
           // as InitOrAssign).
           case StoreOwnershipQualifier::Unqualified:
-            if (PointeeType.isTrivial(User->getModule()))
+            if (PointeeType.isTrivial(*User->getFunction()))
               return PMOUseKind::InitOrAssign;
             return PMOUseKind::Initialization;
 
@@ -310,6 +312,7 @@ bool ElementUseCollector::collectUses(SILValue Pointer) {
           case StoreOwnershipQualifier::Trivial:
             return PMOUseKind::InitOrAssign;
           }
+          llvm_unreachable("covered switch");
         })();
         Uses.emplace_back(si, kind);
         continue;
@@ -333,7 +336,7 @@ bool ElementUseCollector::collectUses(SILValue Pointer) {
       auto Kind = ([&]() -> PMOUseKind {
         if (UI->getOperandNumber() == CopyAddrInst::Src)
           return PMOUseKind::Load;
-        if (PointeeType.isTrivial(CAI->getModule()))
+        if (PointeeType.isTrivial(*CAI->getFunction()))
           return PMOUseKind::InitOrAssign;
         if (CAI->isInitializationOfDest())
           return PMOUseKind::Initialization;

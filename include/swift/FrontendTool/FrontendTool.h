@@ -42,7 +42,26 @@ public:
 
   /// The frontend has configured the compiler instance.
   virtual void configuredCompiler(CompilerInstance &instance);
+
+  /// The frontend has performed semantic analysis.
+  virtual void performedSemanticAnalysis(CompilerInstance &instance);
+
+  /// The frontend has performed basic SIL generation.
+  /// SIL diagnostic passes have not yet been applied.
+  virtual void performedSILGeneration(SILModule &module);
+
+  /// The frontend has executed the SIL optimization and diagnostics pipelines.
+  virtual void performedSILProcessing(SILModule &module);
+
+  // TODO: maybe enhance this interface to hear about IRGen and LLVM
+  // progress.
 };
+
+namespace frontend {
+namespace utils {
+StringRef escapeForMake(StringRef raw, llvm::SmallVectorImpl<char> &buffer);
+}
+}
 
 /// Perform all the operations of the frontend, exactly as if invoked
 /// with -frontend.

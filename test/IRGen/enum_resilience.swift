@@ -1,13 +1,13 @@
 
 // RUN: %empty-directory(%t)
 // RUN: %{python} %utils/chex.py < %s > %t/enum_resilience.swift
-// RUN: %target-swift-frontend -emit-module -enable-resilience -emit-module-path=%t/resilient_struct.swiftmodule -module-name=resilient_struct %S/../Inputs/resilient_struct.swift
-// RUN: %target-swift-frontend -emit-module -enable-resilience -emit-module-path=%t/resilient_struct.swiftmodule -module-name=resilient_struct %S/../Inputs/resilient_struct.swift
-// RUN: %target-swift-frontend -emit-ir -enable-resilience -module-name=resilient_enum -I %t %S/../Inputs/resilient_enum.swift | %FileCheck %t/enum_resilience.swift --check-prefix=ENUM_RES
+// RUN: %target-swift-frontend -emit-module -enable-library-evolution -emit-module-path=%t/resilient_struct.swiftmodule -module-name=resilient_struct %S/../Inputs/resilient_struct.swift
+// RUN: %target-swift-frontend -emit-module -enable-library-evolution -emit-module-path=%t/resilient_struct.swiftmodule -module-name=resilient_struct %S/../Inputs/resilient_struct.swift
+// RUN: %target-swift-frontend -emit-ir -enable-library-evolution -module-name=resilient_enum -I %t %S/../Inputs/resilient_enum.swift | %FileCheck %t/enum_resilience.swift --check-prefix=ENUM_RES
 // RUN: %target-swift-frontend -emit-ir -module-name=resilient_enum -I %t %S/../Inputs/resilient_enum.swift | %FileCheck %t/enum_resilience.swift --check-prefix=ENUM_NOT_RES
-// RUN: %target-swift-frontend -emit-module -enable-resilience -emit-module-path=%t/resilient_enum.swiftmodule -module-name=resilient_enum -I %t %S/../Inputs/resilient_enum.swift
-// RUN: %target-swift-frontend -module-name enum_resilience -I %t -emit-ir -enable-resilience %s | %FileCheck %t/enum_resilience.swift --check-prefix=CHECK --check-prefix=CHECK-%target-ptrsize -DINT=i%target-ptrsize
-// RUN: %target-swift-frontend -module-name enum_resilience -I %t -emit-ir -enable-resilience -O %s
+// RUN: %target-swift-frontend -emit-module -enable-library-evolution -emit-module-path=%t/resilient_enum.swiftmodule -module-name=resilient_enum -I %t %S/../Inputs/resilient_enum.swift
+// RUN: %target-swift-frontend -module-name enum_resilience -I %t -emit-ir -enable-library-evolution %s | %FileCheck %t/enum_resilience.swift --check-prefix=CHECK --check-prefix=CHECK-%target-ptrsize -DINT=i%target-ptrsize
+// RUN: %target-swift-frontend -module-name enum_resilience -I %t -emit-ir -enable-library-evolution -O %s
 
 import resilient_enum
 import resilient_struct
@@ -64,7 +64,7 @@ public struct Reference {
   public var n: Class
 }
 
-@_frozen public enum Either {
+@frozen public enum Either {
   case Left(Reference)
   case Right(Reference)
 }
@@ -79,11 +79,11 @@ enum InternalEither {
   case Right(Reference)
 }
 
-@_fixed_layout public struct ReferenceFast {
+@frozen public struct ReferenceFast {
   public var n: Class
 }
 
-@_frozen public enum EitherFast {
+@frozen public enum EitherFast {
   case Left(ReferenceFast)
   case Right(ReferenceFast)
 }
@@ -220,31 +220,31 @@ public func constructResilientEnumPayload(_ s: Size) -> Medium {
 // CHECK:  [[PAMPHLET_CASE:%.*]] = icmp eq i32 [[TAG]], [[PAMPHLET_CASE_TAG]]
 // CHECK:  br i1 [[PAMPHLET_CASE]], label %[[PAMPHLET_CASE_LABEL:.*]], label %[[PAPER_CHECK:.*]]
 
-// CHECK:  <label>:[[PAPER_CHECK]]:
+// CHECK:  [[PAPER_CHECK]]:
 // CHECK:  [[PAPER_CASE_TAG:%.*]] = load i32, i32* @"$s14resilient_enum6MediumO5PaperyA2CmFWC"
 // CHECK:  [[PAPER_CASE:%.*]] = icmp eq i32 [[TAG]], [[PAPER_CASE_TAG]]
 // CHECK:  br i1 [[PAPER_CASE]], label %[[PAPER_CASE_LABEL:.*]], label %[[CANVAS_CHECK:.*]]
 
-// CHECK:  <label>:[[CANVAS_CHECK]]:
+// CHECK:  [[CANVAS_CHECK]]:
 // CHECK:  [[CANVAS_CASE_TAG:%.*]] = load i32, i32* @"$s14resilient_enum6MediumO6CanvasyA2CmFWC"
 // CHECK:  [[CANVAS_CASE:%.*]] = icmp eq i32 [[TAG]], [[CANVAS_CASE_TAG]]
 // CHECK:  br i1 [[CANVAS_CASE]], label %[[CANVAS_CASE_LABEL:.*]], label %[[DEFAULT_CASE:.*]]
 
-// CHECK: ; <label>:[[PAPER_CASE_LABEL]]
+// CHECK: [[PAPER_CASE_LABEL]]:
 // CHECK: br label %[[END:.*]]
 
-// CHECK: ; <label>:[[CANVAS_CASE_LABEL]]
+// CHECK: [[CANVAS_CASE_LABEL]]:
 // CHECK: br label %[[END]]
 
-// CHECK: ; <label>:[[PAMPHLET_CASE_LABEL]]
+// CHECK: [[PAMPHLET_CASE_LABEL]]:
 // CHECK: swift_projectBox
 // CHECK: br label %[[END]]
 
-// CHECK: ; <label>:[[DEFAULT_CASE]]
+// CHECK: [[DEFAULT_CASE]]:
 // CHeCK: call void %destroy
 // CHECK: br label %[[END]]
 
-// CHECK: ; <label>:[[END]]
+// CHECK: [[END]]:
 // CHECK: = phi [[INT]] [ 3, %[[DEFAULT_CASE]] ], [ {{.*}}, %[[PAMPHLET_CASE_LABEL]] ], [ 2, %[[CANVAS_CASE_LABEL]] ], [ 1, %[[PAPER_CASE_LABEL]] ]
 // CHECK: ret
 

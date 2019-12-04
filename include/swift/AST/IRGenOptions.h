@@ -26,6 +26,8 @@
 // FIXME: This include is just for llvm::SanitizerCoverageOptions. We should
 // split the header upstream so we don't include so much.
 #include "llvm/Transforms/Instrumentation.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/VersionTuple.h"
 #include <string>
 #include <vector>
 
@@ -104,14 +106,20 @@ public:
   /// Which sanitizer is turned on.
   OptionSet<SanitizerKind> Sanitizers;
 
+  /// Which sanitizer(s) have recovery instrumentation enabled.
+  OptionSet<SanitizerKind> SanitizersWithRecoveryInstrumentation;
+
+  /// Path prefixes that should be rewritten in debug info.
+  PathRemapper DebugPrefixMap;
+
   /// What level of debug info to generate.
   IRGenDebugInfoLevel DebugInfoLevel : 2;
 
   /// What type of debug info to generate.
   IRGenDebugInfoFormat DebugInfoFormat : 2;
 
-  /// Path prefixes that should be rewritten in debug info.
-  PathRemapper DebugPrefixMap;
+  /// Whether to leave DWARF breadcrumbs pointing to imported Clang modules.
+  unsigned DisableClangModuleSkeletonCUs : 1;
 
   /// Whether we're generating IR for the JIT.
   unsigned UseJIT : 1;
@@ -168,12 +176,14 @@ public:
   /// Emit mangled names of anonymous context descriptors.
   unsigned EnableAnonymousContextMangledNames : 1;
 
-  /// Bypass resilience when accessing resilient frameworks.
-  unsigned EnableResilienceBypass : 1;
-
+  /// Force public linkage for private symbols. Used only by the LLDB
+  /// expression evaluator.
+  unsigned ForcePublicLinkage : 1;
+  
   /// Force lazy initialization of class metadata
   /// Used on Windows to avoid cross-module references.
   unsigned LazyInitializeClassMetadata : 1;
+  unsigned LazyInitializeProtocolConformances : 1;
 
   /// Normally if the -read-legacy-type-info flag is not specified, we look for
   /// a file named "legacy-<arch>.yaml" in SearchPathOpts.RuntimeLibraryPath.
@@ -202,6 +212,10 @@ public:
   /// Disable round-trip verification of mangled debug types.
   unsigned DisableRoundTripDebugTypes : 1;
 
+  /// Whether to disable shadow copies for local variables on the stack. This is
+  /// only used for testing.
+  unsigned DisableDebuggerShadowCopies : 1;
+
   /// Path to the profdata file to be used for PGO, or the empty string.
   std::string UseProfile = "";
 
@@ -219,35 +233,46 @@ public:
   };
 
   TypeInfoDumpFilter TypeInfoFilter;
+  
+  /// Pull in runtime compatibility shim libraries by autolinking.
+  Optional<llvm::VersionTuple> AutolinkRuntimeCompatibilityLibraryVersion;
+  Optional<llvm::VersionTuple> AutolinkRuntimeCompatibilityDynamicReplacementLibraryVersion;
 
   IRGenOptions()
       : DWARFVersion(2), OutputKind(IRGenOutputKind::LLVMAssembly),
         Verify(true), OptMode(OptimizationMode::NotSet),
         Sanitizers(OptionSet<SanitizerKind>()),
+        SanitizersWithRecoveryInstrumentation(OptionSet<SanitizerKind>()),
         DebugInfoLevel(IRGenDebugInfoLevel::None),
         DebugInfoFormat(IRGenDebugInfoFormat::None),
-        UseJIT(false), IntegratedREPL(false),
-        DisableLLVMOptzns(false), DisableSwiftSpecificLLVMOptzns(false),
-        DisableLLVMSLPVectorizer(false), DisableFPElim(true), Playground(false),
-        EmitStackPromotionChecks(false), PrintInlineTree(false),
-        EmbedMode(IRGenEmbedMode::None), HasValueNamesSetting(false),
-        ValueNames(false), EnableReflectionMetadata(true),
-        EnableReflectionNames(true), EnableAnonymousContextMangledNames(false),
-        EnableResilienceBypass(false), LazyInitializeClassMetadata(false),
-        DisableLegacyTypeInfo(false),
+        DisableClangModuleSkeletonCUs(false), UseJIT(false),
+        IntegratedREPL(false), DisableLLVMOptzns(false),
+        DisableSwiftSpecificLLVMOptzns(false), DisableLLVMSLPVectorizer(false),
+        DisableFPElim(true), Playground(false), EmitStackPromotionChecks(false),
+        PrintInlineTree(false), EmbedMode(IRGenEmbedMode::None),
+        HasValueNamesSetting(false), ValueNames(false),
+        EnableReflectionMetadata(true), EnableReflectionNames(true),
+        EnableAnonymousContextMangledNames(false), ForcePublicLinkage(false),
+        LazyInitializeClassMetadata(false),
+        LazyInitializeProtocolConformances(false), DisableLegacyTypeInfo(false),
         UseIncrementalLLVMCodeGen(true), UseSwiftCall(false),
         GenerateProfile(false), EnableDynamicReplacementChaining(false),
-        DisableRoundTripDebugTypes(false),
+        DisableRoundTripDebugTypes(false), DisableDebuggerShadowCopies(false),
         CmdArgs(), SanitizeCoverage(llvm::SanitizerCoverageOptions()),
         TypeInfoFilter(TypeInfoDumpFilter::All) {}
 
-  // Get a hash of all options which influence the llvm compilation but are not
-  // reflected in the llvm module itself.
-  unsigned getLLVMCodeGenOptionsHash() {
-    unsigned Hash = (unsigned)OptMode;
-    Hash = (Hash << 1) | DisableLLVMOptzns;
-    Hash = (Hash << 1) | DisableSwiftSpecificLLVMOptzns;
-    return Hash;
+  /// Appends to \p os an arbitrary string representing all options which
+  /// influence the llvm compilation but are not reflected in the llvm module
+  /// itself.
+  void writeLLVMCodeGenOptionsTo(llvm::raw_ostream &os) {
+    // We put a letter between each value simply to keep them from running into
+    // one another. There might be a vague correspondence between meaning and
+    // letter, but don't sweat it.
+    os << 'O' << (unsigned)OptMode
+       << 'd' << DisableLLVMOptzns
+       << 'D' << DisableSwiftSpecificLLVMOptzns
+       << 'p' << GenerateProfile
+       << 's' << Sanitizers.toRaw();
   }
 
   /// Should LLVM IR value names be emitted and preserved?

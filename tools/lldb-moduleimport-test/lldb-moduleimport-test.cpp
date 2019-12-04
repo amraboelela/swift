@@ -20,12 +20,12 @@
 #include "swift/AST/PrintOptions.h"
 #include "swift/ASTSectionImporter/ASTSectionImporter.h"
 #include "swift/Frontend/Frontend.h"
-#include "swift/IDE/Utils.h"
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "swift/Serialization/Validation.h"
 #include "swift/Basic/Dwarf.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "swift/Basic/LLVMInitialize.h"
+#include "llvm/Object/COFF.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/CommandLine.h"
@@ -49,12 +49,16 @@ validateModule(llvm::StringRef data, bool Verbose,
                swift::serialization::ValidationInfo &info,
                swift::serialization::ExtendedValidationInfo &extendedInfo) {
   info = swift::serialization::validateSerializedAST(data, &extendedInfo);
-  if (info.status != swift::serialization::Status::Valid)
+  if (info.status != swift::serialization::Status::Valid) {
+    llvm::outs() << "error: validateSerializedAST() failed\n";
     return false;
+  }
 
   swift::CompilerInvocation CI;
-  if (CI.loadFromSerializedAST(data) != swift::serialization::Status::Valid)
+  if (CI.loadFromSerializedAST(data) != swift::serialization::Status::Valid) {
+    llvm::outs() << "error: loadFromSerializedAST() failed\n";
     return false;
+  }
 
   if (Verbose) {
     if (!info.shortVersion.empty())
@@ -79,15 +83,14 @@ validateModule(llvm::StringRef data, bool Verbose,
 
 static void resolveDeclFromMangledNameList(
     swift::ASTContext &Ctx, llvm::ArrayRef<std::string> MangledNames) {
-  std::string Error;
   for (auto &Mangled : MangledNames) {
-    swift::Decl *ResolvedDecl =
-        swift::ide::getDeclFromMangledSymbolName(Ctx, Mangled, Error);
+    swift::TypeDecl *ResolvedDecl =
+        swift::Demangle::getTypeDeclForMangling(Ctx, Mangled);
     if (!ResolvedDecl) {
       llvm::errs() << "Can't resolve decl of " << Mangled << "\n";
     } else {
-      ResolvedDecl->print(llvm::errs());
-      llvm::errs() << "\n";
+      ResolvedDecl->dumpRef(llvm::outs());
+      llvm::outs() << "\n";
     }
   }
 }
@@ -135,6 +138,7 @@ collectASTModules(llvm::cl::list<std::string> &InputNames,
     auto *Obj = OF->getBinary();
     auto *MachO = llvm::dyn_cast<llvm::object::MachOObjectFile>(Obj);
     auto *ELF = llvm::dyn_cast<llvm::object::ELFObjectFileBase>(Obj);
+    auto *COFF = llvm::dyn_cast<llvm::object::COFFObjectFile>(Obj);
 
     if (MachO) {
       for (auto &Symbol : Obj->symbols()) {
@@ -166,12 +170,18 @@ collectASTModules(llvm::cl::list<std::string> &InputNames,
       llvm::StringRef Name;
       Section.getName(Name);
       if ((MachO && Name == swift::MachOASTSectionName) ||
-          (ELF && Name == swift::ELFASTSectionName)) {
+          (ELF && Name == swift::ELFASTSectionName) ||
+          (COFF && Name == swift::COFFASTSectionName)) {
         uint64_t Size = Section.getSize();
-        StringRef ContentsReference;
-        Section.getContents(ContentsReference);
+
+        llvm::Expected<llvm::StringRef> ContentsReference = Section.getContents();
+        if (!ContentsReference) {
+          llvm::errs() << "error: " << name << " "
+            << errorToErrorCode(OF.takeError()).message() << "\n";
+          return false;
+        }
         char *Module = Alloc.Allocate<char>(Size);
-        std::memcpy(Module, (void *)ContentsReference.begin(), Size);
+        std::memcpy(Module, (void *)ContentsReference->begin(), Size);
         Modules.push_back({Module, Size});
       }
     }
@@ -215,9 +225,9 @@ int main(int argc, char **argv) {
       desc("The directory that holds the compiler resource files"),
       cat(Visible));
 
-  opt<bool> EnableDWARFImporter(
-      "enable-dwarf-importer",
-      desc("Import with LangOptions.EnableDWARFImporter = true"), cat(Visible));
+  opt<bool> DummyDWARFImporter(
+      "dummy-dwarfimporter",
+      desc("Install a dummy DWARFImporterDelegate"), cat(Visible));
 
   ParseCommandLineOptions(argc, argv);
 
@@ -259,6 +269,8 @@ int main(int argc, char **argv) {
   swift::serialization::ValidationInfo info;
   swift::serialization::ExtendedValidationInfo extendedInfo;
   for (auto &Module : Modules) {
+    info = {};
+    extendedInfo = {};
     if (!validateModule(StringRef(Module.first, Module.second), Verbose, info,
                         extendedInfo)) {
       llvm::errs() << "Malformed module!\n";
@@ -276,24 +288,36 @@ int main(int argc, char **argv) {
           reinterpret_cast<void *>(&anchorForGetMainExecutable)));
 
   // Infer SDK and Target triple from the module.
-  Invocation.setSDKPath(extendedInfo.getSDKPath());
+  if (!extendedInfo.getSDKPath().empty())
+    Invocation.setSDKPath(extendedInfo.getSDKPath());
   Invocation.setTargetTriple(info.targetTriple);
 
   Invocation.setModuleName("lldbtest");
   Invocation.getClangImporterOptions().ModuleCachePath = ModuleCachePath;
-  Invocation.getLangOptions().EnableDWARFImporter = EnableDWARFImporter;
+  Invocation.getLangOptions().EnableMemoryBufferImporter = true;
 
   if (!ResourceDir.empty()) {
     Invocation.setRuntimeResourcePath(ResourceDir);
   }
 
-  if (CI.setup(Invocation))
+  if (CI.setup(Invocation)) {
+    llvm::errs() << "error: Failed setup invocation!\n";
     return 1;
+  }
+
+  swift::DWARFImporterDelegate dummyDWARFImporter;
+  if (DummyDWARFImporter) {
+    auto *ClangImporter = static_cast<swift::ClangImporter *>(
+        CI.getASTContext().getClangModuleLoader());
+    ClangImporter->setDWARFImporterDelegate(dummyDWARFImporter);
+  }
 
   for (auto &Module : Modules)
-    if (!parseASTSection(CI.getSerializedModuleLoader(),
-                         StringRef(Module.first, Module.second), modules))
+    if (!parseASTSection(*CI.getMemoryBufferSerializedModuleLoader(),
+                         StringRef(Module.first, Module.second), modules)) {
+      llvm::errs() << "error: Failed to parse AST section!\n";
       return 1;
+    }
 
   // Attempt to import all modules we found.
   for (auto path : modules) {

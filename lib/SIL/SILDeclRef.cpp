@@ -290,9 +290,22 @@ SILLinkage SILDeclRef::getLinkage(ForDefinition_t forDefinition) const {
     /// or shared linkage.
     OnDemand,
     /// The declaration should never be made public.
-    NeverPublic 
+    NeverPublic,
+    /// The declaration should always be emitted into the client,
+    AlwaysEmitIntoClient,
   };
   auto limit = Limit::None;
+
+  // @_alwaysEmitIntoClient declarations are like the default arguments of
+  // public functions; they are roots for dead code elimination and have
+  // serialized bodies, but no public symbol in the generated binary.
+  if (d->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>())
+    limit = Limit::AlwaysEmitIntoClient;
+  if (auto accessor = dyn_cast<AccessorDecl>(d)) {
+    auto *storage = accessor->getStorage();
+    if (storage->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>())
+      limit = Limit::AlwaysEmitIntoClient;
+  }
 
   // ivar initializers and destroyers are completely contained within the class
   // from which they come, and never get seen externally.
@@ -300,17 +313,25 @@ SILLinkage SILDeclRef::getLinkage(ForDefinition_t forDefinition) const {
     limit = Limit::NeverPublic;
   }
 
+  // The property wrapper backing initializer is never public for resilient
+  // properties.
+  if (kind == SILDeclRef::Kind::PropertyWrapperBackingInitializer) {
+    if (cast<VarDecl>(d)->isResilient())
+      limit = Limit::NeverPublic;
+  }
+
   // Stored property initializers get the linkage of their containing type.
   if (isStoredPropertyInitializer()) {
     // Three cases:
     //
-    // 1) Type is formally @_fixed_layout. Root initializers can be declared
-    //    @inlinable. The property initializer must only reference
+    // 1) Type is formally @_fixed_layout/@frozen. Root initializers can be
+    //    declared @inlinable. The property initializer must only reference
     //    public symbols, and is serialized, so we give it PublicNonABI linkage.
     //
-    // 2) Type is not formally @_fixed_layout and the module is not resilient.
-    //    Root initializers can be declared @inlinable. This is the annoying
-    //    case. We give the initializer public linkage if the type is public.
+    // 2) Type is not formally @_fixed_layout/@frozen and the module is not
+    //    resilient. Root initializers can be declared @inlinable. This is the 
+    //    annoying case. We give the initializer public linkage if the type is
+    //    public.
     //
     // 3) Type is resilient. The property initializer is never public because
     //    root initializers cannot be @inlinable.
@@ -322,8 +343,7 @@ SILLinkage SILDeclRef::getLinkage(ForDefinition_t forDefinition) const {
     d = cast<NominalTypeDecl>(d->getDeclContext());
 
     // FIXME: This should always be true.
-    if (d->getDeclContext()->getParentModule()->getResilienceStrategy() ==
-        ResilienceStrategy::Resilient)
+    if (d->getModuleContext()->isResilient())
       limit = Limit::NeverPublic;
   }
 
@@ -369,6 +389,8 @@ SILLinkage SILDeclRef::getLinkage(ForDefinition_t forDefinition) const {
       return SILLinkage::Shared;
     if (limit == Limit::NeverPublic)
       return maybeAddExternal(SILLinkage::Hidden);
+    if (limit == Limit::AlwaysEmitIntoClient)
+      return maybeAddExternal(SILLinkage::PublicNonABI);
     return maybeAddExternal(SILLinkage::Public);
   }
   llvm_unreachable("unhandled access");
@@ -464,26 +486,20 @@ IsSerialized_t SILDeclRef::isSerialized() const {
 
   auto *d = getDecl();
 
-  // Default argument generators are serialized if the function was
-  // type-checked in Swift 4 mode.
+  // Default argument generators are serialized if the containing
+  // declaration is public.
   if (isDefaultArgGenerator()) {
-    ResilienceExpansion expansion;
-    if (auto *EED = dyn_cast<EnumElementDecl>(d)) {
-      expansion = EED->getDefaultArgumentResilienceExpansion();
-    } else {
-      expansion = cast<AbstractFunctionDecl>(d)
-                    ->getDefaultArgumentResilienceExpansion();
-    }
-    switch (expansion) {
-    case ResilienceExpansion::Minimal:
+    auto scope =
+      d->getFormalAccessScope(/*useDC=*/nullptr,
+                              /*treatUsableFromInlineAsPublic=*/true);
+
+    if (scope.isPublic())
       return IsSerialized;
-    case ResilienceExpansion::Maximal:
-      return IsNotSerialized;
-    }
+    return IsNotSerialized;
   }
 
   // Stored property initializers are inlinable if the type is explicitly
-  // marked as @_fixed_layout.
+  // marked as @frozen.
   if (isStoredPropertyInitializer()) {
     auto *nominal = cast<NominalTypeDecl>(d->getDeclContext());
     auto scope =
@@ -587,10 +603,6 @@ bool SILDeclRef::isNoinline() const {
         return true;
   }
 
-  if (auto *attr = decl->getAttrs().getAttribute<SemanticsAttr>())
-    if (attr->Value.equals("keypath.entry"))
-      return true;
-
   return false;
 }
 
@@ -679,10 +691,10 @@ std::string SILDeclRef::mangle(ManglingKind MKind) const {
             std::string s(1, '\01');
             s += asmLabel->getLabel();
             return s;
-          } else if (namedClangDecl->hasAttr<clang::OverloadableAttr>()) {
+          } else if (namedClangDecl->hasAttr<clang::OverloadableAttr>() ||
+                     getDecl()->getASTContext().LangOpts.EnableCXXInterop) {
             std::string storage;
             llvm::raw_string_ostream SS(storage);
-            // FIXME: When we can import C++, use Clang's mangler all the time.
             mangleClangDecl(SS, namedClangDecl, getDecl()->getASTContext());
             return SS.str();
           }
@@ -783,6 +795,11 @@ std::string SILDeclRef::mangle(ManglingKind MKind) const {
   case SILDeclRef::Kind::StoredPropertyInitializer:
     assert(!isCurried);
     return mangler.mangleInitializerEntity(cast<VarDecl>(getDecl()), SKind);
+
+  case SILDeclRef::Kind::PropertyWrapperBackingInitializer:
+    assert(!isCurried);
+    return mangler.mangleBackingInitializerEntity(cast<VarDecl>(getDecl()),
+                                                  SKind);
   }
 
   llvm_unreachable("bad entity kind!");
@@ -841,6 +858,8 @@ SILDeclRef SILDeclRef::getNextOverriddenVTableEntry() const {
     if (overridden.kind == SILDeclRef::Kind::Initializer) {
       return SILDeclRef();
     }
+
+    // Overrides of @objc dynamic declarations are not in the vtable.
     if (overridden.getDecl()->isObjCDynamic()) {
       return SILDeclRef();
     }
@@ -934,21 +953,32 @@ SubclassScope SILDeclRef::getSubclassScope() const {
   if (!hasDecl())
     return SubclassScope::NotApplicable;
 
+  auto *decl = getDecl();
+
+  if (!isa<AbstractFunctionDecl>(decl))
+    return SubclassScope::NotApplicable;
+
   // If this declaration is a function which goes into a vtable, then it's
   // symbol must be as visible as its class, because derived classes have to put
   // all less visible methods of the base class into their vtables.
 
-  if (auto *CD = dyn_cast<ConstructorDecl>(getDecl()))
-    if (!CD->isRequired())
+  if (auto *CD = dyn_cast<ConstructorDecl>(decl)) {
+    // Initializing entry points do not appear in the vtable.
+    if (kind == SILDeclRef::Kind::Initializer)
       return SubclassScope::NotApplicable;
-
-  auto *FD = dyn_cast<FuncDecl>(getDecl());
-  if (!FD)
+    // Non-required convenience inits do not apper in the vtable.
+    if (!CD->isRequired() && !CD->isDesignatedInit())
+      return SubclassScope::NotApplicable;
+  } else if (isa<DestructorDecl>(decl)) {
+    // Detructors do not appear in the vtable.
     return SubclassScope::NotApplicable;
+  } else {
+    assert(isa<FuncDecl>(decl));
+  }
 
-  DeclContext *context = FD->getDeclContext();
+  DeclContext *context = decl->getDeclContext();
 
-  // Methods from extensions don't go into vtables (yet).
+  // Methods from extensions don't go in the vtable.
   if (isa<ExtensionDecl>(context))
     return SubclassScope::NotApplicable;
 
@@ -956,25 +986,30 @@ SubclassScope SILDeclRef::getSubclassScope() const {
   if (isThunk() || isForeign)
     return SubclassScope::NotApplicable;
 
-  // Default arg generators are not visible.
+  // Default arg generators don't go in the vtable.
   if (isDefaultArgGenerator())
     return SubclassScope::NotApplicable;
 
+  // Only methods in non-final classes go in the vtable.
   auto *classType = context->getSelfClassDecl();
   if (!classType || classType->isFinal())
     return SubclassScope::NotApplicable;
 
-  if (FD->isFinal())
+  // Final methods only go in the vtable if they override something.
+  if (decl->isFinal() && !decl->getOverriddenDecl())
     return SubclassScope::NotApplicable;
 
-  assert(FD->getEffectiveAccess() <= classType->getEffectiveAccess() &&
+  assert(decl->getEffectiveAccess() <= classType->getEffectiveAccess() &&
          "class must be as visible as its members");
 
   // FIXME: This is too narrow. Any class with resilient metadata should
   // probably have this, at least for method overrides that don't add new
   // vtable entries.
-  if (classType->isResilient())
+  if (classType->isResilient()) {
+    if (isa<ConstructorDecl>(decl))
+      return SubclassScope::NotApplicable;
     return SubclassScope::Resilient;
+  }
 
   switch (classType->getEffectiveAccess()) {
   case AccessLevel::Private:
@@ -996,10 +1031,10 @@ unsigned SILDeclRef::getParameterListCount() const {
 
   auto *vd = getDecl();
 
-  if (auto *func = dyn_cast<AbstractFunctionDecl>(vd)) {
-    return func->hasImplicitSelfDecl() ? 2 : 1;
-  } else if (auto *ed = dyn_cast<EnumElementDecl>(vd)) {
-    return ed->hasAssociatedValues() ? 2 : 1;
+  if (isa<AbstractFunctionDecl>(vd) || isa<EnumElementDecl>(vd)) {
+    // For functions and enum elements, the number of parameter lists is the
+    // same as in their interface type.
+    return vd->getNumCurryLevels();
   } else if (isa<ClassDecl>(vd)) {
     return 2;
   } else if (isa<VarDecl>(vd)) {
@@ -1009,12 +1044,38 @@ unsigned SILDeclRef::getParameterListCount() const {
   }
 }
 
+static bool isDesignatedConstructorForClass(ValueDecl *decl) {
+  if (auto *ctor = dyn_cast_or_null<ConstructorDecl>(decl))
+    if (ctor->getDeclContext()->getSelfClassDecl())
+      return ctor->isDesignatedInit();
+  return false;
+}
+
+bool SILDeclRef::canBeDynamicReplacement() const {
+  if (kind == SILDeclRef::Kind::Destroyer ||
+      kind == SILDeclRef::Kind::DefaultArgGenerator)
+    return false;
+  if (kind == SILDeclRef::Kind::Initializer)
+    return isDesignatedConstructorForClass(getDecl());
+  if (kind == SILDeclRef::Kind::Allocator)
+    return !isDesignatedConstructorForClass(getDecl());
+  return true;
+}
+
 bool SILDeclRef::isDynamicallyReplaceable() const {
+  if (kind == SILDeclRef::Kind::DefaultArgGenerator)
+    return false;
   if (isStoredPropertyInitializer())
     return false;
 
+  // Class allocators are not dynamic replaceable.
+  if (kind == SILDeclRef::Kind::Allocator &&
+      isDesignatedConstructorForClass(getDecl()))
+    return false;
+
   if (kind == SILDeclRef::Kind::Destroyer ||
-      kind == SILDeclRef::Kind::Initializer ||
+      (kind == SILDeclRef::Kind::Initializer &&
+       !isDesignatedConstructorForClass(getDecl())) ||
       kind == SILDeclRef::Kind::GlobalAccessor) {
     return false;
   }

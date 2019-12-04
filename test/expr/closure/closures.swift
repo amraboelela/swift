@@ -20,8 +20,7 @@ var closure5 : (Double) -> Int = {
 
 var closure6 = $0  // expected-error {{anonymous closure argument not contained in a closure}}
 
-var closure7 : Int =
-   { 4 }  // expected-error {{function produces expected type 'Int'; did you mean to call it with '()'?}} {{9-9=()}}
+var closure7 : Int = { 4 }  // expected-error {{function produces expected type 'Int'; did you mean to call it with '()'?}} {{27-27=()}} // expected-note {{Remove '=' to make 'closure7' a computed property}}{{20-22=}}
 
 var capturedVariable = 1
 var closure8 = { [capturedVariable] in
@@ -44,6 +43,7 @@ func funcdecl5(_ a: Int, _ y: Int) {
 
   var testfunc : ((), Int) -> Int  // expected-note {{'testfunc' declared here}}
   testfunc({$0+1})  // expected-error {{missing argument for parameter #2 in call}}
+  // expected-error@-1 {{cannot convert value of type '(Int) -> Int' to expected argument type '()'}}
 
   funcdecl5(1, 2) // recursion.
 
@@ -230,7 +230,7 @@ extension SomeClass {
 
 // <rdar://problem/16955318> Observed variable in a closure triggers an assertion
 var closureWithObservedProperty: () -> () = {
-  var a: Int = 42 {
+  var a: Int = 42 { // expected-warning {{variable 'a' was never used; consider replacing with '_' or removing it}}
   willSet {
     _ = "Will set a to \(newValue)"
   }
@@ -354,4 +354,10 @@ func lvalueCapture<T>(c: GenericClass<T>) {
 
     cc = wc!
   }
+}
+
+// Don't expose @lvalue-ness in diagnostics.
+let closure = { // expected-error {{unable to infer complex closure return type; add explicit type to disambiguate}} {{16-16= () -> Bool in }}
+  var helper = true
+  return helper
 }

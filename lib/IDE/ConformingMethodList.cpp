@@ -32,9 +32,8 @@ class ConformingMethodListCallbacks : public CodeCompletionCallbacks {
   Expr *ParsedExpr = nullptr;
   DeclContext *CurDeclContext = nullptr;
 
-  void resolveExpectedTypes(ArrayRef<const char *> names, SourceLoc loc,
-                            SmallVectorImpl<ProtocolDecl *> &result);
-  void getMatchingMethods(Type T, ArrayRef<ProtocolDecl *> expectedTypes,
+  void getMatchingMethods(Type T,
+                          llvm::SmallPtrSetImpl<ProtocolDecl*> &expectedTypes,
                           SmallVectorImpl<ValueDecl *> &result);
 
 public:
@@ -76,7 +75,6 @@ void ConformingMethodListCallbacks::doneParsing() {
 
   // Type check the expression if needed.
   if (!T || T->is<ErrorType>()) {
-    prepareForRetypechecking(ParsedExpr);
     ConcreteDeclRef ReferencedDecl = nullptr;
     auto optT = getTypeOfCompletionContextExpr(P.Context, CurDeclContext,
                                                CompletionTypeCheckKind::Normal,
@@ -89,9 +87,16 @@ void ConformingMethodListCallbacks::doneParsing() {
   if (!T || T->is<ErrorType>() || T->is<UnresolvedType>())
     return;
 
-  SmallVector<ProtocolDecl *, 4> expectedProtocols;
-  resolveExpectedTypes(ExpectedTypeNames, ParsedExpr->getLoc(),
-                       expectedProtocols);
+  T = T->getRValueType();
+  if (T->hasArchetype())
+    T = T->mapTypeOutOfContext();
+
+  llvm::SmallPtrSet<ProtocolDecl*, 8> expectedProtocols;
+  for (auto Name: ExpectedTypeNames) {
+    if (auto *PD = resolveProtocolName(CurDeclContext, Name)) {
+      expectedProtocols.insert(PD);
+    }
+  }
 
   // Collect the matching methods.
   ConformingMethodListResult result(CurDeclContext, T);
@@ -100,21 +105,8 @@ void ConformingMethodListCallbacks::doneParsing() {
   Consumer.handleResult(result);
 }
 
-void ConformingMethodListCallbacks::resolveExpectedTypes(
-    ArrayRef<const char *> names, SourceLoc loc,
-    SmallVectorImpl<ProtocolDecl *> &result) {
-  auto &ctx = CurDeclContext->getASTContext();
-
-  for (auto name : names) {
-    if (auto ty = Demangle::getTypeForMangling(ctx, name)) {
-      if (auto Proto = dyn_cast_or_null<ProtocolDecl>(ty->getAnyGeneric()))
-        result.push_back(Proto);
-    }
-  }
-}
-
 void ConformingMethodListCallbacks::getMatchingMethods(
-    Type T, ArrayRef<ProtocolDecl *> expectedTypes,
+    Type T, llvm::SmallPtrSetImpl<ProtocolDecl*> &expectedTypes,
     SmallVectorImpl<ValueDecl *> &result) {
   if (!T->mayHaveMembers())
     return;
@@ -126,7 +118,7 @@ void ConformingMethodListCallbacks::getMatchingMethods(
     Type T;
 
     /// The list of expected types.
-    ArrayRef<ProtocolDecl *> ExpectedTypes;
+    llvm::SmallPtrSetImpl<ProtocolDecl*> &ExpectedTypes;
 
     /// Result sink to populate.
     SmallVectorImpl<ValueDecl *> &Result;
@@ -158,12 +150,13 @@ void ConformingMethodListCallbacks::getMatchingMethods(
 
   public:
     LocalConsumer(DeclContext *DC, Type T,
-                  ArrayRef<ProtocolDecl *> expectedTypes,
+                  llvm::SmallPtrSetImpl<ProtocolDecl*> &expectedTypes,
                   SmallVectorImpl<ValueDecl *> &result)
         : CurModule(DC->getParentModule()), T(T), ExpectedTypes(expectedTypes),
           Result(result) {}
 
-    void foundDecl(ValueDecl *VD, DeclVisibilityKind reason) {
+    void foundDecl(ValueDecl *VD, DeclVisibilityKind reason,
+                   DynamicLookupInfo) {
       if (isMatchingMethod(VD) && !VD->shouldHideFromEditor())
         Result.push_back(VD);
     }
@@ -171,7 +164,6 @@ void ConformingMethodListCallbacks::getMatchingMethods(
   } LocalConsumer(CurDeclContext, T, expectedTypes, result);
 
   lookupVisibleMemberDecls(LocalConsumer, MetatypeType::get(T), CurDeclContext,
-                           CurDeclContext->getASTContext().getLazyResolver(),
                            /*includeInstanceMembers=*/false);
 }
 

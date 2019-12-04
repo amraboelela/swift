@@ -19,6 +19,7 @@
 #define SWIFT_SEMA_SCOPE_H
 
 #include "swift/AST/Identifier.h"
+#include "swift/Basic/Debug.h"
 #include "swift/Basic/TreeScopedHashTable.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -52,11 +53,14 @@ public:
 
   /// addToScope - Register the specified decl as being in the current lexical
   /// scope.
-  void addToScope(ValueDecl *D, Parser &TheParser);
+  void addToScope(ValueDecl *D, Parser &TheParser,
+                  bool diagnoseRedefinitions = true);
 
   bool isInactiveConfigBlock() const;
   
   SavedScope saveCurrentScope();
+
+  SWIFT_DEBUG_DUMP;
 };
 
 enum class ScopeKind {

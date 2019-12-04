@@ -13,6 +13,13 @@
 @_exported import Foundation // Clang module
 import _SwiftFoundationOverlayShims
 
+// We don't check for NSCopying here for performance reasons. We would
+// just crash anyway, and NSMutableDictionary will still do that when
+// it tries to call -copyWithZone: and it's not there
+private func duckCastToNSCopying(_ x: Any) -> NSCopying {
+  return _unsafeReferenceCast(x as AnyObject, to: NSCopying.self)
+}
+
 //===----------------------------------------------------------------------===//
 // Dictionaries
 //===----------------------------------------------------------------------===//
@@ -21,10 +28,10 @@ extension NSDictionary : ExpressibleByDictionaryLiteral {
   public required convenience init(
     dictionaryLiteral elements: (Any, Any)...
   ) {
-    // FIXME: Unfortunate that the `NSCopying` check has to be done at runtime.
+    
     self.init(
       objects: elements.map { $0.1 as AnyObject },
-      forKeys: elements.map { $0.0 as AnyObject as! NSCopying },
+      forKeys: elements.map { duckCastToNSCopying($0.0) },
       count: elements.count)
   }
 }
@@ -136,7 +143,7 @@ extension Dictionary : _ObjectiveCBridgeable {
     to: T.Type
   ) {
     for i in (0..<count).reversed() {
-      let bridged = Swift._forceBridgeFromObjectiveC(buffer[i], T.self)
+      let bridged = buffer[i] as! T
       _bridgeInitialize(index: i, of: buffer, to: bridged)
     }
   }
@@ -222,11 +229,9 @@ extension Dictionary : _ObjectiveCBridgeable {
     if keyStride < objectStride || valueStride < objectStride {
       var builder = _DictionaryBuilder<Key, Value>(count: d.count)
       d.enumerateKeysAndObjects({ (anyKey: Any, anyValue: Any, _) in
-        let anyObjectKey = anyKey as AnyObject
-        let anyObjectValue = anyValue as AnyObject
         builder.add(
-            key: Swift._forceBridgeFromObjectiveC(anyObjectKey, Key.self),
-            value: Swift._forceBridgeFromObjectiveC(anyObjectValue, Value.self))
+          key: anyKey as! Key,
+          value: anyValue as! Value)
       })
       result = builder.take()
     } else {
@@ -240,7 +245,7 @@ extension Dictionary : _ObjectiveCBridgeable {
       let handleDuplicates = (Key.self == String.self)
       
       result = Dictionary(_unsafeUninitializedCapacity: numElems,
-        allowingDuplicates: handleDuplicates) { (keys, vals, outCount) in
+        allowingDuplicates: handleDuplicates) { keys, vals in
         
         let objectKeys = UnsafeMutableRawPointer(mutating:
           keys.baseAddress!).assumingMemoryBound(to: AnyObject.self)
@@ -255,7 +260,7 @@ extension Dictionary : _ObjectiveCBridgeable {
         _forceBridge(objectKeys, count: numElems, to: Key.self)
         _forceBridge(objectVals, count: numElems, to: Value.self)
         
-        outCount = numElems
+        return numElems
       }
     }
   }
@@ -295,7 +300,7 @@ extension Dictionary : _ObjectiveCBridgeable {
     let handleDuplicates = (Key.self == String.self)
     
     let tmpResult = Dictionary(_unsafeUninitializedCapacity: numElems,
-      allowingDuplicates: handleDuplicates) { (keys, vals, outCount) in
+      allowingDuplicates: handleDuplicates) { keys, vals in
       
       let objectKeys = UnsafeMutableRawPointer(mutating:
         keys.baseAddress!).assumingMemoryBound(to: AnyObject.self)
@@ -316,7 +321,7 @@ extension Dictionary : _ObjectiveCBridgeable {
             Key.self)).deinitialize(count: numElems)
         }
       }
-      outCount = success ? numElems : 0
+      return success ? numElems : 0
     }
     
     result = success ? tmpResult : nil
@@ -403,9 +408,7 @@ extension NSMutableDictionary {
     }
     @objc(__swift_setObject:forKeyedSubscript:)
     set {
-      // FIXME: Unfortunate that the `NSCopying` check has to be done at
-      // runtime.
-      let copyingKey = key as AnyObject as! NSCopying
+      let copyingKey = duckCastToNSCopying(key)
       if let newValue = newValue {
         self.setObject(newValue, forKey: copyingKey)
       } else {

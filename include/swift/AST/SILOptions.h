@@ -50,17 +50,21 @@ public:
   /// Remove all runtime assertions during optimizations.
   bool RemoveRuntimeAsserts = false;
 
-  /// Enable existential specializer optimization.
-  bool ExistentialSpecializer = false;
-
   /// Controls whether the SIL ARC optimizations are run.
   bool EnableARCOptimizations = true;
+
+  /// Controls whether specific OSSA optimizations are run. For benchmarking
+  /// purposes.
+  bool EnableOSSAOptimizations = true;
 
   /// Should we run any SIL performance optimizations
   ///
   /// Useful when you want to enable -O LLVM opts but not -O SIL opts.
   bool DisableSILPerfOptimizations = false;
 
+  /// Controls whether cross module optimization is enabled.
+  bool CrossModuleOptimization = false;
+  
   /// Controls whether or not paranoid verification checks are run.
   bool VerifyAll = false;
 
@@ -72,6 +76,9 @@ public:
 
   /// Whether to stop the optimization pipeline after serializing SIL.
   bool StopOptimizationAfterSerialization = false;
+
+  /// Whether to skip emitting non-inlinable function bodies.
+  bool SkipNonInlinableFunctionBodies = false;
 
   /// Optimization mode being used.
   OptimizationMode OptMode = OptimizationMode::NotSet;
@@ -112,7 +119,7 @@ public:
   std::string SILOutputFileNameForDebugging;
 
   /// If set to true, compile with the SIL Ownership Model enabled.
-  bool EnableSILOwnership = false;
+  bool VerifySILOwnership = true;
 
   /// Assume that code will be executed in a single-threaded environment.
   bool AssumeSingleThreaded = false;
@@ -129,15 +136,22 @@ public:
   /// Emit extra exclusvity markers for memory access and verify coverage.
   bool VerifyExclusivity = false;
 
-  /// Enable the mandatory semantic arc optimizer.
-  bool EnableMandatorySemanticARCOpts = false;
+  /// Calls to the replaced method inside of the replacement method will call
+  /// the previous implementation.
+  ///
+  /// @_dynamicReplacement(for: original())
+  /// func replacement() {
+  ///   if (...)
+  ///     original() // calls original() implementation if true
+  /// }
+  bool EnableDynamicReplacementCanCallPreviousImplementation = true;
 
   /// Enable large loadable types IRGen pass.
   bool EnableLargeLoadableTypes = true;
 
   /// Should the default pass pipelines strip ownership during the diagnostic
-  /// pipeline.
-  bool StripOwnershipDuringDiagnosticsPipeline = true;
+  /// pipeline or after serialization.
+  bool StripOwnershipAfterSerialization = true;
 
   /// The name of the file to which the backend should save YAML optimization
   /// records.

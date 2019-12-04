@@ -20,7 +20,7 @@
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILInstruction.h"
-#include "swift/SILOptimizer/Utils/Local.h"
+#include "swift/SILOptimizer/Utils/InstOptUtils.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -78,7 +78,7 @@ class ReabstractionInfo {
 
   /// The generic signature of the specialization.
   /// It is nullptr if the specialization is not polymorphic.
-  GenericSignature *SpecializedGenericSig;
+  GenericSignature SpecializedGenericSig;
 
   // Set of substitutions from callee's invocation before
   // any transformations performed by the generic specializer.
@@ -100,6 +100,11 @@ class ReabstractionInfo {
   // Reference to the original generic non-specialized callee function.
   SILFunction *Callee;
 
+  // The module the specialization is created in.
+  ModuleDecl *TargetModule = nullptr;
+
+  bool isWholeModule = false;
+
   // The apply site which invokes the generic function.
   ApplySite Apply;
 
@@ -113,6 +118,9 @@ class ReabstractionInfo {
   // generic parameters.
   // It uses interface types.
   SubstitutionMap CallerInterfaceSubs;
+
+  // Is the generated specialization going to be serialized?
+  IsSerialized_t Serialized;
 
   // Create a new substituted type with the updated signature.
   CanSILFunctionType createSubstitutedType(SILFunction *OrigF,
@@ -137,15 +145,28 @@ public:
   /// substitutions \p ParamSubs.
   /// If specialization is not possible getSpecializedType() will return an
   /// invalid type.
-  ReabstractionInfo(ApplySite Apply, SILFunction *Callee,
+  ReabstractionInfo(ModuleDecl *targetModule,
+                    bool isModuleWholeModule,
+                    ApplySite Apply, SILFunction *Callee,
                     SubstitutionMap ParamSubs,
+                    IsSerialized_t Serialized,
                     bool ConvertIndirectToDirect = true,
                     OptRemark::Emitter *ORE = nullptr);
 
   /// Constructs the ReabstractionInfo for generic function \p Callee with
-  /// additional requirements. Requirements may contain new layout,
-  /// conformances or same concrete type requirements.
-  ReabstractionInfo(SILFunction *Callee, ArrayRef<Requirement> Requirements);
+  /// a specialization signature.
+  ReabstractionInfo(ModuleDecl *targetModule, bool isModuleWholeModule,
+                    SILFunction *Callee, GenericSignature SpecializedSig);
+
+  IsSerialized_t isSerialized() const {
+    return Serialized;
+  }
+
+  TypeExpansionContext getResilienceExpansion() const {
+    auto resilience = (Serialized ? ResilienceExpansion::Minimal
+                                  : ResilienceExpansion::Maximal);
+    return TypeExpansionContext(resilience, TargetModule, isWholeModule);
+  }
 
   /// Returns true if the \p ParamIdx'th (non-result) formal parameter is
   /// converted from indirect to direct.
@@ -204,7 +225,7 @@ public:
     return SpecializedGenericEnv;
   }
 
-  GenericSignature *getSpecializedGenericSignature() const {
+  GenericSignature getSpecializedGenericSignature() const {
     return SpecializedGenericSig;
   }
 
@@ -263,7 +284,6 @@ class GenericFuncSpecializer {
   SILModule &M;
   SILFunction *GenericFunc;
   SubstitutionMap ParamSubs;
-  IsSerialized_t Serialized;
   const ReabstractionInfo &ReInfo;
 
   SubstitutionMap ContextSubs;
@@ -273,7 +293,6 @@ public:
   GenericFuncSpecializer(SILOptFunctionBuilder &FuncBuilder,
                          SILFunction *GenericFunc,
                          SubstitutionMap ParamSubs,
-                         IsSerialized_t Serialized,
                          const ReabstractionInfo &ReInfo);
 
   /// If we already have this specialization, reuse it.
@@ -307,6 +326,12 @@ public:
 /// Checks if a given mangled name could be a name of a known
 /// prespecialization for -Onone support.
 bool isKnownPrespecialization(StringRef SpecName);
+
+/// Checks if all OnoneSupport pre-specializations are included in the module
+/// as public functions.
+///
+/// Issues errors for all missing functions.
+void checkCompletenessOfPrespecializations(SILModule &M);
 
 /// Create a new apply based on an old one, but with a different
 /// function being applied.

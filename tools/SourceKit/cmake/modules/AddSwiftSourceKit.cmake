@@ -66,7 +66,9 @@ function(add_sourcekit_default_compiler_flags target)
     ENABLE_LTO "${SWIFT_TOOLS_ENABLE_LTO}"
     LTO_OBJECT_NAME "${target}-${sdk}-${arch}"
     ANALYZE_CODE_COVERAGE "${analyze_code_coverage}"
-    RESULT_VAR_NAME link_flags)
+    RESULT_VAR_NAME link_flags
+    LINK_LIBRARIES_VAR_NAME link_libraries
+    LIBRARY_SEARCH_DIRECTORIES_VAR_NAME library_search_directories)
 
   # Convert variables to space-separated strings.
   _list_escape_for_shell("${c_compile_flags}" c_compile_flags)
@@ -77,15 +79,16 @@ function(add_sourcekit_default_compiler_flags target)
       COMPILE_FLAGS " ${c_compile_flags} -fblocks")
   set_property(TARGET "${target}" APPEND_STRING PROPERTY
       LINK_FLAGS " ${link_flags}")
+  set_property(TARGET "${target}" APPEND PROPERTY LINK_LIBRARIES ${link_libraries})
+  swift_target_link_search_directories("${target}" "${library_search_directories}")
 endfunction()
 
 # Add a new SourceKit library.
 #
 # Usage:
 #   add_sourcekit_library(name     # Name of the library
-#     [LINK_LIBS dep1 ...]         # Libraries this library will be linked with
 #     [DEPENDS dep1 ...]           # Targets this library depends on
-#     [LLVM_COMPONENT_DEPENDS comp1 ...]  # LLVM components this library depends on
+#     [LLVM_LINK_COMPONENTS comp1 ...]  # LLVM components this library depends on
 #     [INSTALL_IN_COMPONENT comp]  # The Swift installation component that this library belongs to.
 #     [SHARED]
 #     source1 [source2 source3 ...]) # Sources to add into this library
@@ -93,7 +96,7 @@ macro(add_sourcekit_library name)
   cmake_parse_arguments(SOURCEKITLIB
       "SHARED"
       "INSTALL_IN_COMPONENT"
-      "HEADERS;LINK_LIBS;DEPENDS;LLVM_COMPONENT_DEPENDS"
+      "HEADERS;DEPENDS;LLVM_LINK_COMPONENTS"
       ${ARGN})
   set(srcs ${SOURCEKITLIB_UNPARSED_ARGUMENTS})
 
@@ -128,6 +131,9 @@ macro(add_sourcekit_library name)
     set(libkind)
   endif()
   add_library(${name} ${libkind} ${srcs})
+  if(NOT SWIFT_BUILT_STANDALONE AND NOT CMAKE_C_COMPILER_ID MATCHES Clang)
+    add_dependencies(${name} clang)
+  endif()
   llvm_update_compile_flags(${name})
 
   set_output_directory(${name}
@@ -142,22 +148,7 @@ macro(add_sourcekit_library name)
     add_dependencies(${name} ${SOURCEKITLIB_DEPENDS})
   endif(SOURCEKITLIB_DEPENDS)
 
-  set(prefixed_link_libraries)
-  foreach(dep ${SOURCEKITLIB_LINK_LIBS})
-    if("${dep}" MATCHES "^clang")
-      set(dep "${LLVM_LIBRARY_OUTPUT_INTDIR}/${CMAKE_STATIC_LIBRARY_PREFIX}${dep}${CMAKE_STATIC_LIBRARY_SUFFIX}")
-    endif()
-    list(APPEND prefixed_link_libraries "${dep}")
-  endforeach()
-  set(SOURCEKITLIB_LINK_LIBS "${prefixed_link_libraries}")
-
-  if("${libkind}" STREQUAL "SHARED")
-    target_link_libraries("${name}" PRIVATE ${SOURCEKITLIB_LINK_LIBS})
-  else()
-    target_link_libraries("${name}" INTERFACE ${SOURCEKITLIB_LINK_LIBS})
-  endif()
-
-  swift_common_llvm_config(${name} ${SOURCEKITLIB_LLVM_COMPONENT_DEPENDS})
+  swift_common_llvm_config(${name} ${SOURCEKITLIB_LLVM_LINK_COMPONENTS})
 
   if(SOURCEKITLIB_SHARED AND EXPORTED_SYMBOL_FILE)
     add_sourcekit_symbol_exports(${name} ${EXPORTED_SYMBOL_FILE})
@@ -184,14 +175,20 @@ macro(add_sourcekit_library name)
       set(SOURCEKITLIB_INSTALL_IN_COMPONENT dev)
     endif()
   endif()
-  swift_install_in_component("${SOURCEKITLIB_INSTALL_IN_COMPONENT}"
-      TARGETS ${name}
-      LIBRARY DESTINATION "lib${LLVM_LIBDIR_SUFFIX}"
-      ARCHIVE DESTINATION "lib${LLVM_LIBDIR_SUFFIX}"
-      RUNTIME DESTINATION "bin")
-  swift_install_in_component("${SOURCEKITLIB_INSTALL_IN_COMPONENT}"
-    FILES ${SOURCEKITLIB_HEADERS}
-    DESTINATION "include/SourceKit")
+  add_dependencies(${SOURCEKITLIB_INSTALL_IN_COMPONENT} ${name})
+  swift_install_in_component(TARGETS ${name}
+    LIBRARY
+      DESTINATION "lib${LLVM_LIBDIR_SUFFIX}"
+      COMPONENT "${SOURCEKITLIB_INSTALL_IN_COMPONENT}"
+    ARCHIVE
+      DESTINATION "lib${LLVM_LIBDIR_SUFFIX}"
+      COMPONENT "${SOURCEKITLIB_INSTALL_IN_COMPONENT}"
+    RUNTIME
+      DESTINATION "bin"
+      COMPONENT "${SOURCEKITLIB_INSTALL_IN_COMPONENT}")
+  swift_install_in_component(FILES ${SOURCEKITLIB_HEADERS}
+                             DESTINATION "include/SourceKit"
+                             COMPONENT "${SOURCEKITLIB_INSTALL_IN_COMPONENT}")
   set_target_properties(${name} PROPERTIES FOLDER "SourceKit libraries")
   add_sourcekit_default_compiler_flags("${name}")
 endmacro()
@@ -200,8 +197,7 @@ endmacro()
 #
 # Usage:
 #   add_sourcekit_executable(name        # Name of the executable
-#     [LINK_LIBS dep1 ...]               # Libraries this executable depends on
-#     [LLVM_COMPONENT_DEPENDS comp1 ...] # LLVM components this executable
+#     [LLVM_LINK_COMPONENTS comp1 ...] # LLVM components this executable
 #                                        # depends on
 #     [EXCLUDE_FROM_ALL]              # Whether to exclude this executable from
 #                                     # the ALL_BUILD target
@@ -210,13 +206,16 @@ macro(add_sourcekit_executable name)
   cmake_parse_arguments(SOURCEKITEXE
     "EXCLUDE_FROM_ALL"
     ""
-    "LINK_LIBS;LLVM_COMPONENT_DEPENDS"
+    "LLVM_LINK_COMPONENTS"
     ${ARGN})
 
   if (${SOURCEKITEXE_EXCLUDE_FROM_ALL})
     add_executable(${name} EXCLUDE_FROM_ALL ${SOURCEKITEXE_UNPARSED_ARGUMENTS})
   else()
     add_executable(${name} ${SOURCEKITEXE_UNPARSED_ARGUMENTS})
+  endif()
+  if(NOT SWIFT_BUILT_STANDALONE AND NOT CMAKE_C_COMPILER_ID MATCHES Clang)
+    add_dependencies(${name} clang)
   endif()
   llvm_update_compile_flags(${name})
   set_output_directory(${name}
@@ -228,8 +227,7 @@ macro(add_sourcekit_executable name)
     add_dependencies(${name} ${LLVM_COMMON_DEPENDS})
   endif()
 
-  target_link_libraries(${name} PRIVATE ${SOURCEKITEXE_LINK_LIBS})
-  swift_common_llvm_config(${name} ${SOURCEKITEXE_LLVM_COMPONENT_DEPENDS})
+  swift_common_llvm_config(${name} ${SOURCEKITEXE_LLVM_LINK_COMPONENTS})
   target_link_libraries(${name} PRIVATE ${LLVM_COMMON_LIBS})
 
   set_target_properties(${name} PROPERTIES FOLDER "SourceKit executables")
@@ -251,14 +249,13 @@ endmacro()
 #
 # Usage:
 #   add_sourcekit_framework(name     # Name of the framework
-#     [LINK_LIBS dep1 ...]           # Libraries this framework will link with
-#     [LLVM_COMPONENT_DEPENDS comp1 ...]  # LLVM components this framework depends on
+#     [LLVM_LINK_COMPONENTS comp1 ...]  # LLVM components this framework depends on
 #     [MODULEMAP modulemap]          # Module map file for this framework
 #     [INSTALL_IN_COMPONENT comp]    # The Swift installation component that this framework belongs to.
 #     source1 [source2 source3 ...]) # Sources to add into this framework
 macro(add_sourcekit_framework name)
   cmake_parse_arguments(SOURCEKITFW
-    "" "MODULEMAP;INSTALL_IN_COMPONENT" "LINK_LIBS;LLVM_COMPONENT_DEPENDS" ${ARGN})
+    "" "MODULEMAP;INSTALL_IN_COMPONENT" "LLVM_LINK_COMPONENTS" ${ARGN})
   set(srcs ${SOURCEKITFW_UNPARSED_ARGUMENTS})
 
   set(lib_dir ${SOURCEKIT_LIBRARY_OUTPUT_INTDIR})
@@ -300,8 +297,7 @@ macro(add_sourcekit_framework name)
     add_dependencies(${name} ${LLVM_COMMON_DEPENDS})
   endif(LLVM_COMMON_DEPENDS)
 
-  target_link_libraries(${name} PRIVATE ${SOURCEKITFW_LINK_LIBS})
-  swift_common_llvm_config(${name} ${SOURCEKITFW_LLVM_COMPONENT_DEPENDS})
+  swift_common_llvm_config(${name} ${SOURCEKITFW_LLVM_LINK_COMPONENTS})
 
   if (EXPORTED_SYMBOL_FILE)
     add_sourcekit_symbol_exports(${name} ${EXPORTED_SYMBOL_FILE})
@@ -336,12 +332,20 @@ macro(add_sourcekit_framework name)
                           MACOSX_FRAMEWORK_SHORT_VERSION_STRING "1.0"
                           MACOSX_FRAMEWORK_BUNDLE_VERSION "${SOURCEKIT_VERSION_STRING}"
                           PUBLIC_HEADER "${headers}")
-    swift_install_in_component(${SOURCEKITFW_INSTALL_IN_COMPONENT}
-        TARGETS ${name}
-        FRAMEWORK DESTINATION lib${LLVM_LIBDIR_SUFFIX}
-        LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
-        ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX}
-        RUNTIME DESTINATION bin)
+    add_dependencies(${SOURCEKITFW_INSTALL_IN_COMPONENT} ${name})
+    swift_install_in_component(TARGETS ${name}
+                               FRAMEWORK
+                                 DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+                                 COMPONENT ${SOURCEKITFW_INSTALL_IN_COMPONENT}
+                               LIBRARY
+                                 DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+                                 COMPONENT ${SOURCEKITFW_INSTALL_IN_COMPONENT}
+                               ARCHIVE
+                                 DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+                                 COMPONENT ${SOURCEKITFW_INSTALL_IN_COMPONENT}
+                               RUNTIME
+                                 DESTINATION bin
+                                 COMPONENT ${SOURCEKITFW_INSTALL_IN_COMPONENT})
   else()
     set_output_directory(${name}
         BINARY_DIR ${framework_location}
@@ -352,10 +356,10 @@ macro(add_sourcekit_framework name)
                           INSTALL_NAME_DIR "@rpath/${name}.framework"
                           PREFIX ""
                           SUFFIX "")
-    swift_install_in_component(${SOURCEKITFW_INSTALL_IN_COMPONENT}
-        DIRECTORY ${framework_location}
-        DESTINATION lib${LLVM_LIBDIR_SUFFIX}
-        USE_SOURCE_PERMISSIONS)
+    swift_install_in_component(DIRECTORY ${framework_location}
+                               DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+                               COMPONENT ${SOURCEKITFW_INSTALL_IN_COMPONENT}
+                               USE_SOURCE_PERMISSIONS)
 
     foreach(hdr ${headers})
       get_filename_component(hdrname ${hdr} NAME)
@@ -370,11 +374,10 @@ endmacro(add_sourcekit_framework)
 #
 # Usage:
 #   add_sourcekit_xpc_service(name      # Name of the XPC service
-#     [LINK_LIBS dep1 ...]              # Libraries this service will link with
-#     [LLVM_COMPONENT_DEPENDS comp1 ...]   # LLVM components this service depends on
+#     [LLVM_LINK_COMPONENTS comp1 ...]   # LLVM components this service depends on
 #     source1 [source2 source3 ...])    # Sources to add into this service
 macro(add_sourcekit_xpc_service name framework_target)
-  cmake_parse_arguments(SOURCEKITXPC "" "" "LINK_LIBS;LLVM_COMPONENT_DEPENDS" ${ARGN})
+  cmake_parse_arguments(SOURCEKITXPC "" "" "LLVM_LINK_COMPONENTS" ${ARGN})
   set(srcs ${SOURCEKITXPC_UNPARSED_ARGUMENTS})
 
   set(lib_dir ${SOURCEKIT_LIBRARY_OUTPUT_INTDIR})
@@ -415,8 +418,7 @@ macro(add_sourcekit_xpc_service name framework_target)
     add_dependencies(${name} ${LLVM_COMMON_DEPENDS})
   endif(LLVM_COMMON_DEPENDS)
 
-  target_link_libraries(${name} PRIVATE ${SOURCEKITXPC_LINK_LIBS})
-  swift_common_llvm_config(${name} ${SOURCEKITXPC_LLVM_COMPONENT_DEPENDS})
+  swift_common_llvm_config(${name} ${SOURCEKITXPC_LLVM_LINK_COMPONENTS})
   target_link_libraries(${name} PRIVATE ${LLVM_COMMON_LIBS})
 
   add_dependencies(${framework_target} ${name})

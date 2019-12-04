@@ -20,6 +20,7 @@
 #include "swift/Basic/SourceLoc.h"
 #include "swift/Basic/type_traits.h"
 #include "swift/AST/Decl.h"
+#include "swift/Basic/Debug.h"
 #include "swift/Basic/LLVM.h"
 #include "swift/AST/Type.h"
 #include "swift/AST/Types.h"
@@ -168,6 +169,13 @@ public:
   /// pattern.
   void forEachVariable(llvm::function_ref<void(VarDecl *)> f) const;
 
+  /// Returns true if \p vd is in the pattern.
+  bool containsVarDecl(const VarDecl *inputVD) const {
+    bool result = false;
+    forEachVariable([&](VarDecl *vd) { result |= inputVD == vd; });
+    return result;
+  }
+
   /// apply the specified function to all pattern nodes recursively in
   /// this pattern.  This is a pre-order traversal.
   void forEachNode(llvm::function_ref<void(Pattern *)> f);
@@ -214,7 +222,7 @@ public:
   
   void print(llvm::raw_ostream &OS,
              const PrintOptions &Options = PrintOptions()) const;
-  void dump() const;
+  SWIFT_DEBUG_DUMP;
   
   /// walk - This recursively walks the AST rooted at this pattern.
   Pattern *walk(ASTWalker &walker);

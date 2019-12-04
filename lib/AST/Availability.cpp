@@ -14,6 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "swift/AST/ASTContext.h"
 #include "swift/AST/Attr.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/Types.h"
@@ -23,6 +24,11 @@
 #include <map>
 
 using namespace swift;
+
+AvailabilityContext AvailabilityContext::forDeploymentTarget(ASTContext &Ctx) {
+  return AvailabilityContext(
+      VersionRange::allGTE(Ctx.LangOpts.getMinPlatformVersion()));
+}
 
 namespace {
 
@@ -209,4 +215,39 @@ AvailabilityContext AvailabilityInference::inferForType(Type t) {
   AvailabilityInferenceTypeWalker walker(t->getASTContext());
   t.walk(walker);
   return walker.AvailabilityInfo;
+}
+
+AvailabilityContext ASTContext::getOpaqueTypeAvailability() {
+  return getSwift51Availability();
+}
+
+AvailabilityContext ASTContext::getSwift51Availability() {
+  auto target = LangOpts.Target;
+  
+  if (target.isMacOSX()) {
+    return AvailabilityContext(
+                            VersionRange::allGTE(llvm::VersionTuple(10,15,0)));
+  } else if (target.isiOS()) {
+    return AvailabilityContext(
+                            VersionRange::allGTE(llvm::VersionTuple(13,0,0)));
+  } else if (target.isWatchOS()) {
+    return AvailabilityContext(
+                            VersionRange::allGTE(llvm::VersionTuple(6,0,0)));
+  } else {
+    return AvailabilityContext::alwaysAvailable();
+  }
+}
+
+AvailabilityContext ASTContext::getTypesInAbstractMetadataStateAvailability() {
+  auto target = LangOpts.Target;
+
+  if (target.isMacOSX() ) {
+    return AvailabilityContext(
+        VersionRange::allGTE(llvm::VersionTuple(10, 99, 0)));
+  } else if (target.isiOS() || target.isWatchOS()) {
+    return AvailabilityContext(
+        VersionRange::allGTE(llvm::VersionTuple(9999, 0, 0)));
+  } else {
+    return AvailabilityContext::alwaysAvailable();
+  }
 }

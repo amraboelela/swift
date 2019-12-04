@@ -203,7 +203,7 @@ extension Array where Element == AnyObject {
     // CHECK-LABEL: sil hidden [ossa] @$sSa22constrained_extensionsyXlRszlE11NestedClassCfD : $@convention(method) (@owned Array<AnyObject>.NestedClass) -> ()
     deinit { }
 
-    // CHECK-LABEL: sil hidden [ossa] @$sSa22constrained_extensionsyXlRszlE11NestedClassCACyyXl_GycfC : $@convention(method) (@thick Array<AnyObject>.NestedClass.Type) -> @owned Array<AnyObject>.NestedClass
+    // CHECK-LABEL: sil hidden [exact_self_class] [ossa] @$sSa22constrained_extensionsyXlRszlE11NestedClassCACyyXl_GycfC : $@convention(method) (@thick Array<AnyObject>.NestedClass.Type) -> @owned Array<AnyObject>.NestedClass
     // CHECK-LABEL: sil hidden [ossa] @$sSa22constrained_extensionsyXlRszlE11NestedClassCACyyXl_Gycfc : $@convention(method) (@owned Array<AnyObject>.NestedClass) -> @owned Array<AnyObject>.NestedClass
   }
 
@@ -211,6 +211,15 @@ extension Array where Element == AnyObject {
     // CHECK-LABEL: sil hidden [transparent] [ossa] @$sSa22constrained_extensionsyXlRszlE12DerivedClassC1eyXlSgvpfi : $@convention(thin) () -> @owned Optional<AnyObject>
     // CHECK-LABEL: sil hidden [ossa] @$sSa22constrained_extensionsyXlRszlE12DerivedClassCfE : $@convention(method) (@guaranteed Array<AnyObject>.DerivedClass) -> ()
     var e: Element? = nil
+  }
+
+  enum NestedEnum {
+    case hay
+    case grain
+
+    func makeHay() -> NestedEnum {
+      return .hay
+    }
   }
 }
 

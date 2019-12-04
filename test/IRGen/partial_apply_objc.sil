@@ -143,7 +143,8 @@ entry(%c : $ObjCClass):
 // CHECK:   [[DATA_ADDR:%.*]] = bitcast %swift.refcounted* %0 to [[DATA_TYPE]]*
 // CHECK:   [[X_ADDR:%.*]] = getelementptr inbounds [[DATA_TYPE]], [[DATA_TYPE]]* [[DATA_ADDR]], i32 0, i32 1
 // CHECK:   [[SELF:%.*]] = load %T18partial_apply_objc9ObjCClassC*, %T18partial_apply_objc9ObjCClassC** [[X_ADDR]], align 8
-// CHECK:   call {{.*}}@objc_retain{{.*}}(%{{.*}}* [[SELF]])
+// CHECK:   [[T0:%.*]] = bitcast %T18partial_apply_objc9ObjCClassC* [[SELF]] to i8*
+// CHECK:   call i8* @llvm.objc.retain(i8* [[T0]])
 // CHECK:   [[CMD:%.*]] = load i8*, i8** @"\01L_selector(fakeInitFamily)", align 8
 // CHECK:   [[I8PTRSELF:%.*]] = bitcast %T18partial_apply_objc9ObjCClassC* [[SELF]] to [[OPAQUE4:%.*]]*
 // CHECK:   call [[OPAQUE3:%.*]]* bitcast (void ()* @objc_msgSend to [[OPAQUE3]]* ([[OPAQUE4:%.*]]*, i8*)*)([[OPAQUE4]]* [[I8PTRSELF]], i8* [[CMD]])
@@ -171,12 +172,12 @@ entry(%x : $Int):
 // CHECK: define internal swiftcc void [[DYNAMIC_LOOKUP_BR_PARTIAL_APPLY_STUB]](i64, %swift.refcounted* swiftself) {{.*}} {
 // CHECK:   load i8*, i8** @"\01L_selector(methodWithX:)", align 8
 
-sil @dynamic_lookup_br_partial_apply : $@convention(thin) (Builtin.UnknownObject) -> @callee_owned (Int) -> () {
-entry(%o : $Builtin.UnknownObject):
-  dynamic_method_br %o : $Builtin.UnknownObject, #ObjCClass.method!1.foreign, yes, no
+sil @dynamic_lookup_br_partial_apply : $@convention(thin) (Builtin.AnyObject) -> @callee_owned (Int) -> () {
+entry(%o : $Builtin.AnyObject):
+  dynamic_method_br %o : $Builtin.AnyObject, #ObjCClass.method!1.foreign, yes, no
 
-yes(%m : $@convention(objc_method) (Int, Builtin.UnknownObject) -> ()):
-  %p = partial_apply %m(%o) : $@convention(objc_method) (Int, Builtin.UnknownObject) -> ()
+yes(%m : $@convention(objc_method) (Int, Builtin.AnyObject) -> ()):
+  %p = partial_apply %m(%o) : $@convention(objc_method) (Int, Builtin.AnyObject) -> ()
   br done(%p : $@callee_owned (Int) -> ())
 
 no:

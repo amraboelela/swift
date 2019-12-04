@@ -112,8 +112,9 @@ static SILValue emitIntValue(SILGenFunction &SGF, SILLocation loc,
                              SILType type, unsigned value) {
   if (auto structDecl = type.getStructOrBoundGenericStruct()) {
     auto properties = structDecl->getStoredProperties();
-    assert(std::next(properties.begin()) == properties.end());
-    SILType fieldType = type.getFieldType(*properties.begin(), SGF.SGM.M);
+    assert(properties.size() == 1);
+    SILType fieldType = type.getFieldType(properties[0], SGF.SGM.M,
+                                          SGF.getTypeExpansionContext());
     SILValue fieldValue = emitIntValue(SGF, loc, fieldType, value);
     return SGF.B.createStruct(loc, type, fieldValue);
   }
@@ -185,7 +186,7 @@ emitBridgeErrorForForeignError(SILLocation loc,
   case ForeignErrorConvention::NilResult:
     return B.createOptionalNone(loc, bridgedResultType);
   case ForeignErrorConvention::NonNilError:
-    return SILUndef::get(bridgedResultType, SGM.M);
+    return SILUndef::get(bridgedResultType, F);
   }
   llvm_unreachable("bad foreign error convention kind");
 }
@@ -278,7 +279,7 @@ void SILGenFunction::emitForeignErrorBlock(SILLocation loc,
 
   // Propagate.
   FullExpr throwScope(Cleanups, CleanupLocation::get(loc));
-  emitThrow(loc, error);
+  emitThrow(loc, error, true);
 }
 
 /// Perform a foreign error check by testing whether the call result is zero.

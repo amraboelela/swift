@@ -14,17 +14,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "swift/Parse/Parser.h"
+#include "swift/AST/ASTWalker.h"
 #include "swift/AST/Attr.h"
 #include "swift/AST/Decl.h"
 #include "swift/Basic/Defer.h"
 #include "swift/Basic/Version.h"
-#include "swift/Parse/Lexer.h"
 #include "swift/Parse/CodeCompletionCallbacks.h"
+#include "swift/Parse/Lexer.h"
+#include "swift/Parse/Parser.h"
 #include "swift/Parse/SyntaxParsingContext.h"
 #include "swift/Subsystems.h"
 #include "swift/Syntax/TokenSyntax.h"
 #include "llvm/ADT/PointerUnion.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/SaveAndRestore.h"
@@ -35,6 +37,9 @@ using namespace swift::syntax;
 /// isStartOfStmt - Return true if the current token starts a statement.
 ///
 bool Parser::isStartOfStmt() {
+  // This needs to be kept in sync with `Parser::parseStmt()`. If a new token
+  // kind is accepted here as start of statement, it should also be handled in
+  // `Parser::parseStmt()`.
   switch (Tok.getKind()) {
   default: return false;
   case tok::kw_return:
@@ -92,6 +97,18 @@ bool Parser::isStartOfStmt() {
     // putting a label on something inappropriate in parseStmt().
     return isStartOfStmt();
   }
+
+  case tok::at_sign: {
+    // Might be a statement or case attribute. The only one of these we have
+    // right now is `@unknown default`, so hardcode a check for an attribute
+    // without any parens.
+    if (!peekToken().is(tok::identifier))
+      return false;
+    Parser::BacktrackingScope backtrack(*this);
+    consumeToken(tok::at_sign);
+    consumeToken(tok::identifier);
+    return isStartOfStmt();
+  }
   }
 }
 
@@ -106,6 +123,7 @@ ParserStatus Parser::parseExprOrStmt(ASTNode &Result) {
 
   if (Tok.is(tok::pound) && Tok.isAtStartOfLine() &&
       peekToken().is(tok::code_complete)) {
+    SyntaxParsingContext CCCtxt(SyntaxContext, SyntaxContextKind::Decl);
     consumeToken();
     if (CodeCompletion)
       CodeCompletion->completeAfterPoundDirective();
@@ -128,8 +146,10 @@ ParserStatus Parser::parseExprOrStmt(ASTNode &Result) {
     CodeCompletion->setExprBeginning(getParserPosition());
 
   if (Tok.is(tok::code_complete)) {
+    auto *CCE = new (Context) CodeCompletionExpr(Tok.getLoc());
+    Result = CCE;
     if (CodeCompletion)
-      CodeCompletion->completeStmtOrExpr();
+      CodeCompletion->completeStmtOrExpr(CCE);
     SyntaxParsingContext ErrorCtxt(SyntaxContext, SyntaxContextKind::Stmt);
     consumeToken(tok::code_complete);
     return makeParserCodeCompletionStatus();
@@ -231,11 +251,14 @@ bool Parser::isTerminatorForBraceItemListKind(BraceItemListKind Kind,
 
 void Parser::consumeTopLevelDecl(ParserPosition BeginParserPosition,
                                  TopLevelCodeDecl *TLCD) {
+  SyntaxParsingContext Discarding(SyntaxContext);
+  Discarding.disable();
   SourceLoc EndLoc = PreviousLoc;
   backtrackToPosition(BeginParserPosition);
   SourceLoc BeginLoc = Tok.getLoc();
-  State->delayTopLevel(TLCD, {BeginLoc, EndLoc},
-                       BeginParserPosition.PreviousLoc);
+  State->setCodeCompletionDelayedDeclState(
+      PersistentParserState::CodeCompletionDelayedDeclKind::TopLevelCodeDecl,
+      PD_Default, TLCD, {BeginLoc, EndLoc}, BeginParserPosition.PreviousLoc);
 
   // Skip the rest of the file to prevent the parser from constructing the AST
   // for it.  Forward references are not allowed at the top level.
@@ -338,7 +361,9 @@ ParserStatus Parser::parseBraceItems(SmallVectorImpl<ASTNode> &Entries,
 
     // If the previous statement didn't have a semicolon and this new
     // statement doesn't start a line, complain.
-    if (!PreviousHadSemi && !Tok.isAtStartOfLine()) {
+    const bool IsAtStartOfLineOrPreviousHadSemi =
+        PreviousHadSemi || Tok.isAtStartOfLine();
+    if (!IsAtStartOfLineOrPreviousHadSemi) {
       SourceLoc EndOfPreviousLoc = getEndOfPreviousLoc();
       diagnose(EndOfPreviousLoc, diag::statement_same_line_without_semi)
         .fixItInsert(EndOfPreviousLoc, ";");
@@ -392,7 +417,9 @@ ParserStatus Parser::parseBraceItems(SmallVectorImpl<ASTNode> &Entries,
       SmallVector<Decl*, 8> TmpDecls;
       ParserResult<Decl> DeclResult = 
           parseDecl(IsTopLevel ? PD_AllowTopLevel : PD_Default,
+                    IsAtStartOfLineOrPreviousHadSemi,
                     [&](Decl *D) {TmpDecls.push_back(D);});
+      BraceItemsStatus |= DeclResult;
       if (DeclResult.isParseError()) {
         NeedParseErrorRecovery = true;
         if (DeclResult.hasCodeCompletion() && IsTopLevel &&
@@ -417,6 +444,7 @@ ParserStatus Parser::parseBraceItems(SmallVectorImpl<ASTNode> &Entries,
       }
 
       ParserStatus Status = parseExprOrStmt(Result);
+      BraceItemsStatus |= Status;
       if (Status.hasCodeCompletion() && isCodeCompletionFirstPass()) {
         consumeTopLevelDecl(BeginParserPosition, TLCD);
         auto Brace = BraceStmt::create(Context, StartLoc, {}, PreviousLoc);
@@ -445,10 +473,12 @@ ParserStatus Parser::parseBraceItems(SmallVectorImpl<ASTNode> &Entries,
       SourceLoc StartLoc = Tok.getLoc();
       auto CD = cast<ConstructorDecl>(CurDeclContext);
       // Hint at missing 'self.' or 'super.' then skip this statement.
-      bool isSelf = !CD->isDesignatedInit() || !isa<ClassDecl>(CD->getParent());
+      bool isSelf = CD->getAttrs().hasAttribute<ConvenienceAttr>() ||
+                    !isa<ClassDecl>(CD->getParent());
       diagnose(StartLoc, diag::invalid_nested_init, isSelf)
         .fixItInsert(StartLoc, isSelf ? "self." : "super.");
       NeedParseErrorRecovery = true;
+      BraceItemsStatus.setIsParseError();
     } else {
       ParserStatus ExprOrStmtStatus = parseExprOrStmt(Result);
       BraceItemsStatus |= ExprOrStmtStatus;
@@ -490,53 +520,6 @@ ParserStatus Parser::parseBraceItems(SmallVectorImpl<ASTNode> &Entries,
   return BraceItemsStatus;
 }
 
-void Parser::parseTopLevelCodeDeclDelayed() {
-  auto DelayedState = State->takeDelayedDeclState();
-  assert(DelayedState.get() && "should have delayed state");
-
-  auto BeginParserPosition = getParserPosition(DelayedState->BodyPos);
-  auto EndLexerState = L->getStateForEndOfTokenLoc(DelayedState->BodyEnd);
-
-  // ParserPositionRAII needs a primed parser to restore to.
-  if (Tok.is(tok::NUM_TOKENS))
-    consumeTokenWithoutFeedingReceiver();
-
-  // Ensure that we restore the parser state at exit.
-  ParserPositionRAII PPR(*this);
-
-  // Create a lexer that cannot go past the end state.
-  Lexer LocalLex(*L, BeginParserPosition.LS, EndLexerState);
-
-  // Temporarily swap out the parser's current lexer with our new one.
-  llvm::SaveAndRestore<Lexer *> T(L, &LocalLex);
-
-  // Rewind to the beginning of the top-level code.
-  restoreParserPosition(BeginParserPosition);
-
-  // Re-enter the lexical scope.
-  Scope S(this, DelayedState->takeScope());
-
-  // Re-enter the top-level decl context.
-  // FIXME: this can issue discriminators out-of-order?
-  auto *TLCD = cast<TopLevelCodeDecl>(DelayedState->ParentContext);
-  ContextChange CC(*this, TLCD, &State->getTopLevelContext());
-
-  SourceLoc StartLoc = Tok.getLoc();
-  ASTNode Result;
-
-  // Expressions can't begin with a closure literal at statement position. This
-  // prevents potential ambiguities with trailing closure syntax.
-  if (Tok.is(tok::l_brace)) {
-    diagnose(Tok, diag::statement_begins_with_closure);
-  }
-
-  parseExprOrStmt(Result);
-  if (!Result.isNull()) {
-    auto Brace = BraceStmt::create(Context, StartLoc, Result, Tok.getLoc());
-    TLCD->setBody(Brace);
-  }
-}
-
 /// Recover from a 'case' or 'default' outside of a 'switch' by consuming up to
 /// the next ':'.
 static ParserResult<Stmt> recoverFromInvalidCase(Parser &P) {
@@ -549,6 +532,8 @@ static ParserResult<Stmt> recoverFromInvalidCase(Parser &P) {
 }
 
 ParserResult<Stmt> Parser::parseStmt() {
+  AssertParserMadeProgressBeforeLeavingScopeRAII apmp(*this);
+
   SyntaxParsingContext LocalContext(SyntaxContext, SyntaxContextKind::Stmt);
 
   // Note that we're parsing a statement.
@@ -572,7 +557,9 @@ ParserResult<Stmt> Parser::parseStmt() {
   if (isContextualYieldKeyword()) {
     Tok.setKind(tok::kw_yield);
   }
-  
+
+  // This needs to handle everything that `Parser::isStartOfStmt()` accepts as
+  // start of statement.
   switch (Tok.getKind()) {
   case tok::pound_line:
   case tok::pound_sourceLocation:
@@ -585,6 +572,11 @@ ParserResult<Stmt> Parser::parseStmt() {
     LLVM_FALLTHROUGH;
   default:
     diagnose(Tok, tryLoc.isValid() ? diag::expected_expr : diag::expected_stmt);
+    if (Tok.is(tok::at_sign)) {
+      // Recover from erroneously placed attribute.
+      consumeToken(tok::at_sign);
+      consumeIf(tok::identifier);
+    }
     return nullptr;
   case tok::kw_return:
     if (LabelInfo) diagnose(LabelInfo.Loc, diag::invalid_label_on_stmt);
@@ -936,7 +928,7 @@ ParserResult<Stmt> Parser::parseStmtDefer() {
                        StaticSpellingKind::None,
                        /*FuncLoc=*/ SourceLoc(),
                        name,
-                       /*NameLoc=*/ SourceLoc(),
+                       /*NameLoc=*/ PreviousLoc,
                        /*Throws=*/ false, /*ThrowsLoc=*/ SourceLoc(),
                        /*generic params*/ nullptr,
                        params,
@@ -955,10 +947,10 @@ ParserResult<Stmt> Parser::parseStmtDefer() {
     if (Body.isNull())
       return nullptr;
     Status |= Body;
-    tempDecl->setBody(Body.get());
+    tempDecl->setBodyParsed(Body.get());
   }
   
-  SourceLoc loc = tempDecl->getBody()->getStartLoc();
+  SourceLoc loc = tempDecl->getBodySourceRange().Start;
 
   // Form the call, which will be emitted on any path that needs to run the
   // code.
@@ -1051,29 +1043,19 @@ static void parseGuardedPattern(Parser &P, GuardedPattern &result,
 
   // Do some special-case code completion for the start of the pattern.
   if (P.Tok.is(tok::code_complete)) {
+    auto CCE = new (P.Context) CodeCompletionExpr(P.Tok.getLoc());
+    result.ThePattern = new (P.Context) ExprPattern(CCE);
     if (P.CodeCompletion) {
       switch (parsingContext) {
       case GuardedPatternContext::Case:
-        P.CodeCompletion->completeCaseStmtBeginning();
+        P.CodeCompletion->completeCaseStmtBeginning(CCE);
         break;
       case GuardedPatternContext::Catch:
-        P.CodeCompletion->completePostfixExprBeginning(nullptr);
+        P.CodeCompletion->completePostfixExprBeginning(CCE);
         break;
       }
     }
-    auto loc = P.consumeToken(tok::code_complete);
-    result.ThePattern = new (P.Context) AnyPattern(loc);
-    status.setHasCodeCompletion();
-    return;
-  }
-  if (parsingContext == GuardedPatternContext::Case &&
-      P.Tok.isAny(tok::period_prefix, tok::period) &&
-      P.peekToken().is(tok::code_complete)) {
-    P.consumeToken();
-    if (P.CodeCompletion)
-      P.CodeCompletion->completeCaseStmtDotPrefix();
-    auto loc = P.consumeToken(tok::code_complete);
-    result.ThePattern = new (P.Context) AnyPattern(loc);
+    P.consumeToken(tok::code_complete);
     status.setHasCodeCompletion();
     return;
   }
@@ -1085,7 +1067,7 @@ static void parseGuardedPattern(Parser &P, GuardedPattern &result,
     auto loc = P.Tok.getLoc();
     auto errorName = P.Context.Id_error;
     auto var = new (P.Context) VarDecl(/*IsStatic*/false,
-                                       VarDecl::Specifier::Let,
+                                       VarDecl::Introducer::Let,
                                        /*IsCaptureList*/false, loc, errorName,
                                        P.CurDeclContext);
     var->setImplicit();
@@ -1176,7 +1158,6 @@ static void parseGuardedPattern(Parser &P, GuardedPattern &result,
     
     for (auto VD : repeatedDecls) {
       VD->setHasNonPatternBindingInit();
-      VD->setImplicit();
     }
 
     // Parse the optional 'where' guard, with this particular pattern's bound
@@ -1185,9 +1166,10 @@ static void parseGuardedPattern(Parser &P, GuardedPattern &result,
   }
 }
 
-/// Validate availability spec list, emitting diagnostics if necessary.
+/// Validate availability spec list, emitting diagnostics if necessary and removing
+/// specs for unrecognized platforms.
 static void validateAvailabilitySpecList(Parser &P,
-                                         ArrayRef<AvailabilitySpec *> Specs) {
+    SmallVectorImpl<AvailabilitySpec *> &Specs) {
   llvm::SmallSet<PlatformKind, 4> Platforms;
   bool HasOtherPlatformSpec = false;
 
@@ -1199,7 +1181,9 @@ static void validateAvailabilitySpecList(Parser &P,
     return;
   }
 
+  SmallVector<AvailabilitySpec *, 5> RecognizedSpecs;
   for (auto *Spec : Specs) {
+    RecognizedSpecs.push_back(Spec);
     if (isa<OtherPlatformAvailabilitySpec>(Spec)) {
       HasOtherPlatformSpec = true;
       continue;
@@ -1214,6 +1198,13 @@ static void validateAvailabilitySpecList(Parser &P,
     }
 
     auto *VersionSpec = cast<PlatformVersionConstraintAvailabilitySpec>(Spec);
+    // We keep specs for unrecognized platforms around for error recovery
+    // during parsing but remove them once parsing is completed.
+    if (VersionSpec->isUnrecognizedPlatform()) {
+      RecognizedSpecs.pop_back();
+      continue;
+    }
+
     bool Inserted = Platforms.insert(VersionSpec->getPlatform()).second;
     if (!Inserted) {
       // Rule out multiple version specs referring to the same platform.
@@ -1231,6 +1222,8 @@ static void validateAvailabilitySpecList(Parser &P,
     P.diagnose(InsertWildcardLoc, diag::availability_query_wildcard_required)
         .fixItInsertAfter(InsertWildcardLoc, ", *");
   }
+
+  Specs = RecognizedSpecs;
 }
 
 // #available(...)
@@ -2246,6 +2239,11 @@ Parser::parseStmtCases(SmallVectorImpl<ASTNode> &cases, bool IsActive) {
       if (auto PDD = PoundDiagnosticResult.getPtrOrNull()) {
         cases.emplace_back(PDD);
       }
+    } else if (Tok.is(tok::code_complete)) {
+      if (CodeCompletion)
+        CodeCompletion->completeCaseStmtKeyword();
+      consumeToken(tok::code_complete);
+      return makeParserCodeCompletionStatus();
     } else {
       // If there are non-case-label statements at the start of the switch body,
       // raise an error and recover by discarding them.
@@ -2261,10 +2259,11 @@ Parser::parseStmtCases(SmallVectorImpl<ASTNode> &cases, bool IsActive) {
   return Status;
 }
 
-static ParserStatus parseStmtCase(Parser &P, SourceLoc &CaseLoc,
-                                  SmallVectorImpl<CaseLabelItem> &LabelItems,
-                                  SmallVectorImpl<VarDecl *> &BoundDecls,
-                                  SourceLoc &ColonLoc) {
+static ParserStatus
+parseStmtCase(Parser &P, SourceLoc &CaseLoc,
+              SmallVectorImpl<CaseLabelItem> &LabelItems,
+              SmallVectorImpl<VarDecl *> &BoundDecls, SourceLoc &ColonLoc,
+              Optional<MutableArrayRef<VarDecl *>> &CaseBodyDecls) {
   SyntaxParsingContext CaseContext(P.SyntaxContext,
                                    SyntaxKind::SwitchCaseLabel);
   ParserStatus Status;
@@ -2280,13 +2279,28 @@ static ParserStatus parseStmtCase(Parser &P, SourceLoc &CaseLoc,
       GuardedPattern PatternResult;
       parseGuardedPattern(P, PatternResult, Status, BoundDecls,
                           GuardedPatternContext::Case, isFirst);
-      LabelItems.push_back(
-          CaseLabelItem(PatternResult.ThePattern, PatternResult.WhereLoc,
-                        PatternResult.Guard));
+      LabelItems.emplace_back(PatternResult.ThePattern, PatternResult.WhereLoc,
+                              PatternResult.Guard);
       isFirst = false;
       if (!P.consumeIf(tok::comma))
         break;
     }
+
+    // Grab the first case label item pattern and use it to initialize the case
+    // body var decls.
+    SmallVector<VarDecl *, 4> tmp;
+    LabelItems.front().getPattern()->collectVariables(tmp);
+    auto Result = P.Context.AllocateUninitialized<VarDecl *>(tmp.size());
+    for (unsigned i : indices(tmp)) {
+      auto *vOld = tmp[i];
+      auto *vNew = new (P.Context) VarDecl(
+          /*IsStatic*/ false, vOld->getIntroducer(), false /*IsCaptureList*/,
+          vOld->getNameLoc(), vOld->getName(), vOld->getDeclContext());
+      vNew->setHasNonPatternBindingInit();
+      vNew->setImplicit();
+      Result[i] = vNew;
+    }
+    CaseBodyDecls.emplace(Result);
   }
 
   ColonLoc = P.Tok.getLoc();
@@ -2335,6 +2349,43 @@ parseStmtCaseDefault(Parser &P, SourceLoc &CaseLoc,
   return Status;
 }
 
+namespace {
+
+struct FallthroughFinder : ASTWalker {
+  FallthroughStmt *result;
+
+  FallthroughFinder() : result(nullptr) {}
+
+  // We walk through statements.  If we find a fallthrough, then we got what
+  // we came for.
+  std::pair<bool, Stmt *> walkToStmtPre(Stmt *s) override {
+    if (auto *f = dyn_cast<FallthroughStmt>(s)) {
+      result = f;
+    }
+
+    return {true, s};
+  }
+
+  // Expressions, patterns and decls cannot contain fallthrough statements, so
+  // there is no reason to walk into them.
+  std::pair<bool, Expr *> walkToExprPre(Expr *e) override { return {false, e}; }
+  std::pair<bool, Pattern *> walkToPatternPre(Pattern *p) override {
+    return {false, p};
+  }
+
+  bool walkToDeclPre(Decl *d) override { return false; }
+  bool walkToTypeLocPre(TypeLoc &tl) override { return false; }
+  bool walkToTypeReprPre(TypeRepr *t) override { return false; }
+
+  static FallthroughStmt *findFallthrough(Stmt *s) {
+    FallthroughFinder finder;
+    s->walk(finder);
+    return finder.result;
+  }
+};
+
+} // end anonymous namespace
+
 ParserResult<CaseStmt> Parser::parseStmtCase(bool IsActive) {
   SyntaxParsingContext CaseContext(SyntaxContext, SyntaxKind::SwitchCase);
   // A case block has its own scope for variables bound out of the pattern.
@@ -2377,9 +2428,10 @@ ParserResult<CaseStmt> Parser::parseStmtCase(bool IsActive) {
 
   SourceLoc CaseLoc;
   SourceLoc ColonLoc;
+  Optional<MutableArrayRef<VarDecl *>> CaseBodyDecls;
   if (Tok.is(tok::kw_case)) {
-    Status |=
-        ::parseStmtCase(*this, CaseLoc, CaseLabelItems, BoundDecls, ColonLoc);
+    Status |= ::parseStmtCase(*this, CaseLoc, CaseLabelItems, BoundDecls,
+                              ColonLoc, CaseBodyDecls);
   } else if (Tok.is(tok::kw_default)) {
     Status |= parseStmtCaseDefault(*this, CaseLoc, CaseLabelItems, ColonLoc);
   } else {
@@ -2387,6 +2439,20 @@ ParserResult<CaseStmt> Parser::parseStmtCase(bool IsActive) {
   }
 
   assert(!CaseLabelItems.empty() && "did not parse any labels?!");
+
+  // Add a scope so that the parser can find our body bound decls if it emits
+  // optimized accesses.
+  Optional<Scope> BodyScope;
+  if (CaseBodyDecls) {
+    BodyScope.emplace(this, ScopeKind::CaseVars);
+    for (auto *v : *CaseBodyDecls) {
+      setLocalDiscriminator(v);
+      // If we had any bad redefinitions, we already diagnosed them against the
+      // first case label item.
+      if (v->hasName())
+        addToScope(v, false /*diagnoseRedefinitions*/);
+    }
+  }
 
   SmallVector<ASTNode, 8> BodyItems;
 
@@ -2409,9 +2475,9 @@ ParserResult<CaseStmt> Parser::parseStmtCase(bool IsActive) {
   }
 
   return makeParserResult(
-      Status, CaseStmt::create(Context, CaseLoc, CaseLabelItems,
-                               !BoundDecls.empty(), UnknownAttrLoc, ColonLoc,
-                               Body));
+      Status, CaseStmt::create(Context, CaseLoc, CaseLabelItems, UnknownAttrLoc,
+                               ColonLoc, Body, CaseBodyDecls, None,
+                               FallthroughFinder::findFallthrough(Body)));
 }
 
 /// stmt-pound-assert:

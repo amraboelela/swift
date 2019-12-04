@@ -14,6 +14,7 @@
 #define SWIFT_IDE_CODECOMPLETION_H
 
 #include "swift/AST/Identifier.h"
+#include "swift/Basic/Debug.h"
 #include "swift/Basic/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -314,7 +315,7 @@ public:
 
   /// Print a debug representation of the code completion string to \p OS.
   void print(raw_ostream &OS) const;
-  void dump() const;
+  SWIFT_DEBUG_DUMP;
 };
 
 /// Describes the origin of the code completion result.
@@ -485,21 +486,19 @@ enum class CompletionKind {
   PostfixExprBeginning,
   PostfixExpr,
   PostfixExprParen,
-  SuperExpr,
-  SuperExprDot,
   KeyPathExprObjC,
   KeyPathExprSwift,
+  TypeDeclResultBeginning,
   TypeSimpleBeginning,
   TypeIdentifierWithDot,
   TypeIdentifierWithoutDot,
+  CaseStmtKeyword,
   CaseStmtBeginning,
-  CaseStmtDotPrefix,
   NominalMemberBeginning,
   AccessorBeginning,
   AttributeBegin,
   AttributeDeclParen,
   PoundAvailablePlatform,
-  AssignmentRHS,
   CallArg,
   ReturnStmtExpr,
   YieldStmtExpr,
@@ -765,7 +764,7 @@ public:
 
   /// Print a debug representation of the code completion result to \p OS.
   void print(raw_ostream &OS) const;
-  void dump() const;
+  SWIFT_DEBUG_DUMP;
 
   static CodeCompletionDeclKind getCodeCompletionDeclKind(const Decl *D);
   static CodeCompletionOperatorKind
@@ -804,7 +803,21 @@ class CodeCompletionContext {
 public:
   CodeCompletionCache &Cache;
   CompletionKind CodeCompletionKind = CompletionKind::None;
-  bool HasExpectedTypeRelation = false;
+
+  enum class TypeContextKind {
+    /// There is no known contextual type. All types are equally good.
+    None,
+
+    /// There is a contextual type from a single-expression closure/function
+    /// body. The context is a hint, and enables unresolved member completion,
+    /// but should not hide any results.
+    SingleExpressionBody,
+
+    /// There are known contextual types.
+    Required,
+  };
+
+  TypeContextKind typeContextKind = TypeContextKind::None;
 
   /// Whether there may be members that can use implicit member syntax,
   /// e.g. `x = .foo`.

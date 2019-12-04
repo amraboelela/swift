@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -enable-objc-interop -emit-ir %s | %FileCheck %s
+// RUN: %target-swift-frontend -enable-objc-interop -emit-ir %s | %FileCheck %s -check-prefix CHECK -check-prefix CHECK-%target-import-type
 
 // REQUIRES: CPU=x86_64
 
@@ -24,11 +24,13 @@ class ParentNode : Node {
 sil @_test_exact_checked_cast_branch : $@convention(method) (@guaranteed Node) -> Int {
 bb0(%0 : $Node):
 //CHECK-LABEL: define{{.*}}@_test_exact_checked_cast_branch
-//CHECK:       = load %swift.type
-//CHECK-NEXT:  = icmp eq %swift.type
+//CHECK:       [[LOAD:%.*]] = load %swift.type
+//CHECK-DIRECT-NEXT:  = icmp eq %swift.type
+//CHECK-INDIRECT-NEXT: = bitcast %swift.type* [[LOAD]] to %objc_class*
+//CHECK-INDIRECT-NEXT:  = icmp eq %objc_class*
 //CHECK-NEXT:  = bitcast
 //CHECK-NEXT:  br i1
-  checked_cast_br [exact] %0 : $Node to $ParentNode, bb2, bb3 // id: %2
+  checked_cast_br [exact] %0 : $Node to ParentNode, bb2, bb3 // id: %2
 
 bb1:                                   // Preds: bb2 bb3
   return undef : $Int
@@ -65,7 +67,7 @@ bb0(%0 : $BaseBase):
 //CHECK: bitcast
 //CHECK: icmp eq %swift.type
 //CHECK: br
-  checked_cast_br [exact] %0 : $BaseBase to $DerivedInt, bb2, bb3 // id: %2
+  checked_cast_br [exact] %0 : $BaseBase to DerivedInt, bb2, bb3 // id: %2
 
 bb1:
   return undef : $Int

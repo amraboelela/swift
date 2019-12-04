@@ -31,7 +31,9 @@
 using namespace swift;
 
 #ifndef NDEBUG
-template <> void ProtocolDescriptor::dump() const {
+template <>
+LLVM_ATTRIBUTE_USED
+void ProtocolDescriptor::dump() const {
   printf("TargetProtocolDescriptor.\n"
          "Name: \"%s\".\n",
          Name.get());
@@ -67,7 +69,7 @@ template<> void ProtocolConformanceDescriptor::dump() const {
     int ok = lookupSymbol(addr, &info);
     if (!ok)
       return "<unknown addr>";
-    return info.symbolName;
+    return info.symbolName.get();
   };
 
   switch (auto kind = getTypeKind()) {
@@ -93,7 +95,9 @@ template<> void ProtocolConformanceDescriptor::dump() const {
 #endif
 
 #ifndef NDEBUG
-template<> void ProtocolConformanceDescriptor::verify() const {
+template<>
+LLVM_ATTRIBUTE_USED
+void ProtocolConformanceDescriptor::verify() const {
   auto typeKind = unsigned(getTypeKind());
   assert(((unsigned(TypeReferenceKind::First_Kind) <= typeKind) &&
           (unsigned(TypeReferenceKind::Last_Kind) >= typeKind)) &&
@@ -141,14 +145,15 @@ ProtocolConformanceDescriptor::getCanonicalTypeMetadata() const {
 
   case TypeReferenceKind::DirectTypeDescriptor:
   case TypeReferenceKind::IndirectTypeDescriptor: {
-    auto anyType = getTypeDescriptor();
-    if (auto type = dyn_cast<TypeContextDescriptor>(anyType)) {
-      if (!type->isGeneric()) {
-        if (auto accessFn = type->getAccessFunction())
-          return accessFn(MetadataState::Abstract).Value;
+    if (auto anyType = getTypeDescriptor()) {
+      if (auto type = dyn_cast<TypeContextDescriptor>(anyType)) {
+        if (!type->isGeneric()) {
+          if (auto accessFn = type->getAccessFunction())
+            return accessFn(MetadataState::Abstract).Value;
+        }
+      } else if (auto protocol = dyn_cast<ProtocolDescriptor>(anyType)) {
+        return _getSimpleProtocolTypeMetadata(protocol);
       }
-    } else if (auto protocol = dyn_cast<ProtocolDescriptor>(anyType)) {
-      return _getSimpleProtocolTypeMetadata(protocol);
     }
 
     return nullptr;
@@ -162,12 +167,17 @@ template<>
 const WitnessTable *
 ProtocolConformanceDescriptor::getWitnessTable(const Metadata *type) const {
   // If needed, check the conditional requirements.
-  std::vector<const void *> conditionalArgs;
+  SmallVector<const void *, 8> conditionalArgs;
   if (hasConditionalRequirements()) {
     SubstGenericParametersFromMetadata substitutions(type);
     bool failed =
       _checkGenericRequirements(getConditionalRequirements(), conditionalArgs,
-                                substitutions, substitutions);
+        [&substitutions](unsigned depth, unsigned index) {
+          return substitutions.getMetadata(depth, index);
+        },
+        [&substitutions](const Metadata *type, unsigned index) {
+          return substitutions.getWitnessTable(type, index);
+        });
     if (failed) return nullptr;
   }
 
@@ -318,8 +328,8 @@ _registerProtocolConformances(ConformanceState &C,
   C.SectionsToScan.push_back(ConformanceSection{begin, end});
 }
 
-void swift::addImageProtocolConformanceBlockCallback(const void *conformances,
-                                                   uintptr_t conformancesSize) {
+void swift::addImageProtocolConformanceBlockCallbackUnsafe(
+    const void *conformances, uintptr_t conformancesSize) {
   assert(conformancesSize % sizeof(ProtocolConformanceRecord) == 0 &&
          "conformances section not a multiple of ProtocolConformanceRecord");
 
@@ -334,6 +344,13 @@ void swift::addImageProtocolConformanceBlockCallback(const void *conformances,
   // Conformance cache should always be sufficiently initialized by this point.
   _registerProtocolConformances(Conformances.unsafeGetAlreadyInitialized(),
                                 recordsBegin, recordsEnd);
+}
+
+void swift::addImageProtocolConformanceBlockCallback(
+    const void *conformances, uintptr_t conformancesSize) {
+  Conformances.get();
+  addImageProtocolConformanceBlockCallbackUnsafe(conformances,
+                                                 conformancesSize);
 }
 
 void
@@ -606,7 +623,8 @@ swift_conformsToProtocolImpl(const Metadata * const type,
   if (!description)
     return nullptr;
 
-  return description->getWitnessTable(type);
+  return description->getWitnessTable(
+      findConformingSuperclass(type, description));
 }
 
 const ContextDescriptor *
@@ -624,9 +642,25 @@ swift::_searchConformancesByMangledTypeName(Demangle::NodePointer node) {
   return nullptr;
 }
 
+void
+swift::_forEachProtocolConformanceSectionAfter(
+  size_t *start, 
+  const std::function<void(const ProtocolConformanceRecord *,
+                           const ProtocolConformanceRecord *)> &f) {
+  auto snapshot = Conformances.get().SectionsToScan.snapshot();
+  if (snapshot.Count > *start) {
+    auto *begin = snapshot.begin() + *start;
+    auto *end = snapshot.end();
+    for (auto *section = begin; section != end; section++) {
+      f(section->Begin, section->End);
+    }
+    *start = snapshot.Count;
+  }
+}
+
 bool swift::_checkGenericRequirements(
                       llvm::ArrayRef<GenericRequirementDescriptor> requirements,
-                      std::vector<const void *> &extraArguments,
+                      SmallVectorImpl<const void *> &extraArguments,
                       SubstGenericParameterFn substGenericParam,
                       SubstDependentWitnessTableFn substWitnessTable) {
   for (const auto &req : requirements) {
@@ -636,8 +670,9 @@ bool swift::_checkGenericRequirements(
     // Resolve the subject generic parameter.
     const Metadata *subjectType =
       swift_getTypeByMangledName(MetadataState::Abstract,
-                                 req.getParam(), substGenericParam,
-                                 substWitnessTable).getMetadata();
+                                 req.getParam(),
+                                 extraArguments.data(),
+                                 substGenericParam, substWitnessTable).getMetadata();
     if (!subjectType)
       return true;
 
@@ -662,8 +697,9 @@ bool swift::_checkGenericRequirements(
       // Demangle the second type under the given substitutions.
       auto otherType =
         swift_getTypeByMangledName(MetadataState::Abstract,
-                                   req.getMangledTypeName(), substGenericParam,
-                                   substWitnessTable).getMetadata();
+                                   req.getMangledTypeName(),
+                                   extraArguments.data(),
+                                   substGenericParam, substWitnessTable).getMetadata();
       if (!otherType) return true;
 
       assert(!req.getFlags().hasExtraArgument());
@@ -690,8 +726,9 @@ bool swift::_checkGenericRequirements(
       // Demangle the base type under the given substitutions.
       auto baseType =
         swift_getTypeByMangledName(MetadataState::Abstract,
-                                   req.getMangledTypeName(), substGenericParam,
-                                   substWitnessTable).getMetadata();
+                                   req.getMangledTypeName(),
+                                   extraArguments.data(),
+                                   substGenericParam, substWitnessTable).getMetadata();
       if (!baseType) return true;
 
       // Check whether it's dynamically castable, which works as a superclass

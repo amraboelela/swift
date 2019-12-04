@@ -29,7 +29,7 @@ class DataSource {
 
 }
 
-@available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
 func ofiltercompress_ifilterdecompress(
   _ contents: Data, using algo: Algorithm
 ) throws -> Bool {
@@ -61,7 +61,7 @@ func ofiltercompress_ifilterdecompress(
   return contents == decompressed
 }
 
-@available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
+@available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
 func ifiltercompress_ofilterdecompress(
   _ contents: Data, using algo: Algorithm
 ) throws -> Bool {
@@ -113,7 +113,7 @@ func randomString(withBlockLength n: Int) -> String {
 
 let tests = TestSuite("Compression")
 
-if #available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *) {
+if #available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *) {
 
   do {
     for blockLength in [0, 1, 2, 5, 10, 100] {

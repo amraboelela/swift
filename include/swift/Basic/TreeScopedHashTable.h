@@ -18,6 +18,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Allocator.h"
+#include "swift/Basic/Debug.h"
 #include "swift/Basic/Malloc.h"
 #include <utility>
 
@@ -332,7 +333,6 @@ public:
     return false;
   }
 
-public:
   V lookup(const ScopeTy &S, const K &Key) {
     const typename ScopeTy::ImplTy *CurrScope = S.getImpl();
     while (CurrScope) {
@@ -356,6 +356,15 @@ public:
       return end();
     return iterator(I->second);
   }
+
+  using DebugVisitValueTy = TreeScopedHashTableVal<K, V> *;
+
+  /// Visit each entry in the map without regard to order. Meant to be used with
+  /// in the debugger in coordination with other dumpers that can dump whatever
+  /// is stored in the map. No-op when asserts are disabled.
+  SWIFT_DEBUG_HELPER(
+    void debugVisit(std::function<void(const DebugVisitValueTy &)> &&func) const
+  );
 
   /// This inserts the specified key/value at the specified
   /// (possibly not the current) scope.  While it is ok to insert into a scope
@@ -382,6 +391,16 @@ public:
     S.getImpl()->LastValInScope = KeyEntry;
   }
 };
+
+template <typename K, typename V, typename Allocator>
+void TreeScopedHashTable<K, V, Allocator>::debugVisit(
+    std::function<void(const DebugVisitValueTy &)> &&func) const {
+#ifndef NDEBUG
+  for (auto entry : TopLevelMap) {
+    func(entry.second);
+  }
+#endif
+}
 
 template <typename K, typename V, typename Allocator>
 TreeScopedHashTableScopeImpl<K, V, Allocator>::~TreeScopedHashTableScopeImpl() {

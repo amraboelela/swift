@@ -115,6 +115,9 @@ public:
     }
   };
 
+  /// Set target decl for attribute if the CC token is in attribute of the decl.
+  virtual void setAttrTargetDeclKind(Optional<DeclKind> DK) {}
+
   /// Complete the whole expression.  This is a fallback that should
   /// produce results when more specific completion methods failed.
   virtual void completeExpr() {};
@@ -123,7 +126,7 @@ public:
   virtual void completeDotExpr(Expr *E, SourceLoc DotLoc) {};
 
   /// Complete the beginning of a statement or expression.
-  virtual void completeStmtOrExpr() {};
+  virtual void completeStmtOrExpr(CodeCompletionExpr *E) {};
 
   /// Complete the beginning of expr-postfix -- no tokens provided
   /// by user.
@@ -140,13 +143,6 @@ public:
   /// left parenthesis.
   virtual void completePostfixExprParen(Expr *E, Expr *CodeCompletionE) {};
 
-  /// Complete expr-super after we have consumed the 'super' keyword.
-  virtual void completeExprSuper(SuperRefExpr *SRE) {};
-
-  /// Complete expr-super after we have consumed the 'super' keyword and
-  /// a dot.
-  virtual void completeExprSuperDot(SuperRefExpr *SRE) {};
-
   /// Complete the argument to an Objective-C #keyPath
   /// expression.
   ///
@@ -154,6 +150,9 @@ public:
   /// provide context. This will be \c NULL if no components of the
   /// #keyPath argument have been parsed yet.
   virtual void completeExprKeyPath(KeyPathExpr *KPE, SourceLoc DotLoc) {};
+
+  /// Complete the beginning of the type of result of func/var/let/subscript.
+  virtual void completeTypeDeclResultBeginning() {};
 
   /// Complete the beginning of type-simple -- no tokens provided
   /// by user.
@@ -165,22 +164,22 @@ public:
   /// Complete a given type-identifier when there is no trailing dot.
   virtual void completeTypeIdentifierWithoutDot(IdentTypeRepr *ITR) {};
 
-  /// Complete at the beginning of a case stmt pattern.
-  virtual void completeCaseStmtBeginning() {};
+  /// Complete the beginning of a case statement at the top of switch stmt.
+  virtual void completeCaseStmtKeyword() {};
 
-  /// Complete a case stmt pattern that starts with a dot.
-  virtual void completeCaseStmtDotPrefix() {};
+  /// Complete at the beginning of a case stmt pattern.
+  virtual void completeCaseStmtBeginning(CodeCompletionExpr *E) {};
 
   /// Complete at the beginning of member of a nominal decl member -- no tokens
   /// provided by user.
   virtual void completeNominalMemberBeginning(
-      SmallVectorImpl<StringRef> &Keywords) {};
+      SmallVectorImpl<StringRef> &Keywords, SourceLoc introducerLoc) {};
 
   /// Complete at the beginning of accessor in a accessor block.
-  virtual void completeAccessorBeginning() {};
+  virtual void completeAccessorBeginning(CodeCompletionExpr *E) {};
 
   /// Complete the keyword in attribute, for instance, @available.
-  virtual void completeDeclAttrKeyword(Decl *D, bool Sil, bool Param) {};
+  virtual void completeDeclAttrBeginning(bool Sil, bool isIndependent) {};
 
   /// Complete the parameters in attribute, for instance, version specifier for
   /// @available.
@@ -201,9 +200,7 @@ public:
   virtual void completeUnresolvedMember(CodeCompletionExpr *E,
                                         SourceLoc DotLoc) {};
 
-  virtual void completeAssignmentRHS(AssignExpr *E) {};
-
-  virtual void completeCallArg(CodeCompletionExpr *E) {};
+  virtual void completeCallArg(CodeCompletionExpr *E, bool isFirst) {};
 
   virtual void completeReturnStmt(CodeCompletionExpr *E) {};
 

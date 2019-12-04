@@ -1,6 +1,9 @@
 // RUN: %target-resilience-test --backward-deployment
 // REQUIRES: executable_test
 
+// SR-10913
+// UNSUPPORTED: OS=windows-msvc
+
 import StdlibUnittest
 import backward_deploy_top_level
 

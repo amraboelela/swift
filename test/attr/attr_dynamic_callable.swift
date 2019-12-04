@@ -49,6 +49,15 @@ func testCallable(
   d(x1: 1, 2.0, x2: 3)
 }
 
+func testCallableDiagnostics(
+  a: Callable, b: DiscardableResult, c: Throwing, d: KeywordArgumentCallable
+) {
+  a("hello", "world") // expected-error {{cannot invoke 'a' with an argument list of type '(String, String)'}}
+  b("hello", "world") // expected-error {{cannot invoke 'b' with an argument list of type '(String, String)'}}
+  try? c(1, 2, 3, 4) // expected-error {{cannot invoke 'c' with an argument list of type '(Int, Int, Int, Int)'}}
+  d(x1: "hello", x2: "world") // expected-error {{cannot invoke 'd' with an argument list of type '(x1: String, x2: String)'}}
+}
+
 func testIUO(
   a: Callable!, b: DiscardableResult!, c: Throwing!, d: KeywordArgumentCallable!
 ) {
@@ -421,3 +430,49 @@ func testGenericType5<T>(a: CallableGeneric5<T>) -> Double {
 func testArchetypeType5<T, C : CallableGeneric5<T>>(a: C) -> Double {
   return a(1, 2, 3) + a(x1: 1, 2, x3: 3)
 }
+
+// SR-9239 Default argument in initializer
+
+@dynamicCallable
+struct A {
+  init(_ x: Int = 0) {}
+  func dynamicallyCall(withArguments args: [Int]) {}
+}
+
+func test9239() {
+  _ = A()() // ok
+}
+
+// SR-10313
+//
+// Modified version of the code snippet in the SR to not crash.
+
+struct MissingKeyError: Error {}
+
+@dynamicCallable
+class DictionaryBox {
+  var dictionary: [String: Any] = [:]
+
+  func dynamicallyCall<T>(withArguments args: [String]) throws -> T {
+    guard let value = dictionary[args[0]] as? T else {
+      throw MissingKeyError()
+    }
+    return value
+  }
+}
+
+func test10313() {
+  let box = DictionaryBox()
+  box.dictionary["bool"] = false
+  let _: Bool = try! box("bool") // ok
+}
+
+// SR-10753
+
+@dynamicCallable
+struct B {
+	public func dynamicallyCall(withArguments arguments: [String]) {}
+}
+
+B()("hello") // ok
+B()("\(1)") // ok

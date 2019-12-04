@@ -1,5 +1,6 @@
 from __future__ import print_function
 import sys  # noqa: I201
+
 from kinds import SYNTAX_BASE_KINDS, kind_to_type, lowercase_first_word
 
 
@@ -38,6 +39,9 @@ class Node(object):
 
         self.omit_when_empty = omit_when_empty
         self.collection_element = element or ""
+        # For SyntaxCollections make sure that the element_name is set.
+        assert(not self.is_syntax_collection() or element_name or
+               (element and element != 'Syntax'))
         # If there's a preferred name for the collection element that differs
         # from its supertype, use that.
         self.collection_element_name = element_name or self.collection_element

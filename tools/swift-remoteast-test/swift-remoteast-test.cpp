@@ -38,11 +38,27 @@ using namespace swift;
 using namespace swift::remote;
 using namespace swift::remoteAST;
 
+#if defined(__APPLE__) && defined(__MACH__)
+#include <dlfcn.h>
+static unsigned long long computeClassIsSwiftMask(void) {
+  uintptr_t *objc_debug_swift_stable_abi_bit_ptr =
+    (uintptr_t *)dlsym(RTLD_DEFAULT, "objc_debug_swift_stable_abi_bit");
+  return objc_debug_swift_stable_abi_bit_ptr ?
+           *objc_debug_swift_stable_abi_bit_ptr : 1;
+}
+#else
+static unsigned long long computeClassIsSwiftMask(void) {
+  return 1;
+}
+#endif
+
+extern "C" unsigned long long _swift_classIsSwiftMask =
+  computeClassIsSwiftMask();
+
 /// The context for the code we're running.  Set by the observer.
 static ASTContext *context = nullptr;
 
 /// The RemoteAST for the code we're running.
-std::shared_ptr<MemoryReader> reader;
 std::unique_ptr<RemoteASTContext> remoteContext;
 
 static RemoteASTContext &getRemoteASTContext() {
@@ -172,6 +188,14 @@ printDynamicTypeAndAddressForExistential(void *object,
   } else {
     out << result.getFailure().render() << '\n';
   }
+}
+
+// FIXME: swiftcall
+/// func stopRemoteAST(_: AnyObject)
+LLVM_ATTRIBUTE_USED extern "C" void SWIFT_REMOTEAST_TEST_ABI
+stopRemoteAST() {
+  if (remoteContext)
+    remoteContext.reset();
 }
 
 namespace {

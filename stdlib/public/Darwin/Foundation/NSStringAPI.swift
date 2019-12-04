@@ -800,9 +800,14 @@ extension StringProtocol where Index == String.Index {
     using encoding: String.Encoding,
     allowLossyConversion: Bool = false
   ) -> Data? {
-    return _ns.data(
-      using: encoding.rawValue,
-      allowLossyConversion: allowLossyConversion)
+    switch encoding {
+    case .utf8:
+      return Data(self.utf8)
+    default:
+      return _ns.data(
+        using: encoding.rawValue,
+        allowLossyConversion: allowLossyConversion)
+    }
   }
 
   // @property NSString* decomposedStringWithCanonicalMapping;
@@ -1363,7 +1368,7 @@ extension StringProtocol where Index == String.Index {
   /// - Parameter leftover: The remaining range. Pass `nil` If you do
   ///   not need this value.
   ///
-  /// - Returns: `true` iff some characters were converted.
+  /// - Returns: `true` if some characters were converted, `false` otherwise.
   ///
   /// - Note: Conversion stops when the buffer fills or when the
   ///   conversion isn't possible due to the chosen encoding.
@@ -1663,10 +1668,10 @@ extension StringProtocol where Index == String.Index {
   // No need to make these unavailable on earlier OSes, since they can
   // forward trivially to rangeOfString.
 
-  /// Returns `true` iff `other` is non-empty and contained within
-  /// `self` by case-sensitive, non-literal search.
+  /// Returns `true` if `other` is non-empty and contained within `self` by
+  /// case-sensitive, non-literal search. Otherwise, returns `false`.
   ///
-  /// Equivalent to `self.rangeOfString(other) != nil`
+  /// Equivalent to `self.range(of: other) != nil`
   public func contains<T : StringProtocol>(_ other: T) -> Bool {
     let r = self.range(of: other) != nil
     if #available(macOS 10.10, iOS 8.0, *) {

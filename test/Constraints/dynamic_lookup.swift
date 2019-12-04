@@ -217,8 +217,8 @@ let uopt : AnyObject! = nil
 uopt.wibble!()
 
 // Should not be able to see private or internal @objc methods.
-uopt.privateFoo!() // expected-error{{value of type 'AnyObject?' has no member 'privateFoo'}}
-uopt.internalFoo!() // expected-error{{value of type 'AnyObject?' has no member 'internalFoo'}}
+uopt.privateFoo!() // expected-error{{'privateFoo' is inaccessible due to 'private' protection level}}
+uopt.internalFoo!() // expected-error{{'internalFoo' is inaccessible due to 'internal' protection level}}
 
 let anyValue: Any = X()
 _ = anyValue.bar() // expected-error {{value of type 'Any' has no member 'bar'}}
@@ -388,4 +388,23 @@ func testAnyObjectAmbiguity(_ x: AnyObject) {
 
   // FIX-ME(SR-8611): This is currently ambiguous but shouldn't be.
   _ = x[unambiguousSubscript: ""] // expected-error {{ambiguous use of 'subscript(unambiguousSubscript:)'}}
+}
+
+// SR-11648
+class HasMethodWithDefault {
+  @objc func hasDefaultParam(_ x: Int = 0) {}
+}
+
+func testAnyObjectWithDefault(_ x: AnyObject) {
+  x.hasDefaultParam()
+}
+
+// SR-11829: Don't perform dynamic lookup for callAsFunction.
+class ClassWithObjcCallAsFunction {
+  @objc func callAsFunction() {}
+}
+
+func testCallAsFunctionAnyObject(_ x: AnyObject) {
+  x() // expected-error {{cannot call value of non-function type 'AnyObject'}}
+  x.callAsFunction() // Okay.
 }

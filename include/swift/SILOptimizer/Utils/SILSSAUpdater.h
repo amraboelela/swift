@@ -51,15 +51,12 @@ class SILSSAUpdater {
   // If not null updated with inserted 'phi' nodes (SILArgument).
   SmallVectorImpl<SILPhiArgument *> *InsertedPHIs;
 
-  SILModule &M;
-
   // Not copyable.
   void operator=(const SILSSAUpdater &) = delete;
   SILSSAUpdater(const SILSSAUpdater &) = delete;
 
 public:
   explicit SILSSAUpdater(
-      SILModule &M,
       SmallVectorImpl<SILPhiArgument *> *InsertedPHIs = nullptr);
   ~SILSSAUpdater();
 
@@ -136,8 +133,10 @@ public:
   /// reconstruct the use.
   UseWrapper(Operand *Use);
 
+  Operand *getOperand();
+
   /// Return the operand we wrap. Reconstructing branch operands.
-  operator Operand*();
+  operator Operand*() { return getOperand(); }
 };
 
 } // end namespace swift

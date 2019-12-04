@@ -20,6 +20,7 @@
 #include "swift/AST/IRGenOptions.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/NameLookupRequests.h"
 #include "swift/Basic/LLVMContext.h"
 #include "swift/Frontend/Frontend.h"
 #include "swift/IDE/REPLCodeCompletion.h"
@@ -176,7 +177,7 @@ typeCheckREPLInput(ModuleDecl *MostRecentModule, StringRef Name,
 
   SmallVector<ModuleDecl::ImportedModule, 8> Imports;
   MostRecentModule->getImportedModules(Imports,
-                                       ModuleDecl::ImportFilter::Private);
+                                       ModuleDecl::ImportFilterKind::Private);
   if (!Imports.empty()) {
     SmallVector<SourceFile::ImportedModuleDesc, 8> ImportsWithOptions;
     for (auto Import : Imports) {
@@ -193,8 +194,7 @@ typeCheckREPLInput(ModuleDecl *MostRecentModule, StringRef Name,
         parseIntoSourceFile(REPLInputFile, BufferID, &Done, nullptr,
                             &PersistentState);
   } while (!Done);
-  performTypeChecking(REPLInputFile, PersistentState.getTopLevelContext(),
-                      /*Options*/None);
+  performTypeChecking(REPLInputFile);
   return REPLModule;
 }
 
@@ -874,7 +874,8 @@ private:
     if (!CI.getASTContext().hadError()) {
       // We don't want anything to get stripped, so pretend we're doing a
       // non-whole-module generation.
-      sil = performSILGeneration(*M->getFiles().front(), CI.getSILOptions());
+      sil = performSILGeneration(*M->getFiles().front(), CI.getSILTypes(),
+                                 CI.getSILOptions());
       runSILDiagnosticPasses(*sil);
       runSILOwnershipEliminatorPass(*sil);
       runSILLoweringPasses(*sil);
@@ -964,12 +965,12 @@ public:
       IRGenOpts(),
       SILOpts(),
       Input(*this),
-      PersistentState(CI.getASTContext())
+      PersistentState()
   {
     ASTContext &Ctx = CI.getASTContext();
     Ctx.LangOpts.EnableAccessControl = false;
     if (!ParseStdlib) {
-      if (!loadSwiftRuntime(Ctx.SearchPathOpts.RuntimeLibraryPath)) {
+      if (!loadSwiftRuntime(Ctx.SearchPathOpts.RuntimeLibraryPaths)) {
         CI.getDiags().diagnose(SourceLoc(),
                                diag::error_immediate_mode_missing_stdlib);
         return;
@@ -1091,16 +1092,17 @@ public:
           ASTContext &ctx = CI.getASTContext();
           SourceFile &SF =
               MostRecentModule->getMainSourceFile(SourceFileKind::REPL);
-          UnqualifiedLookup lookup(ctx.getIdentifier(Tok.getText()), &SF,
-                                   nullptr);
-          for (auto result : lookup.Results) {
+          auto name = ctx.getIdentifier(Tok.getText());
+          auto descriptor = UnqualifiedLookupDescriptor(name, &SF);
+          auto lookup = evaluateOrDefault(
+              ctx.evaluator, UnqualifiedLookupRequest{descriptor}, {});
+          for (auto result : lookup) {
             printOrDumpDecl(result.getValueDecl(), doPrint);
               
             if (auto typeDecl = dyn_cast<TypeDecl>(result.getValueDecl())) {
               if (auto typeAliasDecl = dyn_cast<TypeAliasDecl>(typeDecl)) {
                 TypeDecl *origTypeDecl = typeAliasDecl
                   ->getDeclaredInterfaceType()
-                  ->getDesugaredType()
                   ->getNominalOrBoundGenericNominal();
                 if (origTypeDecl) {
                   printOrDumpDecl(origTypeDecl, doPrint);
@@ -1164,9 +1166,9 @@ public:
           if (Tok.getText() == "debug") {
             L.lex(Tok);
             if (Tok.getText() == "on") {
-              CI.getASTContext().LangOpts.DebugConstraintSolver = true;
+              CI.getASTContext().TypeCheckerOpts.DebugConstraintSolver = true;
             } else if (Tok.getText() == "off") {
-              CI.getASTContext().LangOpts.DebugConstraintSolver = false;
+              CI.getASTContext().TypeCheckerOpts.DebugConstraintSolver = false;
             } else {
               llvm::outs() << "Unknown :constraints debug command; try :help\n";
             }

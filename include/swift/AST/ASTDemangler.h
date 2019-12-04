@@ -19,8 +19,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef __SWIFT_AST_ASTDEMANGLER_H__
-#define __SWIFT_AST_ASTDEMANGLER_H__
+#ifndef SWIFT_AST_ASTDEMANGLER_H
+#define SWIFT_AST_ASTDEMANGLER_H
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -30,10 +30,18 @@
 
 namespace swift {
  
+class TypeDecl;
+
 namespace Demangle {
 
 Type getTypeForMangling(ASTContext &ctx,
                         llvm::StringRef mangling);
+
+TypeDecl *getTypeDeclForMangling(ASTContext &ctx,
+                                 llvm::StringRef mangling);
+
+TypeDecl *getTypeDeclForUSR(ASTContext &ctx,
+                            llvm::StringRef usr);
 
 /// An implementation of MetadataReader's BuilderType concept that
 /// just finds and builds things in the AST.
@@ -58,6 +66,8 @@ public:
 
   Type createBuiltinType(StringRef builtinName, StringRef mangledName);
 
+  TypeDecl *createTypeDecl(NodePointer node);
+
   GenericTypeDecl *createTypeDecl(StringRef mangledName, bool &typeAlias);
   
   GenericTypeDecl *createTypeDecl(NodePointer node,
@@ -72,6 +82,10 @@ public:
   Type createTypeAliasType(GenericTypeDecl *decl, Type parent);
 
   Type createBoundGenericType(GenericTypeDecl *decl, ArrayRef<Type> args);
+  
+  Type resolveOpaqueType(NodePointer opaqueDescriptor,
+                         ArrayRef<ArrayRef<Type>> args,
+                         unsigned ordinal);
 
   Type createBoundGenericType(GenericTypeDecl *decl, ArrayRef<Type> args,
                               Type parent);
@@ -168,4 +182,4 @@ private:
 
 }  // namespace swift
 
-#endif  // __SWIFT_AST_ASTDEMANGLER_H__
+#endif  // SWIFT_AST_ASTDEMANGLER_H

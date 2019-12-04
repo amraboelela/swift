@@ -192,16 +192,8 @@ public struct URLComponents : ReferenceConvertible, Hashable, Equatable, _Mutabl
     
     @available(macOS 10.11, iOS 9.0, *)
     private func _toStringRange(_ r : NSRange) -> Range<String.Index>? {
-        guard r.location != NSNotFound else { return nil }
-        
-        let utf16Start = String.UTF16View.Index(encodedOffset: r.location)
-        let utf16End = String.UTF16View.Index(encodedOffset: r.location + r.length)
-
         guard let s = self.string else { return nil }
-        guard let start = String.Index(utf16Start, within: s) else { return nil }
-        guard let end = String.Index(utf16End, within: s) else { return nil }
-        
-        return start..<end
+        return Range(r, in: s)
     }
     
     /// Returns the character range of the scheme in the string returned by `var string`.
@@ -300,8 +292,8 @@ public struct URLComponents : ReferenceConvertible, Hashable, Equatable, _Mutabl
         set { _applyMutation { $0.percentEncodedQueryItems = newValue } }
     }
 	
-    public var hashValue: Int {
-        return _handle.map { $0.hash }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(_handle._uncopiedReference())
     }
     
     // MARK: - Bridging
@@ -412,7 +404,9 @@ public struct URLQueryItem : ReferenceConvertible, Hashable, Equatable {
         set { _queryItem = NSURLQueryItem(name: name, value: newValue) }
     }
     
-    public var hashValue: Int { return _queryItem.hash }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(_queryItem)
+    }
 
     @available(macOS 10.10, iOS 8.0, *)
     public static func ==(lhs: URLQueryItem, rhs: URLQueryItem) -> Bool {

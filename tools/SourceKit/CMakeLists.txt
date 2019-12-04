@@ -4,6 +4,13 @@ include(CheckSymbolExists)
 list(APPEND CMAKE_MODULE_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  message(SEND_ERROR "SourceKit cannot be built standalone")
+endif()
+
+include(SwiftWindowsSupport)
+swift_swap_compiler_if_needed("SourceKit")
+
 if (DARWIN_TOOLCHAIN_VERSION)
   set(SOURCEKIT_VERSION_STRING "${DARWIN_TOOLCHAIN_VERSION}")
 else()
@@ -82,8 +89,7 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
       set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET ${SOURCEKIT_DEPLOYMENT_TARGET})
     endif()
   else()
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m${version_min_os}-version-min=${SOURCEKIT_DEPLOYMENT_TARGET}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m${version_min_os}-version-min=${SOURCEKIT_DEPLOYMENT_TARGET}")
+    add_compile_options(-m${version_min_os}-version-min=${SOURCEKIT_DEPLOYMENT_TARGET})
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -m${version_min_os}-version-min=${SOURCEKIT_DEPLOYMENT_TARGET}")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -m${version_min_os}-version-min=${SOURCEKIT_DEPLOYMENT_TARGET}")
   endif()

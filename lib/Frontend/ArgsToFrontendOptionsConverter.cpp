@@ -71,23 +71,26 @@ bool ArgsToFrontendOptionsConverter::convert(
 
   Opts.EnableTesting |= Args.hasArg(OPT_enable_testing);
   Opts.EnablePrivateImports |= Args.hasArg(OPT_enable_private_imports);
-  Opts.EnableResilience |= Args.hasArg(OPT_enable_resilience);
+  Opts.EnableLibraryEvolution |= Args.hasArg(OPT_enable_library_evolution);
+
+  // FIXME: Remove this flag
+  Opts.EnableLibraryEvolution |= Args.hasArg(OPT_enable_resilience);
+
   Opts.EnableImplicitDynamic |= Args.hasArg(OPT_enable_implicit_dynamic);
 
   Opts.TrackSystemDeps |= Args.hasArg(OPT_track_system_dependencies);
+
+  Opts.SerializeModuleInterfaceDependencyHashes |=
+    Args.hasArg(OPT_serialize_module_interface_dependency_hashes);
+
+  Opts.RemarkOnRebuildFromModuleInterface |=
+    Args.hasArg(OPT_Rmodule_interface_rebuild);
 
   computePrintStatsOptions();
   computeDebugTimeOptions();
   computeTBDOptions();
 
-  setUnsignedIntegerArgument(OPT_warn_long_function_bodies, 10,
-                             Opts.WarnLongFunctionBodies);
-  setUnsignedIntegerArgument(OPT_warn_long_expression_type_checking, 10,
-                             Opts.WarnLongExpressionTypeChecking);
-  setUnsignedIntegerArgument(OPT_solver_expression_time_threshold_EQ, 10,
-                             Opts.SolverExpressionTimeThreshold);
-  setUnsignedIntegerArgument(OPT_switch_checking_invocation_threshold_EQ, 10,
-                             Opts.SwitchCheckingInvocationThreshold);
+  Opts.CheckOnoneSupportCompleteness = Args.hasArg(OPT_check_onone_completeness);
 
   Opts.DebuggerTestingTransform = Args.hasArg(OPT_debugger_testing_transform);
 
@@ -98,6 +101,7 @@ bool ArgsToFrontendOptionsConverter::convert(
 
   Opts.ParseStdlib |= Args.hasArg(OPT_parse_stdlib);
 
+  Opts.IgnoreSwiftSourceInfo |= Args.hasArg(OPT_ignore_module_source_info);
   computeHelpOptions();
 
   if (const Arg *A = Args.getLastArg(OPT_verify_generic_signatures)) {
@@ -149,6 +153,12 @@ bool ArgsToFrontendOptionsConverter::convert(
   if (checkUnusedSupplementaryOutputPaths())
     return true;
 
+  if (FrontendOptions::doesActionGenerateIR(Opts.RequestedAction)
+      && Args.hasArg(OPT_experimental_skip_non_inlinable_function_bodies)) {
+    Diags.diagnose(SourceLoc(), diag::cannot_emit_ir_skipping_function_bodies);
+    return true;
+  }
+
   if (const Arg *A = Args.getLastArg(OPT_module_link_name))
     Opts.ModuleLinkName = A->getValue();
 
@@ -160,8 +170,6 @@ bool ArgsToFrontendOptionsConverter::convert(
 
   Opts.EnableSourceImport |= Args.hasArg(OPT_enable_source_import);
   Opts.ImportUnderlyingModule |= Args.hasArg(OPT_import_underlying_module);
-  Opts.EnableParseableModuleInterface |=
-      Args.hasArg(OPT_enable_parseable_module_interface);
   Opts.EnableSerializationNestedTypeLookupTable &=
       !Args.hasArg(OPT_disable_serialization_nested_type_lookup_table);
 
@@ -205,10 +213,8 @@ void ArgsToFrontendOptionsConverter::computePrintStatsOptions() {
 
 void ArgsToFrontendOptionsConverter::computeDebugTimeOptions() {
   using namespace options;
-  Opts.DebugTimeFunctionBodies |= Args.hasArg(OPT_debug_time_function_bodies);
-  Opts.DebugTimeExpressionTypeChecking |=
-      Args.hasArg(OPT_debug_time_expression_type_checking);
   Opts.DebugTimeCompilation |= Args.hasArg(OPT_debug_time_compilation);
+
   if (const Arg *A = Args.getLastArg(OPT_stats_output_dir)) {
     Opts.StatsOutputDir = A->getValue();
     if (Args.getLastArg(OPT_trace_stats_events)) {
@@ -237,19 +243,6 @@ void ArgsToFrontendOptionsConverter::computeTBDOptions() {
     } else {
       Diags.diagnose(SourceLoc(), diag::error_unsupported_option_argument,
                      A->getOption().getPrefixedName(), value);
-    }
-  }
-}
-
-void ArgsToFrontendOptionsConverter::setUnsignedIntegerArgument(
-    options::ID optionID, unsigned radix, unsigned &valueToSet) {
-  if (const Arg *A = Args.getLastArg(optionID)) {
-    unsigned attempt;
-    if (StringRef(A->getValue()).getAsInteger(radix, attempt)) {
-      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
-                     A->getAsString(Args), A->getValue());
-    } else {
-      valueToSet = attempt;
     }
   }
 }
@@ -368,13 +361,17 @@ ArgsToFrontendOptionsConverter::determineRequestedAction(const ArgList &args) {
     return FrontendOptions::ActionType::DumpTypeInfo;
   if (Opt.matches(OPT_print_ast))
     return FrontendOptions::ActionType::PrintAST;
+  if (Opt.matches(OPT_emit_pcm))
+    return FrontendOptions::ActionType::EmitPCM;
+  if (Opt.matches(OPT_dump_pcm))
+    return FrontendOptions::ActionType::DumpPCM;
 
   if (Opt.matches(OPT_repl) || Opt.matches(OPT_deprecated_integrated_repl))
     return FrontendOptions::ActionType::REPL;
   if (Opt.matches(OPT_interpret))
     return FrontendOptions::ActionType::Immediate;
-  if (Opt.matches(OPT_build_module_from_parseable_interface))
-    return FrontendOptions::ActionType::BuildModuleFromParseableInterface;
+  if (Opt.matches(OPT_compile_module_from_interface))
+    return FrontendOptions::ActionType::CompileModuleFromInterface;
 
   llvm_unreachable("Unhandled mode option");
 }
@@ -504,6 +501,16 @@ bool ArgsToFrontendOptionsConverter::checkUnusedSupplementaryOutputPaths()
                    diag::error_mode_cannot_emit_reference_dependencies);
     return true;
   }
+  if (!FrontendOptions::canActionEmitSwiftRanges(Opts.RequestedAction) &&
+      Opts.InputsAndOutputs.hasSwiftRangesPath()) {
+    Diags.diagnose(SourceLoc(), diag::error_mode_cannot_emit_swift_ranges);
+    return true;
+  }
+  if (!FrontendOptions::canActionEmitCompiledSource(Opts.RequestedAction) &&
+      Opts.InputsAndOutputs.hasCompiledSourcePath()) {
+    Diags.diagnose(SourceLoc(), diag::error_mode_cannot_emit_compiled_source);
+    return true;
+  }
   if (!FrontendOptions::canActionEmitObjCHeader(Opts.RequestedAction) &&
       Opts.InputsAndOutputs.hasObjCHeaderOutputPath()) {
     Diags.diagnose(SourceLoc(), diag::error_mode_cannot_emit_header);
@@ -525,8 +532,14 @@ bool ArgsToFrontendOptionsConverter::checkUnusedSupplementaryOutputPaths()
     Diags.diagnose(SourceLoc(), diag::error_mode_cannot_emit_module_doc);
     return true;
   }
+  // If we cannot emit module doc, we cannot emit source information file either.
+  if (!FrontendOptions::canActionEmitModuleDoc(Opts.RequestedAction) &&
+      Opts.InputsAndOutputs.hasModuleSourceInfoOutputPath()) {
+     Diags.diagnose(SourceLoc(), diag::error_mode_cannot_emit_module_source_info);
+     return true;
+   }
   if (!FrontendOptions::canActionEmitInterface(Opts.RequestedAction) &&
-      Opts.InputsAndOutputs.hasParseableInterfaceOutputPath()) {
+      Opts.InputsAndOutputs.hasModuleInterfaceOutputPath()) {
     Diags.diagnose(SourceLoc(), diag::error_mode_cannot_emit_interface);
     return true;
   }

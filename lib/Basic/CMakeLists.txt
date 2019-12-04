@@ -8,7 +8,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   set(UUID_LIBRARIES "rpcrt4.lib")
 else()
   find_package(UUID REQUIRED)
-  set(UUID_INCLUDE "-I${UUID_INCLUDE_DIRS}")
+  set(UUID_INCLUDE "${UUID_INCLUDE_DIRS}")
 endif()
 
 # Figure out if we can track VC revisions.
@@ -30,7 +30,7 @@ macro(find_first_existing_vc_file out_var path)
     )
 endmacro()
 
-set(get_svn_script "${LLVM_MAIN_SRC_DIR}/cmake/modules/GetSVN.cmake")
+set(generate_vcs_version_script "${LLVM_MAIN_SRC_DIR}/cmake/modules/GenerateVersionFromVCS.cmake")
 
 function(generate_revision_inc revision_inc_var name dir)
   find_first_existing_vc_file(dep_file "${dir}")
@@ -39,12 +39,12 @@ function(generate_revision_inc revision_inc_var name dir)
   string(TOUPPER ${name} upper_name)
   if(DEFINED dep_file)
     add_custom_command(OUTPUT "${revision_inc}"
-      DEPENDS "${dep_file}" "${get_svn_script}"
+      DEPENDS "${dep_file}" "${generate_vcs_version_script}"
       COMMAND
-      ${CMAKE_COMMAND} "-DFIRST_SOURCE_DIR=${dir}"
-                       "-DFIRST_NAME=${upper_name}"
+      ${CMAKE_COMMAND} "-DNAMES=${upper_name}"
+                       "-D${upper_name}_SOURCE_DIR=${dir}"
                        "-DHEADER_FILE=${revision_inc}"
-                       -P "${get_svn_script}")
+                       -P "${generate_vcs_version_script}")
   else()
     # Generate an empty Revision.inc file if we are not using git or SVN.
     file(WRITE "${revision_inc}" "")
@@ -102,13 +102,16 @@ add_swift_host_library(swiftBasic STATIC
   # Platform-agnostic fallback TaskQueue implementation
   Default/TaskQueue.inc
 
-  UnicodeExtendedGraphemeClusters.cpp.gyb
+  GYB_SOURCES
+    UnicodeExtendedGraphemeClusters.cpp.gyb
 
-  C_COMPILE_FLAGS ${UUID_INCLUDE}
-  LINK_LIBRARIES
-    swiftDemangling
-    ${UUID_LIBRARIES}
-  LLVM_COMPONENT_DEPENDS support)
+  LLVM_LINK_COMPONENTS support)
+target_include_directories(swiftBasic PRIVATE
+  ${UUID_INCLUDE})
+
+target_link_libraries(swiftBasic PRIVATE
+  swiftDemangling
+  ${UUID_LIBRARIES})
 
 message(STATUS "Swift version: ${SWIFT_VERSION}")
 message(STATUS "Swift vendor: ${SWIFT_VENDOR}")

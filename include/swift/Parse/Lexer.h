@@ -105,7 +105,7 @@ class Lexer {
   Token NextToken;
   
   /// The kind of source we're lexing. This either enables special behavior for
-  /// parseable interfaces, or enables things like the 'sil' keyword if lexing
+  /// module interfaces, or enables things like the 'sil' keyword if lexing
   /// a .sil file.
   const LexerMode LexMode;
 
@@ -187,6 +187,11 @@ public:
   /// Returns true if this lexer will produce a code completion token.
   bool isCodeCompletion() const {
     return CodeCompletionPtr != nullptr;
+  }
+
+  /// Whether we are lexing a Swift interface file.
+  bool isSwiftInterface() const {
+    return LexMode == LexerMode::SwiftInterface;
   }
 
   /// Lex a token. If \c TriviaRetentionMode is \c WithTrivia, passed pointers

@@ -16,6 +16,7 @@
 
 #include "ConstraintSystem.h"
 #include "CSDiag.h"
+#include "CSDiagnostics.h"
 #include "CalleeCandidateInfo.h"
 #include "TypeCheckAvailability.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -48,8 +49,7 @@ static bool isSubstitutableFor(Type type, ArchetypeType *archetype,
   }
 
   for (auto proto : archetype->getConformsTo()) {
-    if (!dc->getParentModule()->lookupConformance(
-          type, proto))
+    if (dc->getParentModule()->lookupConformance(type, proto).isInvalid())
       return false;
   }
 
@@ -60,7 +60,7 @@ OverloadCandidate::OverloadCandidate(ValueDecl *decl, bool skipCurriedSelf)
     : declOrExpr(decl), skipCurriedSelf(skipCurriedSelf), substituted(false) {
 
   if (auto *PD = dyn_cast<ParamDecl>(decl)) {
-    if (PD->hasValidSignature())
+    if (PD->hasInterfaceType())
       entityType = PD->getType();
     else
       entityType = PD->getASTContext().TheUnresolvedType;
@@ -89,77 +89,36 @@ OverloadCandidate::OverloadCandidate(ValueDecl *decl, bool skipCurriedSelf)
   }
 }
 
-ArrayRef<Identifier>
-OverloadCandidate::getArgumentLabels(SmallVectorImpl<Identifier> &scratch) {
-  scratch.clear();
-  if (auto decl = getDecl()) {
-    if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
-      if (func->hasImplicitSelfDecl()) {
-        if (!skipCurriedSelf) {
-          scratch.push_back(Identifier());
-          return scratch;
-        }
+void OverloadCandidate::dump(llvm::raw_ostream &os) const {
+  if (auto decl = getDecl())
+    decl->dumpRef(os);
+  else
+    os << "<<EXPR>>";
+  os << " - ignore curried self = " << (skipCurriedSelf ? "yes" : "no");
 
-        skipCurriedSelf = false;
-      }
+  if (auto FT = getFunctionType())
+    os << " - type: " << Type(FT) << "\n";
+  else
+    os << " - type <<NONFUNCTION>>: " << entityType << "\n";
+}
 
-      if (!skipCurriedSelf) {
-        // Retrieve the argument labels of the corresponding parameter list.
-        for (auto param : *func->getParameters()) {
-          scratch.push_back(param->getArgumentName());
-        }
-        return scratch;
-      }
-    } else if (auto enumElt = dyn_cast<EnumElementDecl>(decl)) {
-      // 'self'
-      if (!skipCurriedSelf) {
-        scratch.push_back(Identifier());
-        return scratch;
-      }
-      
-      // The associated data of the case.
-      auto *paramList = enumElt->getParameterList();
-      if (!paramList) return { };
-      for (auto param : *paramList) {
-        scratch.push_back(param->getArgumentName());
-      }
-      return scratch;
-    }
+void CalleeCandidateInfo::dump(llvm::raw_ostream &os) const {
+  os << "CalleeCandidateInfo for '" << declName << "': closeness="
+  << unsigned(closeness) << "\n";
+  os << candidates.size() << " candidates:\n";
+  for (auto c : candidates) {
+    os << "  ";
+    c.dump(os);
   }
-
-  if (!hasParameters())
-    return {};
-
-  for (const auto &param : getParameters())
-    scratch.push_back(param.getLabel());
-
-  return scratch;
 }
 
 void OverloadCandidate::dump() const {
-  if (auto decl = getDecl())
-    decl->dumpRef(llvm::errs());
-  else
-    llvm::errs() << "<<EXPR>>";
-  llvm::errs() << " - ignore curried self = " << (skipCurriedSelf ? "yes"
-                                                                  : "no");
-
-  if (auto FT = getFunctionType())
-    llvm::errs() << " - type: " << Type(FT) << "\n";
-  else
-    llvm::errs() << " - type <<NONFUNCTION>>: " << entityType << "\n";
+  dump(llvm::errs());
 }
 
 void CalleeCandidateInfo::dump() const {
-  llvm::errs() << "CalleeCandidateInfo for '" << declName << "': closeness="
-  << unsigned(closeness) << "\n";
-  llvm::errs() << candidates.size() << " candidates:\n";
-  for (auto c : candidates) {
-    llvm::errs() << "  ";
-    c.dump();
-  }
+  dump(llvm::errs());
 }
-
 
 /// Given a candidate list, this computes the narrowest closeness to the match
 /// we're looking for and filters out any worse matches.  The predicate
@@ -184,7 +143,7 @@ void CalleeCandidateInfo::filterList(ClosenessPredicate predicate) {
       // treat it as unavailable, which is a very close failure.
       if (declCloseness.first == CC_ExactMatch &&
           VD->getAttrs().isUnavailable(CS.getASTContext()) &&
-          !CS.TC.getLangOpts().DisableAvailabilityChecking)
+          !CS.getASTContext().LangOpts.DisableAvailabilityChecking)
         declCloseness.first = CC_Unavailable;
       
       // Likewise, if the candidate is inaccessible from the scope it is being
@@ -319,20 +278,21 @@ CalleeCandidateInfo::ClosenessResultTy CalleeCandidateInfo::evaluateCloseness(
     return {CC_GeneralMismatch, {}};
 
   auto candArgs = candidate.getParameters();
-  SmallBitVector candDefaultMap =
-    computeDefaultMap(candArgs, candidate.getDecl(), candidate.skipCurriedSelf);
-  
+  auto candParamInfo = candidate.getParameterListInfo(candArgs);
+
   struct OurListener : public MatchCallArgumentListener {
     CandidateCloseness result = CC_ExactMatch;
   public:
     CandidateCloseness getResult() const {
       return result;
     }
-    void extraArgument(unsigned argIdx) override {
+    bool extraArgument(unsigned argIdx) override {
       result = CC_ArgumentCountMismatch;
+      return true;
     }
-    void missingArgument(unsigned paramIdx) override {
+    Optional<unsigned> missingArgument(unsigned paramIdx) override {
       result = CC_ArgumentCountMismatch;
+      return None;
     }
     bool missingLabel(unsigned paramIdx) override {
       result = CC_ArgumentLabelMismatch;
@@ -346,21 +306,28 @@ CalleeCandidateInfo::ClosenessResultTy CalleeCandidateInfo::evaluateCloseness(
       result = CC_ArgumentLabelMismatch;
       return true;
     }
-    void outOfOrderArgument(unsigned argIdx, unsigned prevArgIdx) override {
+    bool outOfOrderArgument(unsigned argIdx, unsigned prevArgIdx) override {
       result = CC_ArgumentLabelMismatch;
+      return true;
     }
     bool relabelArguments(ArrayRef<Identifier> newNames) override {
       result = CC_ArgumentLabelMismatch;
       return true;
     }
+    bool trailingClosureMismatch(unsigned paramIdx, unsigned argIdx) override {
+      result = CC_ArgumentCountMismatch;
+      return true;
+    }
   } listener;
-  
+
   // Use matchCallArguments to determine how close the argument list is (in
   // shape) to the specified candidates parameters.  This ignores the concrete
   // types of the arguments, looking only at the argument labels etc.
+  SmallVector<AnyFunctionType::Param, 4> arguments(actualArgs.begin(),
+                                                   actualArgs.end());
   SmallVector<ParamBinding, 4> paramBindings;
-  if (matchCallArguments(actualArgs, candArgs,
-                         candDefaultMap,
+  if (matchCallArguments(arguments, candArgs,
+                         candParamInfo,
                          hasTrailingClosure,
                          /*allowFixes:*/ true,
                          listener, paramBindings))
@@ -420,7 +387,7 @@ CalleeCandidateInfo::ClosenessResultTy CalleeCandidateInfo::evaluateCloseness(
       // type is identical to the argument type, or substitutable via handling
       // of functions with primary archetypes in one or more parameters.
       // We can still do something more sophisticated with this.
-      // FIXME: Use TC.isConvertibleTo?
+      // FIXME: Use TypeChecker::isConvertibleTo?
       
       TypeSubstitutionMap archetypesMap;
       bool matched;
@@ -632,13 +599,10 @@ void CalleeCandidateInfo::collectCalleeCandidates(Expr *fn,
     
     // TODO: figure out right value for isKnownPrivate
     if (instanceType->mayHaveMembers()) {
-      auto ctors = CS.TC.lookupConstructors(
-                                            CS.DC, instanceType, NameLookupFlags::IgnoreAccessControl);
+      auto ctors = TypeChecker::lookupConstructors(
+          CS.DC, instanceType, NameLookupFlags::IgnoreAccessControl);
       for (auto ctor : ctors) {
-        if (!ctor.getValueDecl()->hasInterfaceType())
-          CS.getTypeChecker().validateDeclForNameLookup(ctor.getValueDecl());
-        if (ctor.getValueDecl()->hasInterfaceType())
-          candidates.push_back({ ctor.getValueDecl(), 1 });
+        candidates.push_back({ ctor.getValueDecl(), 1 });
       }
     }
     
@@ -743,8 +707,10 @@ void CalleeCandidateInfo::collectCalleeCandidates(Expr *fn,
     // initializing, provide it.
     if (UDE->getName().getBaseName() == DeclBaseName::createConstructor()) {
       auto selfTy = CS.getType(UDE->getBase())->getWithoutSpecifierType();
+      if (auto *dynamicSelfTy = selfTy->getAs<DynamicSelfType>())
+        selfTy = dynamicSelfTy->getSelfType();
       if (!selfTy->hasTypeVariable())
-        declName = selfTy->eraseDynamicSelfType().getString() + "." + declName;
+        declName = selfTy.getString() + "." + declName;
     }
     
     // Otherwise, look for a disjunction constraint explaining what the set is.
@@ -934,19 +900,31 @@ operator=(const CalleeCandidateInfo &CCI) {
 void CalleeCandidateInfo::
 suggestPotentialOverloads(SourceLoc loc, bool isResult) {
   std::set<std::string> sorted;
-  
-  // FIXME2: For (T,T) & (Self, Self), emit this as two candidates, one using
-  // the LHS and one using the RHS type for T's.
-  for (auto cand : candidates) {
-    auto type = isResult ? cand.getResultType()
-                         : cand.getArgumentType(CS.getASTContext());
-    if (type.isNull())
-      continue;
-    
-    // If we've already seen this (e.g. decls overridden on the result type),
-    // ignore this one.
-    auto name = isResult ? type->getString() : getTypeListString(type);
-    sorted.insert(name);
+
+  if (isResult) {
+    for (auto cand : candidates) {
+      auto type = cand.getResultType();
+      if (type.isNull())
+        continue;
+      
+      // If we've already seen this (e.g. decls overridden on the result type),
+      // ignore this one.
+      auto name = type->getString();
+      sorted.insert(name);
+    }
+  } else {
+    // FIXME2: For (T,T) & (Self, Self), emit this as two candidates, one using
+    // the LHS and one using the RHS type for T's.
+    for (auto cand : candidates) {
+      auto type = cand.getFunctionType();
+      if (type == nullptr)
+        continue;
+      
+      // If we've already seen this (e.g. decls overridden on the result type),
+      // ignore this one.
+      auto name = AnyFunctionType::getParamListAsString(type->getParams());
+      sorted.insert(name);
+    }
   }
 
   if (sorted.empty())
@@ -959,133 +937,13 @@ suggestPotentialOverloads(SourceLoc loc, bool isResult) {
     suggestionText += name;
   }
 
+  auto &DE = CS.getASTContext().Diags;
   if (sorted.size() == 1) {
-    CS.TC.diagnose(loc, diag::suggest_expected_match, isResult, suggestionText);
+    DE.diagnose(loc, diag::suggest_expected_match, isResult, suggestionText);
   } else {
-    CS.TC.diagnose(loc, diag::suggest_partial_overloads, isResult, declName,
-                   suggestionText);
+    DE.diagnose(loc, diag::suggest_partial_overloads, isResult, declName,
+                suggestionText);
   }
-}
-
-/// If the candidate set has been narrowed to a single parameter or single
-/// archetype that has argument type errors, diagnose that error and
-/// return true.
-bool CalleeCandidateInfo::diagnoseGenericParameterErrors(Expr *badArgExpr) {
-  TypeChecker &TC = CS.TC;
-  Type argType = CS.getType(badArgExpr);
-  
-  // FIXME: For protocol argument types, could add specific error
-  // similar to could_not_use_member_on_existential.
-  if (argType->hasTypeVariable() || argType->is<ProtocolType>() ||
-      argType->is<ProtocolCompositionType>())
-    return false;
-  
-  bool foundFailure = false;
-  TypeSubstitutionMap archetypesMap;
-  
-  if (!findGenericSubstitutions(failedArgument.declContext,
-                                failedArgument.parameterType,
-                                argType, archetypesMap))
-    return false;
-  
-  auto getGenericTypeDecl = [&](ArchetypeType *archetype) -> ValueDecl * {
-    auto paramType = archetype->getInterfaceType();
-    
-    if (auto *GTPT = paramType->getAs<GenericTypeParamType>())
-      return GTPT->getDecl();
-    
-    if (auto *DMT = paramType->getAs<DependentMemberType>())
-      return DMT->getAssocType();
-    
-    return nullptr;
-  };
-  
-  auto describeGenericType = [&](ValueDecl *genericParam,
-                                 bool includeName = false) -> std::string {
-    if (!genericParam)
-      return "";
-    
-    Decl *parent = nullptr;
-    if (auto *AT = dyn_cast<AssociatedTypeDecl>(genericParam)) {
-      parent = AT->getProtocol();
-    } else {
-      auto *dc = genericParam->getDeclContext();
-      parent = dc->getInnermostDeclarationDeclContext();
-    }
-    
-    if (!parent)
-      return "";
-    
-    llvm::SmallString<64> result;
-    llvm::raw_svector_ostream OS(result);
-    
-    OS << Decl::getDescriptiveKindName(genericParam->getDescriptiveKind());
-    
-    if (includeName && genericParam->hasName())
-      OS << " '" << genericParam->getBaseName() << "'";
-    
-    OS << " of ";
-    OS << Decl::getDescriptiveKindName(parent->getDescriptiveKind());
-    if (auto *decl = dyn_cast<ValueDecl>(parent)) {
-      if (decl->hasName())
-        OS << " '" << decl->getFullName() << "'";
-    }
-    
-    return OS.str();
-  };
-  
-  for (auto pair : archetypesMap) {
-    auto paramArchetype = pair.first->castTo<ArchetypeType>();
-    auto substitution = pair.second;
-    
-    // FIXME: Add specific error for not subclass, if the archetype has a superclass?
-    
-    for (auto proto : paramArchetype->getConformsTo()) {
-      if (!CS.TC.conformsToProtocol(substitution, proto, CS.DC,
-                                    ConformanceCheckFlags::InExpression)) {
-        if (substitution->isEqual(argType)) {
-          CS.TC.diagnose(badArgExpr->getLoc(),
-                         diag::cannot_convert_argument_value_protocol,
-                         substitution, proto->getDeclaredType());
-        } else {
-          CS.TC.diagnose(badArgExpr->getLoc(),
-                         diag::cannot_convert_partial_argument_value_protocol,
-                         argType, substitution, proto->getDeclaredType());
-        }
-        foundFailure = true;
-        break;
-      }
-    }
-    
-    if (auto *argArchetype = substitution->getAs<ArchetypeType>()) {
-      // Produce this diagnostic only if the names
-      // of the generic parameters are the same.
-      if (argArchetype->getName() != paramArchetype->getName())
-        continue;
-      
-      auto *paramDecl = getGenericTypeDecl(paramArchetype);
-      auto *argDecl = getGenericTypeDecl(argArchetype);
-      
-      if (!paramDecl || !argDecl)
-        continue;
-      
-      TC.diagnose(badArgExpr->getLoc(),
-                  diag::cannot_convert_argument_value_generic, argArchetype,
-                  describeGenericType(argDecl), paramArchetype,
-                  describeGenericType(paramDecl));
-      
-      TC.diagnose(paramDecl, diag::descriptive_generic_type_declared_here,
-                  describeGenericType(paramDecl, true));
-      
-      TC.diagnose(argDecl, diag::descriptive_generic_type_declared_here,
-                  describeGenericType(argDecl, true));
-      
-      foundFailure = true;
-      break;
-    }
-  }
-  
-  return foundFailure;
 }
 
 /// Emit a diagnostic and return true if this is an error condition we can
@@ -1107,18 +965,16 @@ bool CalleeCandidateInfo::diagnoseSimpleErrors(const Expr *E) {
   if (closeness == CC_Inaccessible) {
     auto decl = candidates[0].getDecl();
     assert(decl && "Only decl-based candidates may be marked inaccessible");
-    if (auto *CD = dyn_cast<ConstructorDecl>(decl)) {
-      CS.TC.diagnose(loc, diag::init_candidate_inaccessible,
-                     CD->getResultInterfaceType(), decl->getFormalAccess());
-      
-    } else {
-      CS.TC.diagnose(loc, diag::candidate_inaccessible, decl->getBaseName(),
-                     decl->getFormalAccess());
-    }
+
+    InaccessibleMemberFailure failure(
+        CS, decl, CS.getConstraintLocator(const_cast<Expr *>(E)));
+    auto diagnosed = failure.diagnoseAsError();
+    assert(diagnosed && "failed to produce expected diagnostic");
+
     for (auto cand : candidates) {
-      if (auto decl = cand.getDecl()) {
-        CS.TC.diagnose(decl, diag::decl_declared_here, decl->getFullName());
-      }
+      auto *candidate = cand.getDecl();
+      if (candidate && candidate != decl)
+        candidate->diagnose(diag::decl_declared_here, candidate->getFullName());
     }
     
     return true;

@@ -38,3 +38,40 @@ extension TheReplaceables {
   @_dynamicReplacement(for: subscript(_:))
   subscript (string_string i: String) -> String { return "" }
 }
+
+extension K {
+  @_dynamicReplacement(for: init(i:)) // expected-error{{replaced constructor 'init(i:)' is not marked as convenience}}
+  convenience init(ri: Int) { }
+
+  @_dynamicReplacement(for: init(c:)) // expected-error{{replaced constructor 'init(c:)' is marked as convenience}})
+  init(rc: Int) { }
+
+  @_dynamicReplacement(for:finalFunction())
+  func replacement_finalFunction() {}
+}
+
+extension undeclared { // expected-error{{use of undeclared type 'undeclared'}}
+  @_dynamicReplacement(for: property)
+  var replacement_property: Int { return 2 }
+
+  @_dynamicReplacement(for: func)
+  func func2() -> Int { return 2 }
+}
+
+extension P {
+  @_dynamicReplacement(for: v)
+  var replacement_v : Int {
+    return 1
+  }
+
+  @_dynamicReplacement(for: subscript(_:))
+  subscript(y y: Int) -> Int {
+    get {
+      return 1
+    }
+  }
+
+  @_dynamicReplacement(for: f())
+  func replacement_f() {
+  }
+}

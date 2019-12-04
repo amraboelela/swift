@@ -37,6 +37,7 @@
 #include "llvm/Support/Compiler.h"
 #if SWIFT_OBJC_INTEROP
 #include "swift/Runtime/ObjCBridge.h"
+#include "SwiftObject.h"
 #include "SwiftValue.h"
 #endif
 
@@ -99,10 +100,6 @@ static void _buildNameForMetadata(const Metadata *type,
   // Use the remangler to generate a mangled name from the type metadata.
   
   Demangle::Demangler Dem;
-  // We want to resolve symbolic references to a user-comprehensible
-  // representation of the referenced context.
-  Dem.setSymbolicReferenceResolver(ResolveToDemanglingForContext(Dem));
-  
   auto demangling = _swift_buildDemanglingForMetadata(type, Dem);
   if (demangling == nullptr) {
     result = "<<< invalid type >>>";
@@ -407,7 +404,7 @@ static bool _conformsToProtocols(const OpaqueValue *value,
   for (auto protocol : existentialType->getProtocols()) {
     if (!_conformsToProtocol(value, type, protocol, conformances))
       return false;
-    if (protocol.needsWitnessTable()) {
+    if (conformances != nullptr && protocol.needsWitnessTable()) {
       assert(*conformances != nullptr);
       ++conformances;
     }
@@ -677,7 +674,7 @@ static bool _dynamicCastFromAnyHashable(OpaqueValue *destination,
 
 #if !SWIFT_OBJC_INTEROP // __SwiftValue is a native class
 SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERNAL
-bool swift_swiftValueConformsTo(const Metadata *destinationType);
+bool swift_swiftValueConformsTo(const Metadata *, const Metadata *);
 
 #define _bridgeAnythingToObjectiveC                                 \
   MANGLE_SYM(s27_bridgeAnythingToObjectiveCyyXlxlF)
@@ -780,14 +777,16 @@ static bool _dynamicCastToExistential(OpaqueValue *dest,
         return true;
       }
 #else // !SWIFT_OBJC_INTEROP -- __SwiftValue is a native class
-	  bool isMetatype = kind == MetadataKind::ExistentialMetatype || kind == MetadataKind::Metatype;
-	  if (!isMetatype && (isTargetTypeAnyObject || swift_swiftValueConformsTo(targetType))) {
-		  auto object = _bridgeAnythingToObjectiveC(src, srcType);
-		  swift_retain(object);
-		  destExistential->Value = object;
-		  maybeDeallocateSource(true);
-		  return true;
-	  }
+      bool isMetatype = kind == MetadataKind::ExistentialMetatype ||
+                        kind == MetadataKind::Metatype;
+      if (!isMetatype && (isTargetTypeAnyObject ||
+                          swift_swiftValueConformsTo(targetType, targetType))) {
+        auto object = _bridgeAnythingToObjectiveC(src, srcType);
+        swift_retain(object);
+        destExistential->Value = object;
+        maybeDeallocateSource(true);
+        return true;
+      }
 #endif
 
       return _fail(src, srcType, targetType, flags);
@@ -1116,6 +1115,13 @@ swift_dynamicCastMetatypeImpl(const Metadata *sourceType,
       return nullptr;
     }
     break;
+
+  case MetadataKind::Existential: {
+    auto targetTypeAsExistential = static_cast<const ExistentialTypeMetadata *>(targetType);
+    if (!_conformsToProtocols(nullptr, sourceType, targetTypeAsExistential, nullptr))
+      return nullptr;
+    return origSourceType;
+  }
 
   default:
     // The cast succeeds only if the metadata pointers are statically
@@ -2325,9 +2331,10 @@ static bool swift_dynamicCastImpl(OpaqueValue *dest, OpaqueValue *src,
   case MetadataKind::Class:
   case MetadataKind::ObjCClassWrapper:
 #if SWIFT_OBJC_INTEROP
-    // If the destination type is an NSError, and the source type is an
-    // Error, then the cast can succeed by NSError bridging.
-    if (targetType == getNSErrorMetadata()) {
+    // If the destination type is an NSError or NSObject, and the source type
+    // is an Error, then the cast can succeed by NSError bridging.
+    if (targetType == getNSErrorMetadata() ||
+        targetType == getNSObjectMetadata()) {
       // Don't rebridge if the source is already some kind of NSError.
       if (srcType->isAnyClass()
           && swift_dynamicCastObjCClass(*reinterpret_cast<id*>(src),
@@ -3021,14 +3028,17 @@ _bridgeNonVerbatimFromObjectiveC(
         const_cast<void*>(swift_dynamicCastUnknownClass(sourceValue,
                                                         objectiveCType));
       
-    if (sourceValueAsObjectiveCType) {
-      // The type matches.  _forceBridgeFromObjectiveC returns `Self`, so
-      // we can just return it directly.
-      bridgeWitness->forceBridgeFromObjectiveC(
-        static_cast<HeapObject*>(sourceValueAsObjectiveCType),
-        destValue, nativeType, nativeType, bridgeWitness);
-      return;
+    if (!sourceValueAsObjectiveCType) {
+      swift::swift_dynamicCastFailure(_swift_getClass(sourceValue),
+                                      objectiveCType);
     }
+
+    // The type matches.  _forceBridgeFromObjectiveC returns `Self`, so
+    // we can just return it directly.
+    bridgeWitness->forceBridgeFromObjectiveC(
+      static_cast<HeapObject*>(sourceValueAsObjectiveCType),
+      destValue, nativeType, nativeType, bridgeWitness);
+    return;
   }
   
   // Fail.

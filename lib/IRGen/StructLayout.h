@@ -81,7 +81,13 @@ class ElementLayout {
 public:
   enum class Kind {
     /// The element is known to require no storage in the aggregate.
+    /// Its offset in the aggregate is always statically zero.
     Empty,
+
+    /// The element is known to require no storage in the aggregate.
+    /// But it has an offset in the aggregate. This is to support getting the
+    /// offset of tail allocated storage using MemoryLayout<>.offset(of:).
+    EmptyTailAllocatedCType,
 
     /// The element can be positioned at a fixed offset within the
     /// aggregate.
@@ -95,10 +101,12 @@ public:
     /// offset zero.  This is necessary because LLVM forbids even a
     /// 'gep 0' on an unsized type.
     InitialNonFixedSize
+
+    // IncompleteKind comes here
   };
 
 private:
-  enum : unsigned { IncompleteKind  = 4 };
+  enum : unsigned { IncompleteKind  = unsigned(Kind::InitialNonFixedSize) + 1 };
 
   /// The swift type information for this element's layout.
   const TypeInfo *Type;
@@ -137,19 +145,17 @@ public:
     Index = other.Index;
   }
 
-  void completeEmpty(IsPOD_t isPOD, Size byteOffset) {
+  void completeEmpty(IsPOD_t isPOD) {
     TheKind = unsigned(Kind::Empty);
     IsPOD = unsigned(isPOD);
-    // We still want to give empty fields an offset for use by things like
-    // ObjC ivar emission. We use the first field in a class layout as the
-    // instanceStart.
-    ByteOffset = byteOffset.getValue();
+    ByteOffset = 0;
     Index = 0; // make a complete write of the bitfield
   }
 
   void completeInitialNonFixedSize(IsPOD_t isPOD) {
     TheKind = unsigned(Kind::InitialNonFixedSize);
     IsPOD = unsigned(isPOD);
+    ByteOffset = 0;
     Index = 0; // make a complete write of the bitfield
   }
 
@@ -158,6 +164,15 @@ public:
     IsPOD = unsigned(isPOD);
     ByteOffset = byteOffset.getValue();
     Index = structIndex;
+
+    assert(getByteOffset() == byteOffset);
+  }
+
+  void completeEmptyTailAllocatedCType(IsPOD_t isPOD, Size byteOffset) {
+    TheKind = unsigned(Kind::EmptyTailAllocatedCType);
+    IsPOD = unsigned(isPOD);
+    ByteOffset = byteOffset.getValue();
+    Index = 0;
 
     assert(getByteOffset() == byteOffset);
   }
@@ -180,7 +195,8 @@ public:
 
   /// Is this element known to be empty?
   bool isEmpty() const {
-    return getKind() == Kind::Empty;
+    return getKind() == Kind::Empty ||
+           getKind() == Kind::EmptyTailAllocatedCType;
   }
 
   /// Is this element known to be POD?
@@ -189,10 +205,26 @@ public:
     return IsPOD_t(IsPOD);
   }
 
+  /// Can we access this element at a static offset?
+  bool hasByteOffset() const {
+    switch (getKind()) {
+    case Kind::Empty:
+    case Kind::EmptyTailAllocatedCType:
+    case Kind::Fixed:
+      return true;
+
+    // FIXME: InitialNonFixedSize should go in the above, but I'm being
+    // paranoid about changing behavior.
+    case Kind::InitialNonFixedSize:
+    case Kind::NonFixed:
+      return false;
+    }
+    llvm_unreachable("bad kind");
+  }
+
   /// Given that this element has a fixed offset, return that offset in bytes.
   Size getByteOffset() const {
-    assert(isCompleted() &&
-           (getKind() == Kind::Fixed || getKind() == Kind::Empty));
+    assert(isCompleted() && hasByteOffset());
     return Size(ByteOffset);
   }
 
@@ -223,7 +255,7 @@ protected:
   Size CurSize = Size(0);
 private:
   Alignment CurAlignment = Alignment(1);
-  SpareBitVector CurSpareBits;
+  SmallVector<SpareBitVector, 8> CurSpareBits;
   unsigned NextNonFixedOffsetIndex = 0;
   bool IsFixedLayout = true;
   IsPOD_t IsKnownPOD = IsPOD;
@@ -284,12 +316,9 @@ public:
 
   /// Return the alignment of the structure built so far.
   Alignment getAlignment() const { return CurAlignment; }
-  
-  /// Return the spare bit mask of the structure built so far.
-  const SpareBitVector &getSpareBits() const { return CurSpareBits; }
 
   /// Return the spare bit mask of the structure built so far.
-  SpareBitVector &getSpareBits() { return CurSpareBits; }
+  SpareBitVector getSpareBits() const;
 
   /// Build the current elements as a new anonymous struct type.
   llvm::StructType *getAsAnonStruct() const;

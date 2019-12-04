@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/Basic/STLExtras.h"
+#include "swift/Driver/DriverIncrementalRanges.h"
 #include "swift/Driver/Job.h"
 #include "swift/Driver/PrettyStackTrace.h"
 #include "llvm/ADT/STLExtras.h"
@@ -363,7 +364,7 @@ void Job::printCommandLine(raw_ostream &os, StringRef Terminator) const {
   escapeAndPrintString(os, Executable);
   os << ' ';
   if (hasResponseFile()) {
-    printArguments(os, {ResponseFileArg});
+    printArguments(os, {ResponseFile->argString});
     os << " # ";
   }
   printArguments(os, Arguments);
@@ -418,9 +419,11 @@ void Job::printSummary(raw_ostream &os) const {
   os << "}";
 }
 
+
 bool Job::writeArgsToResponseFile() const {
+  assert(hasResponseFile());
   std::error_code EC;
-  llvm::raw_fd_ostream OS(ResponseFilePath, EC, llvm::sys::fs::F_None);
+  llvm::raw_fd_ostream OS(ResponseFile->path, EC, llvm::sys::fs::F_None);
   if (EC) {
     return true;
   }
@@ -432,15 +435,26 @@ bool Job::writeArgsToResponseFile() const {
   return false;
 }
 
+StringRef Job::getFirstSwiftPrimaryInput() const {
+  const JobAction &source = getSource();
+  if (!isa<CompileJobAction>(source))
+    return StringRef();
+  const auto *firstInput = source.getInputs().front();
+  if (auto *inputInput = dyn_cast<InputAction>(firstInput))
+    return inputInput->getInputArg().getValue();
+  return StringRef();
+}
+
 BatchJob::BatchJob(const JobAction &Source,
                    SmallVectorImpl<const Job *> &&Inputs,
                    std::unique_ptr<CommandOutput> Output,
                    const char *Executable, llvm::opt::ArgStringList Arguments,
                    EnvironmentVector ExtraEnvironment,
                    std::vector<FilelistInfo> Infos,
-                   ArrayRef<const Job *> Combined, int64_t &NextQuasiPID)
+                   ArrayRef<const Job *> Combined, int64_t &NextQuasiPID,
+                   Optional<ResponseFileInfo> ResponseFile)
     : Job(Source, std::move(Inputs), std::move(Output), Executable, Arguments,
-          ExtraEnvironment, Infos),
+          ExtraEnvironment, Infos, ResponseFile),
       CombinedJobs(Combined.begin(), Combined.end()),
       QuasiPIDBase(NextQuasiPID) {
 

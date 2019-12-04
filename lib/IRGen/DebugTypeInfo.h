@@ -46,16 +46,23 @@ public:
   Size size = Size(0);
   Alignment align = Alignment(0);
   bool DefaultAlignment = true;
+  bool IsMetadataType = false;
 
   DebugTypeInfo() {}
   DebugTypeInfo(swift::Type Ty, llvm::Type *StorageTy, Size SizeInBytes,
-                Alignment AlignInBytes, bool HasDefaultAlignment);
+                Alignment AlignInBytes, bool HasDefaultAlignment,
+                bool IsMetadataType);
+
   /// Create type for a local variable.
   static DebugTypeInfo getLocalVariable(VarDecl *Decl,
                                         swift::Type Ty, const TypeInfo &Info);
-  /// Create type for an artificial metadata variable.
+  /// Create type for global type metadata.
   static DebugTypeInfo getMetadata(swift::Type Ty, llvm::Type *StorageTy,
                                    Size size, Alignment align);
+  /// Create type for an artificial metadata variable.
+  static DebugTypeInfo getArchetype(swift::Type Ty, llvm::Type *StorageTy,
+                                    Size size, Alignment align);
+
   /// Create a standalone type from a TypeInfo object.
   static DebugTypeInfo getFromTypeInfo(swift::Type Ty, const TypeInfo &Info);
   /// Global variables.
@@ -65,14 +72,20 @@ public:
   static DebugTypeInfo getObjCClass(ClassDecl *theClass,
                                     llvm::Type *StorageType, Size size,
                                     Alignment align);
+  /// Error type.
+  static DebugTypeInfo getErrorResult(swift::Type Ty, llvm::Type *StorageType,
+                                      Size size, Alignment align);
 
   TypeBase *getType() const { return Type; }
 
   TypeDecl *getDecl() const;
 
-  // Determine whether this type is an Archetype itself.
-  bool isArchetype() const {
-    return Type->getWithoutSpecifierType()->is<ArchetypeType>();
+  // Determine whether this type is an Archetype dependent on a generic context.
+  bool isContextArchetype() const {
+    if (auto archetype = Type->getWithoutSpecifierType()->getAs<ArchetypeType>()) {
+      return !isa<OpaqueTypeArchetypeType>(archetype->getRoot());
+    }
+    return false;
   }
 
   bool isNull() const { return Type == nullptr; }
@@ -94,7 +107,7 @@ template <> struct DenseMapInfo<swift::irgen::DebugTypeInfo> {
   static swift::irgen::DebugTypeInfo getTombstoneKey() {
     return swift::irgen::DebugTypeInfo(
         llvm::DenseMapInfo<swift::TypeBase *>::getTombstoneKey(), nullptr,
-        swift::irgen::Size(0), swift::irgen::Alignment(0), false);
+        swift::irgen::Size(0), swift::irgen::Alignment(0), false, false);
   }
   static unsigned getHashValue(swift::irgen::DebugTypeInfo Val) {
     return DenseMapInfo<swift::CanType>::getHashValue(Val.getType());

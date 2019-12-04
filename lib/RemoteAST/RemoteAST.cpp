@@ -26,8 +26,8 @@
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/SubstitutionMap.h"
-#include "swift/AST/Types.h"
 #include "swift/AST/TypeRepr.h"
+#include "swift/AST/Types.h"
 #include "swift/Basic/Mangler.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/Demangling/Demangler.h"
@@ -61,6 +61,7 @@ namespace {
 struct IRGenContext {
   IRGenOptions IROpts;
   SILOptions SILOpts;
+  Lowering::TypeConverter TC;
   std::unique_ptr<SILModule> SILMod;
   llvm::LLVMContext LLVMContext;
   irgen::IRGenerator IRGen;
@@ -69,7 +70,8 @@ struct IRGenContext {
 private:
   IRGenContext(ASTContext &ctx, ModuleDecl *module)
     : IROpts(createIRGenOptions()),
-      SILMod(SILModule::createEmptyModule(module, SILOpts)),
+      TC(*module),
+      SILMod(SILModule::createEmptyModule(module, TC, SILOpts)),
       IRGen(IROpts, *SILMod),
       IGM(IRGen, IRGen.createTargetMachine(), LLVMContext) {}
 
@@ -109,7 +111,10 @@ public:
   virtual Result<OpenedExistential>
   getDynamicTypeAndAddressForExistential(RemoteAddress object,
                                          Type staticType) = 0;
-
+  virtual Result<Type>
+  getUnderlyingTypeForOpaqueType(remote::RemoteAddress opaqueDescriptor,
+                                 SubstitutionMap substitutions,
+                                 unsigned ordinal) = 0;
   Result<uint64_t>
   getOffsetOfMember(Type type, RemoteAddress optMetadata, StringRef memberName){
     // Sanity check: obviously invalid arguments.
@@ -224,7 +229,7 @@ private:
   getOffsetOfFieldFromIRGen(irgen::IRGenModule &IGM, Type type,
                             NominalTypeDecl *typeDecl,
                             RemoteAddress optMetadata, VarDecl *member) {
-    SILType loweredTy = IGM.getSILTypes().getLoweredType(type);
+    SILType loweredTy = IGM.getLoweredType(type);
 
     MemberAccessStrategy strategy =
       (isa<StructDecl>(typeDecl)
@@ -327,14 +332,20 @@ private:
       return fail<uint64_t>(Failure::TypeHasNoSuchMember, memberName);
 
     // Fast path: element 0 is always at offset 0.
-    if (targetIndex == 0) return uint64_t(0);
+    if (targetIndex == 0)
+      return uint64_t(0);
 
     // Create an IRGen instance.
     auto irgen = getIRGen();
-    if (!irgen) return Result<uint64_t>::emplaceFailure(Failure::Unknown);
+    if (!irgen)
+      return Result<uint64_t>::emplaceFailure(Failure::Unknown);
     auto &IGM = irgen->IGM;
+    SILType loweredTy = IGM.getLoweredType(type);
 
-    SILType loweredTy = IGM.getSILTypes().getLoweredType(type);
+    // Only the runtime metadata knows the offsets of resilient members.
+    auto &typeInfo = IGM.getTypeInfo(loweredTy);
+    if (!isa<irgen::FixedTypeInfo>(&typeInfo))
+      return Result<uint64_t>::emplaceFailure(Failure::NotFixedLayout);
 
     // If the type has a statically fixed offset, return that.
     if (auto offset =
@@ -480,7 +491,7 @@ public:
 
   Result<OpenedExistential>
   getDynamicTypeAndAddressClassExistential(RemoteAddress object) {
-    auto pointerval = Reader.readPointerValue(object.getAddressData());
+    auto pointerval = Reader.readResolvedPointerValue(object.getAddressData());
     if (!pointerval)
       return getFailure<OpenedExistential>();
     auto result = Reader.readMetadataFromInstance(*pointerval);
@@ -497,7 +508,7 @@ public:
   getDynamicTypeAndAddressErrorExistential(RemoteAddress object,
                                            bool dereference=true) {
     if (dereference) {
-      auto pointerval = Reader.readPointerValue(object.getAddressData());
+      auto pointerval = Reader.readResolvedPointerValue(object.getAddressData());
       if (!pointerval)
         return getFailure<OpenedExistential>();
       object = RemoteAddress(*pointerval);
@@ -520,7 +531,7 @@ public:
     auto payloadAddress = result->PayloadAddress;
     if (!result->IsBridgedError &&
         typeResult->getClassOrBoundGenericClass()) {
-      auto pointerval = Reader.readPointerValue(
+      auto pointerval = Reader.readResolvedPointerValue(
           payloadAddress.getAddressData());
       if (!pointerval)
         return getFailure<OpenedExistential>();
@@ -548,7 +559,7 @@ public:
     // of the reference.
     auto payloadAddress = result->PayloadAddress;
     if (typeResult->getClassOrBoundGenericClass()) {
-      auto pointerval = Reader.readPointerValue(
+      auto pointerval = Reader.readResolvedPointerValue(
           payloadAddress.getAddressData());
       if (!pointerval)
         return getFailure<OpenedExistential>();
@@ -567,7 +578,7 @@ public:
     // 1) Loading a pointer from the input address
     // 2) Reading it as metadata and resolving the type
     // 3) Wrapping the resolved type in an existential metatype.
-    auto pointerval = Reader.readPointerValue(object.getAddressData());
+    auto pointerval = Reader.readResolvedPointerValue(object.getAddressData());
     if (!pointerval)
       return getFailure<OpenedExistential>();
     auto typeResult = Reader.readTypeFromMetadata(*pointerval);
@@ -615,6 +626,20 @@ public:
       return getDynamicTypeAndAddressOpaqueExistential(object);
     }
     llvm_unreachable("invalid type kind");
+  }
+  
+  Result<Type>
+  getUnderlyingTypeForOpaqueType(remote::RemoteAddress opaqueDescriptor,
+                                 SubstitutionMap substitutions,
+                                 unsigned ordinal) override {
+    auto underlyingType = Reader
+      .readUnderlyingTypeForOpaqueTypeDescriptor(opaqueDescriptor.getAddressData(),
+                                                 ordinal);
+    
+    if (!underlyingType)
+      return getFailure<Type>();
+    
+    return underlyingType.subst(substitutions);
   }
 };
 
@@ -685,4 +710,13 @@ RemoteASTContext::getDynamicTypeAndAddressForExistential(
     remote::RemoteAddress address, Type staticType) {
   return asImpl(Impl)->getDynamicTypeAndAddressForExistential(address,
                                                               staticType);
+}
+
+Result<Type>
+RemoteASTContext::getUnderlyingTypeForOpaqueType(
+    remote::RemoteAddress opaqueDescriptor,
+    SubstitutionMap substitutions,
+    unsigned ordinal) {
+  return asImpl(Impl)->getUnderlyingTypeForOpaqueType(opaqueDescriptor,
+                                                      substitutions, ordinal);
 }

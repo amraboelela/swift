@@ -14,7 +14,6 @@
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/Demangling/Demangle.h"
 #include "swift/SIL/SILCloner.h"
-#include "swift/SILOptimizer/Utils/SILOptFunctionBuilder.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/TypeSubstCloner.h"
 #include "swift/SILOptimizer/Analysis/ColdBlockInfo.h"
@@ -22,7 +21,8 @@
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "swift/SILOptimizer/Utils/Generics.h"
-#include "swift/SILOptimizer/Utils/Local.h"
+#include "swift/SILOptimizer/Utils/InstOptUtils.h"
+#include "swift/SILOptimizer/Utils/SILOptFunctionBuilder.h"
 #include "swift/SILOptimizer/Utils/SpecializationMangler.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -256,7 +256,7 @@ SILFunction *CapturePropagation::specializeConstClosure(PartialApplyInst *PAI,
   NewFTy = NewFTy->getWithRepresentation(SILFunctionType::Representation::Thin);
 
   GenericEnvironment *GenericEnv = nullptr;
-  if (NewFTy->getGenericSignature())
+  if (NewFTy->getInvocationGenericSignature())
     GenericEnv = OrigF->getGenericEnvironment();
   SILOptFunctionBuilder FuncBuilder(*this);
   SILFunction *NewF = FuncBuilder.createFunction(
@@ -347,7 +347,6 @@ static SILFunction *getSpecializedWithDeadParams(
     std::pair<SILFunction *, SILFunction *> &GenericSpecialized) {
   SILBasicBlock &EntryBB = *Orig->begin();
   unsigned NumArgs = EntryBB.getNumArguments();
-  SILModule &M = Orig->getModule();
 
   // Check if all dead parameters have trivial types. We don't support non-
   // trivial types because it's very hard to find places where we can release
@@ -355,7 +354,7 @@ static SILFunction *getSpecializedWithDeadParams(
   // TODO: maybe we can skip this restriction when we have semantic ARC.
   for (unsigned Idx = NumArgs - numDeadParams; Idx < NumArgs; ++Idx) {
     SILType ArgTy = EntryBB.getArgument(Idx)->getType();
-    if (!ArgTy.isTrivial(M))
+    if (!ArgTy.isTrivial(*Orig))
       return nullptr;
   }
   SILFunction *Specialized = nullptr;
@@ -374,7 +373,7 @@ static SILFunction *getSpecializedWithDeadParams(
       if (Specialized)
         return nullptr;
 
-      Specialized = FAS.getReferencedFunction();
+      Specialized = FAS.getReferencedFunctionOrNull();
       if (!Specialized)
         return nullptr;
 
@@ -422,13 +421,15 @@ static SILFunction *getSpecializedWithDeadParams(
       return nullptr;
 
     // Perform a generic specialization of the Specialized function.
-    ReabstractionInfo ReInfo(ApplySite(), Specialized,
-                             PAI->getSubstitutionMap(),
-                             /* ConvertIndirectToDirect */ false);
+    ReabstractionInfo ReInfo(
+        FuncBuilder.getModule().getSwiftModule(),
+        FuncBuilder.getModule().isWholeModule(), ApplySite(), Specialized,
+        PAI->getSubstitutionMap(), Specialized->isSerialized(),
+        /* ConvertIndirectToDirect */ false);
     GenericFuncSpecializer FuncSpecializer(FuncBuilder,
                                            Specialized,
                                            ReInfo.getClonerParamSubstitutionMap(),
-                                           Specialized->isSerialized(), ReInfo);
+                                           ReInfo);
 
     SILFunction *GenericSpecializedFunc = FuncSpecializer.trySpecialization();
     if (!GenericSpecializedFunc)
@@ -440,7 +441,7 @@ static SILFunction *getSpecializedWithDeadParams(
 }
 
 bool CapturePropagation::optimizePartialApply(PartialApplyInst *PAI) {
-  SILFunction *SubstF = PAI->getReferencedFunction();
+  SILFunction *SubstF = PAI->getReferencedFunctionOrNull();
   if (!SubstF)
     return false;
   if (SubstF->isExternalDeclaration())

@@ -7,7 +7,6 @@ add_swift_host_library(swiftIDE STATIC
   Formatting.cpp
   Refactoring.cpp
   ModuleInterfacePrinting.cpp
-  TypeReconstruction.cpp
   REPLCodeCompletion.cpp
   SwiftSourceDocInfo.cpp
   SyntaxModel.cpp
@@ -16,12 +15,12 @@ add_swift_host_library(swiftIDE STATIC
   APIDigesterData.cpp
   SourceEntityWalker.cpp
   TypeContextInfo.cpp
-  LINK_LIBRARIES
-    swiftAST
-    swiftFrontend
-    swiftClangImporter
-    swiftDWARFImporter
-    swiftParse
-    swiftSema
-    swiftIndex)
+  IDERequests.cpp)
+target_link_libraries(swiftIDE PRIVATE
+  swiftAST
+  swiftClangImporter
+  swiftFrontend
+  swiftIndex
+  swiftParse
+  swiftSema)
 

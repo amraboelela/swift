@@ -25,13 +25,14 @@
 #include "swift/AST/Module.h"
 #include "swift/AST/SILOptions.h"
 #include "swift/AST/SearchPathOptions.h"
+#include "swift/AST/SourceFile.h"
 #include "swift/Basic/DiagnosticOptions.h"
 #include "swift/Basic/LangOptions.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/ClangImporter/ClangImporterOptions.h"
 #include "swift/Frontend/FrontendOptions.h"
-#include "swift/Frontend/ParseableInterfaceSupport.h"
+#include "swift/Frontend/ModuleInterfaceSupport.h"
 #include "swift/Migrator/MigratorOptions.h"
 #include "swift/Parse/CodeCompletionCallbacks.h"
 #include "swift/Parse/Parser.h"
@@ -52,7 +53,24 @@
 namespace swift {
 
 class SerializedModuleLoader;
+class MemoryBufferSerializedModuleLoader;
 class SILModule;
+
+namespace Lowering {
+class TypeConverter;
+}
+
+struct ModuleBuffers {
+  std::unique_ptr<llvm::MemoryBuffer> ModuleBuffer;
+  std::unique_ptr<llvm::MemoryBuffer> ModuleDocBuffer;
+  std::unique_ptr<llvm::MemoryBuffer> ModuleSourceInfoBuffer;
+  ModuleBuffers(std::unique_ptr<llvm::MemoryBuffer> ModuleBuffer,
+                std::unique_ptr<llvm::MemoryBuffer> ModuleDocBuffer = nullptr,
+                std::unique_ptr<llvm::MemoryBuffer> ModuleSourceInfoBuffer = nullptr):
+                  ModuleBuffer(std::move(ModuleBuffer)),
+                  ModuleDocBuffer(std::move(ModuleDocBuffer)),
+                  ModuleSourceInfoBuffer(std::move(ModuleSourceInfoBuffer)) {}
+};
 
 /// The abstract configuration of the compiler, including:
 ///   - options for all stages of translation,
@@ -65,6 +83,7 @@ class SILModule;
 /// which manages the actual compiler execution.
 class CompilerInvocation {
   LangOptions LangOpts;
+  TypeCheckerOptions TypeCheckerOpts;
   FrontendOptions FrontendOpts;
   ClangImporterOptions ClangImporterOpts;
   SearchPathOptions SearchPathOpts;
@@ -73,7 +92,7 @@ class CompilerInvocation {
   SILOptions SILOpts;
   IRGenOptions IRGenOpts;
   TBDGenOptions TBDGenOpts;
-  ParseableInterfaceOptions ParseableInterfaceOpts;
+  ModuleInterfaceOptions ModuleInterfaceOpts;
   /// The \c SyntaxParsingCache to use when parsing the main file of this
   /// invocation
   SyntaxParsingCache *MainFileSyntaxParsingCache = nullptr;
@@ -184,9 +203,13 @@ public:
 
   void setRuntimeResourcePath(StringRef Path);
 
-  void setSDKPath(const std::string &Path) {
-    SearchPathOpts.SDKPath = Path;
-  }
+  /// Computes the runtime resource path relative to the given Swift
+  /// executable.
+  static void computeRuntimeResourcePathFromExecutablePath(
+      StringRef mainExecutablePath,
+      llvm::SmallString<128> &runtimeResourcePath);
+
+  void setSDKPath(const std::string &Path);
 
   StringRef getSDKPath() const {
     return SearchPathOpts.SDKPath;
@@ -199,14 +222,19 @@ public:
     return LangOpts;
   }
 
+  TypeCheckerOptions &getTypeCheckerOptions() { return TypeCheckerOpts; }
+  const TypeCheckerOptions &getTypeCheckerOptions() const {
+    return TypeCheckerOpts;
+  }
+
   FrontendOptions &getFrontendOptions() { return FrontendOpts; }
   const FrontendOptions &getFrontendOptions() const { return FrontendOpts; }
 
   TBDGenOptions &getTBDGenOptions() { return TBDGenOpts; }
   const TBDGenOptions &getTBDGenOptions() const { return TBDGenOpts; }
 
-  ParseableInterfaceOptions &getParseableInterfaceOptions() { return ParseableInterfaceOpts; }
-  const ParseableInterfaceOptions &getParseableInterfaceOptions() const { return ParseableInterfaceOpts; }
+  ModuleInterfaceOptions &getModuleInterfaceOptions() { return ModuleInterfaceOpts; }
+  const ModuleInterfaceOptions &getModuleInterfaceOptions() const { return ModuleInterfaceOpts; }
 
   ClangImporterOptions &getClangImporterOptions() { return ClangImporterOpts; }
   const ClangImporterOptions &getClangImporterOptions() const {
@@ -292,6 +320,12 @@ public:
 
   void setCodeCompletionFactory(CodeCompletionCallbacksFactory *Factory) {
     CodeCompletionFactory = Factory;
+    disableASTScopeLookup();
+  }
+  
+  /// Called from lldb, see rdar://53971116
+  void disableASTScopeLookup() {
+    LangOpts.EnableASTScopeLookup = false;
   }
 
   CodeCompletionCallbacksFactory *getCodeCompletionFactory() const {
@@ -337,6 +371,8 @@ public:
   std::string getModuleOutputPathForAtMostOnePrimary() const;
   std::string
   getReferenceDependenciesFilePathForPrimary(StringRef filename) const;
+  std::string getSwiftRangesFilePathForPrimary(StringRef filename) const;
+  std::string getCompiledSourceFilePathForPrimary(StringRef filename) const;
   std::string getSerializedDiagnosticsPathForAtMostOnePrimary() const;
 
   /// TBDPath only makes sense in whole module compilation mode,
@@ -344,10 +380,10 @@ public:
   /// if not in that mode.
   std::string getTBDPathForWholeModule() const;
 
-  /// ParseableInterfaceOutputPath only makes sense in whole module compilation
-  /// mode, so return the ParseableInterfaceOutputPath when in that mode and
+  /// ModuleInterfaceOutputPath only makes sense in whole module compilation
+  /// mode, so return the ModuleInterfaceOutputPath when in that mode and
   /// fail an assert if not in that mode.
-  std::string getParseableInterfaceOutputPathForWholeModule() const;
+  std::string getModuleInterfaceOutputPathForWholeModule() const;
 
   SerializationOptions
   computeSerializationOptions(const SupplementaryOutputPaths &outs,
@@ -367,25 +403,24 @@ class CompilerInstance {
   SourceManager SourceMgr;
   DiagnosticEngine Diagnostics{SourceMgr};
   std::unique_ptr<ASTContext> Context;
+  std::unique_ptr<Lowering::TypeConverter> TheSILTypes;
   std::unique_ptr<SILModule> TheSILModule;
+
+  std::unique_ptr<PersistentParserState> PersistentState;
 
   /// Null if no tracker.
   std::unique_ptr<DependencyTracker> DepTracker;
 
   ModuleDecl *MainModule = nullptr;
   SerializedModuleLoader *SML = nullptr;
+  MemoryBufferSerializedModuleLoader *MemoryBufferLoader = nullptr;
 
   /// Contains buffer IDs for input source code files.
   std::vector<unsigned> InputSourceCodeBufferIDs;
 
-  struct PartialModuleInputs {
-    std::unique_ptr<llvm::MemoryBuffer> ModuleBuffer;
-    std::unique_ptr<llvm::MemoryBuffer> ModuleDocBuffer;
-  };
-
   /// Contains \c MemoryBuffers for partial serialized module files and
   /// corresponding partial serialized module documentation files.
-  std::vector<PartialModuleInputs> PartialModules;
+  std::vector<ModuleBuffers> PartialModules;
 
   enum : unsigned { NO_SUCH_BUFFER = ~0U };
   unsigned MainBufferID = NO_SUCH_BUFFER;
@@ -414,8 +449,6 @@ class CompilerInstance {
 
   bool isWholeModuleCompilation() { return PrimaryBufferIDs.empty(); }
 
-  void createSILModule();
-
 public:
   // Out of line to avoid having to import SILModule.h.
   CompilerInstance();
@@ -430,7 +463,7 @@ public:
 
   DiagnosticEngine &getDiags() { return Diagnostics; }
 
-  clang::vfs::FileSystem &getFileSystem() { return *SourceMgr.getFileSystem(); }
+  llvm::vfs::FileSystem &getFileSystem() { return *SourceMgr.getFileSystem(); }
 
   ASTContext &getASTContext() {
     return *Context;
@@ -439,6 +472,10 @@ public:
 
   SILOptions &getSILOptions() { return Invocation.getSILOptions(); }
   const SILOptions &getSILOptions() const { return Invocation.getSILOptions(); }
+
+  Lowering::TypeConverter &getSILTypes();
+
+  void createSILModule();
 
   void addDiagnosticConsumer(DiagnosticConsumer *DC) {
     Diagnostics.addConsumer(*DC);
@@ -467,7 +504,10 @@ public:
 
   ModuleDecl *getMainModule();
 
-  SerializedModuleLoader *getSerializedModuleLoader() const { return SML; }
+  MemoryBufferSerializedModuleLoader *
+  getMemoryBufferSerializedModuleLoader() const {
+    return MemoryBufferLoader;
+  }
 
   ArrayRef<unsigned> getInputBufferIDs() const {
     return InputSourceCodeBufferIDs;
@@ -485,16 +525,6 @@ public:
   /// CompilerInstance.
   ArrayRef<SourceFile *> getPrimarySourceFiles() {
     return PrimarySourceFiles;
-  }
-
-  /// Gets the Primary Source File if one exists, otherwise the main
-  /// module. If multiple Primary Source Files exist, fails with an
-  /// assertion.
-  ModuleOrSourceFile getPrimarySourceFileOrMainModule() {
-    if (PrimarySourceFiles.empty())
-      return getMainModule();
-    else
-      return getPrimarySourceFile();
   }
 
   /// Gets the SourceFile which is the primary input for this CompilerInstance.
@@ -532,6 +562,7 @@ private:
   }
 
   bool setUpInputs();
+  bool setUpASTContextIfNeeded();
   Optional<unsigned> setUpCodeCompletionBuffer();
 
   /// Set up all state in the CompilerInstance to process the given input file.
@@ -549,9 +580,7 @@ private:
   /// and a buffer for the corresponding module doc file if one exists.
   /// On failure, return a null pointer for the first element of the returned
   /// pair.
-  std::pair<std::unique_ptr<llvm::MemoryBuffer>,
-            std::unique_ptr<llvm::MemoryBuffer>>
-  getInputBufferAndModuleDocBufferIfPresent(const InputFile &input);
+  Optional<ModuleBuffers> getInputBuffersIfPresent(const InputFile &input);
 
   /// Try to open the module doc file corresponding to the input parameter.
   /// Return None for error, nullptr if no such file exists, or the buffer if
@@ -559,6 +588,11 @@ private:
   Optional<std::unique_ptr<llvm::MemoryBuffer>>
   openModuleDoc(const InputFile &input);
 
+  /// Try to open the module source info file corresponding to the input parameter.
+  /// Return None for error, nullptr if no such file exists, or the buffer if
+  /// one was found.
+  Optional<std::unique_ptr<llvm::MemoryBuffer>>
+  openModuleSourceInfo(const InputFile &input);
 public:
   /// Parses and type-checks all input files.
   void performSema();
@@ -614,7 +648,6 @@ public: // for static functions in Frontend.cpp
 
 private:
   void createREPLFile(const ImplicitImports &implicitImports);
-  std::unique_ptr<DelayedParsingCallbacks> computeDelayedParsingCallback();
 
   void addMainFileToModule(const ImplicitImports &implicitImports);
 
@@ -623,26 +656,17 @@ private:
                               SourceFile::ASTStage_t LimitStage);
 
   void parseLibraryFile(unsigned BufferID,
-                        const ImplicitImports &implicitImports,
-                        PersistentParserState &PersistentState,
-                        DelayedParsingCallbacks *DelayedCB);
+                        const ImplicitImports &implicitImports);
 
   /// Return true if had load error
   bool
-  parsePartialModulesAndLibraryFiles(const ImplicitImports &implicitImports,
-                                     PersistentParserState &PersistentState,
-                                     DelayedParsingCallbacks *DelayedCB);
-
-  OptionSet<TypeCheckingFlags> computeTypeCheckingOptions();
+  parsePartialModulesAndLibraryFiles(const ImplicitImports &implicitImports);
 
   void forEachFileToTypeCheck(llvm::function_ref<void(SourceFile &)> fn);
 
-  void parseAndTypeCheckMainFileUpTo(SourceFile::ASTStage_t LimitStage,
-                                     PersistentParserState &PersistentState,
-                                     DelayedParsingCallbacks *DelayedParseCB,
-                                     OptionSet<TypeCheckingFlags> TypeCheckOptions);
+  void parseAndTypeCheckMainFileUpTo(SourceFile::ASTStage_t LimitStage);
 
-  void finishTypeChecking(OptionSet<TypeCheckingFlags> TypeCheckOptions);
+  void finishTypeChecking();
 
 public:
   const PrimarySpecificPaths &
@@ -653,6 +677,16 @@ public:
   getPrimarySpecificPathsForAtMostOnePrimary() const;
   const PrimarySpecificPaths &
   getPrimarySpecificPathsForSourceFile(const SourceFile &SF) const;
+
+  /// Write out the unparsed (delayed) source ranges
+  /// Return true for error
+  bool emitSwiftRanges(DiagnosticEngine &diags, SourceFile *primaryFile,
+                       StringRef outputPath) const;
+
+  /// Return true for error
+  bool emitCompiledSource(DiagnosticEngine &diags,
+                          const SourceFile *primaryFile,
+                          StringRef outputPath) const;
 };
 
 } // namespace swift

@@ -315,10 +315,11 @@ class TypeDecoder {
       if (Node->getNumChildren() < 2)
         return BuiltType();
 
-      std::vector<BuiltType> args;
+      SmallVector<BuiltType, 8> args;
 
       const auto &genericArgs = Node->getChild(1);
-      assert(genericArgs->getKind() == NodeKind::TypeList);
+      if (genericArgs->getKind() != NodeKind::TypeList)
+        return BuiltType();
 
       for (auto genericArg : *genericArgs) {
         auto paramType = decodeMangledType(genericArg);
@@ -427,7 +428,7 @@ class TypeDecoder {
         return BuiltType();
 
       // Find the protocol list.
-      std::vector<BuiltProtocolDecl> Protocols;
+      SmallVector<BuiltProtocolDecl, 8> Protocols;
       auto TypeList = Node->getChild(0);
       if (TypeList->getKind() == NodeKind::ProtocolList &&
           TypeList->getNumChildren() >= 1) {
@@ -486,6 +487,7 @@ class TypeDecoder {
       auto index = Node->getChild(1)->getIndex();
       return Builder.createGenericTypeParameterType(depth, index);
     }
+    case NodeKind::EscapingObjCBlock:
     case NodeKind::ObjCBlock:
     case NodeKind::CFunctionPointer:
     case NodeKind::ThinFunctionType:
@@ -497,7 +499,8 @@ class TypeDecoder {
         return BuiltType();
 
       FunctionTypeFlags flags;
-      if (Node->getKind() == NodeKind::ObjCBlock) {
+      if (Node->getKind() == NodeKind::ObjCBlock ||
+          Node->getKind() == NodeKind::EscapingObjCBlock) {
         flags = flags.withConvention(FunctionMetadataConvention::Block);
       } else if (Node->getKind() == NodeKind::CFunctionPointer) {
         flags =
@@ -514,7 +517,7 @@ class TypeDecoder {
         return BuiltType();
 
       bool hasParamFlags = false;
-      std::vector<FunctionParam<BuiltType>> parameters;
+      SmallVector<FunctionParam<BuiltType>, 8> parameters;
       if (!decodeMangledFunctionInputType(Node->getChild(isThrow ? 1 : 0),
                                           parameters, hasParamFlags))
         return BuiltType();
@@ -523,7 +526,8 @@ class TypeDecoder {
               .withParameterFlags(hasParamFlags)
               .withEscaping(
                           Node->getKind() == NodeKind::FunctionType ||
-                          Node->getKind() == NodeKind::EscapingAutoClosureType);
+                          Node->getKind() == NodeKind::EscapingAutoClosureType ||
+                          Node->getKind() == NodeKind::EscapingObjCBlock);
 
       auto result = decodeMangledType(Node->getChild(isThrow ? 2 : 1));
       if (!result) return BuiltType();
@@ -531,9 +535,9 @@ class TypeDecoder {
     }
     case NodeKind::ImplFunctionType: {
       auto calleeConvention = ImplParameterConvention::Direct_Unowned;
-      std::vector<ImplFunctionParam<BuiltType>> parameters;
-      std::vector<ImplFunctionResult<BuiltType>> results;
-      std::vector<ImplFunctionResult<BuiltType>> errorResults;
+      SmallVector<ImplFunctionParam<BuiltType>, 8> parameters;
+      SmallVector<ImplFunctionResult<BuiltType>, 8> results;
+      SmallVector<ImplFunctionResult<BuiltType>, 8> errorResults;
       ImplFunctionTypeFlags flags;
 
       for (unsigned i = 0; i < Node->getNumChildren(); i++) {
@@ -611,7 +615,7 @@ class TypeDecoder {
       return decodeMangledType(Node->getChild(0));
 
     case NodeKind::Tuple: {
-      std::vector<BuiltType> elements;
+      SmallVector<BuiltType, 8> elements;
       std::string labels;
       bool variadic = false;
       for (auto &element : *Node) {
@@ -676,21 +680,21 @@ class TypeDecoder {
       auto base = decodeMangledType(Node->getChild(0));
       if (!base)
         return BuiltType();
-      auto member = Node->getChild(1)->getText();
       auto assocTypeChild = Node->getChild(1);
-      if (assocTypeChild->getNumChildren() < 1)
+      auto member = assocTypeChild->getFirstChild()->getText();
+      if (assocTypeChild->getNumChildren() < 2)
         return Builder.createDependentMemberType(member, base);
 
-      auto protocol = decodeMangledProtocolType(assocTypeChild->getChild(0));
+      auto protocol = decodeMangledProtocolType(assocTypeChild->getChild(1));
       if (!protocol)
         return BuiltType();
       return Builder.createDependentMemberType(member, base, protocol);
     }
     case NodeKind::DependentAssociatedTypeRef: {
-      if (Node->getNumChildren() < 1)
+      if (Node->getNumChildren() < 2)
         return BuiltType();
 
-      return decodeMangledType(Node->getChild(0));
+      return decodeMangledType(Node->getChild(1));
     }
     case NodeKind::Unowned: {
       if (Node->getNumChildren() < 1)
@@ -777,6 +781,44 @@ class TypeDecoder {
 
       return Builder.createParenType(base);
     }
+    case NodeKind::OpaqueType: {
+      if (Node->getNumChildren() < 3)
+        return BuiltType();
+      auto descriptor = Node->getChild(0);
+      auto ordinalNode = Node->getChild(1);
+
+      if (ordinalNode->getKind() != NodeKind::Index
+          || !ordinalNode->hasIndex())
+        return BuiltType();
+      auto ordinal = ordinalNode->getIndex();
+
+      std::vector<BuiltType> genericArgsBuf;
+      std::vector<unsigned> genericArgsLevels;
+      auto boundGenerics = Node->getChild(2);
+      for (unsigned i = 0; i < boundGenerics->getNumChildren(); ++i) {
+        genericArgsLevels.push_back(genericArgsBuf.size());
+        auto genericsNode = boundGenerics->getChild(i);
+        if (genericsNode->getKind() != NodeKind::TypeList)
+          break;
+        for (auto argNode : *genericsNode) {
+          auto arg = decodeMangledType(argNode);
+          if (!arg)
+            return BuiltType();
+          genericArgsBuf.push_back(arg);
+        }
+      }
+      genericArgsLevels.push_back(genericArgsBuf.size());
+      std::vector<ArrayRef<BuiltType>> genericArgs;
+      for (unsigned i = 0; i < genericArgsLevels.size() - 1; ++i) {
+        auto start = genericArgsLevels[i], end = genericArgsLevels[i+1];
+        genericArgs.emplace_back(genericArgsBuf.data() + start,
+                                 end - start);
+      }
+      
+      return Builder.resolveOpaqueType(descriptor, genericArgs, ordinal);
+    }
+    // TODO: Handle OpaqueReturnType, when we're in the middle of reconstructing
+    // the defining decl
     default:
       return BuiltType();
     }
@@ -785,7 +827,7 @@ class TypeDecoder {
 private:
   template <typename T>
   bool decodeImplFunctionPart(Demangle::NodePointer node,
-                              std::vector<T> &results) {
+                              SmallVectorImpl<T> &results) {
     if (node->getNumChildren() != 2)
       return true;
     
@@ -871,7 +913,7 @@ private:
 
   bool decodeMangledFunctionInputType(
       Demangle::NodePointer node,
-      std::vector<FunctionParam<BuiltType>> &params,
+      SmallVectorImpl<FunctionParam<BuiltType>> &params,
       bool &hasParamFlags) {
     // Look through a couple of sugar nodes.
     if (node->getKind() == NodeKind::Type ||

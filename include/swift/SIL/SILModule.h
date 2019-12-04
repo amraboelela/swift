@@ -194,6 +194,15 @@ private:
   /// The list of SILDefaultWitnessTables in the module.
   DefaultWitnessTableListType defaultWitnessTables;
 
+  /// Declarations which are externally visible.
+  ///
+  /// These are method declarations which are referenced from inlinable
+  /// functions due to cross-module-optimzation. Those declarations don't have
+  /// any attributes or linkage which mark them as externally visible by
+  /// default.
+  /// Currently this table is not serialized.
+  llvm::SetVector<ValueDecl *> externallyVisible;
+
   /// Lookup table for SIL Global Variables.
   llvm::StringMap<SILGlobalVariable *> GlobalVariableMap;
 
@@ -221,7 +230,7 @@ private:
   llvm::DenseMap<Identifier, BuiltinInfo> BuiltinIDCache;
 
   /// This is the set of undef values we've created, for uniquing purposes.
-  llvm::DenseMap<SILType, SILUndef *> UndefValues;
+  llvm::DenseMap<std::pair<SILType, unsigned>, SILUndef *> UndefValues;
 
   /// The stage of processing this module is at.
   SILStage Stage;
@@ -260,21 +269,22 @@ private:
 
   // Intentionally marked private so that we need to use 'constructSIL()'
   // to construct a SILModule.
-  SILModule(ModuleDecl *M, SILOptions &Options, const DeclContext *associatedDC,
+  SILModule(ModuleDecl *M, Lowering::TypeConverter &TC,
+            SILOptions &Options, const DeclContext *associatedDC,
             bool wholeModule);
 
   SILModule(const SILModule&) = delete;
   void operator=(const SILModule&) = delete;
-
-  /// Method which returns the SerializedSILLoader, creating the loader if it
-  /// has not been created yet.
-  SerializedSILLoader *getSILLoader();
 
   /// Folding set for key path patterns.
   llvm::FoldingSet<KeyPathPattern> KeyPathPatterns;
 
 public:
   ~SILModule();
+
+  /// Method which returns the SerializedSILLoader, creating the loader if it
+  /// has not been created yet.
+  SerializedSILLoader *getSILLoader();
 
   /// Add a callback for each newly deserialized SIL function body.
   void registerDeserializationNotificationHandler(
@@ -313,14 +323,7 @@ public:
   void serialize();
 
   /// This converts Swift types to SILTypes.
-  mutable Lowering::TypeConverter Types;
-
-  /// Look up the TypeLowering for a SILType.
-  const Lowering::TypeLowering &
-  getTypeLowering(SILType t, ResilienceExpansion expansion =
-                               ResilienceExpansion::Minimal) {
-    return Types.getTypeLowering(t, expansion);
-  }
+  Lowering::TypeConverter &Types;
 
   /// Invalidate cached entries in SIL Loader.
   void invalidateSILLoaderCaches();
@@ -347,12 +350,14 @@ public:
   /// If a source file is provided, SIL will only be emitted for decls in that
   /// source file.
   static std::unique_ptr<SILModule>
-  constructSIL(ModuleDecl *M, SILOptions &Options, FileUnit *sf = nullptr);
+  constructSIL(ModuleDecl *M, Lowering::TypeConverter &TC,
+               SILOptions &Options, FileUnit *sf = nullptr);
 
   /// Create and return an empty SIL module that we can
   /// later parse SIL bodies directly into, without converting from an AST.
   static std::unique_ptr<SILModule>
-  createEmptyModule(ModuleDecl *M, SILOptions &Options,
+  createEmptyModule(ModuleDecl *M, Lowering::TypeConverter &TC,
+                    SILOptions &Options,
                     bool WholeModule = false);
 
   /// Get the Swift module associated with this SIL module.
@@ -450,6 +455,13 @@ public:
     return {defaultWitnessTables.begin(), defaultWitnessTables.end()};
   }
 
+  void addExternallyVisibleDecl(ValueDecl *decl) {
+    externallyVisible.insert(decl);
+  }
+  bool isExternallyVisibleDecl(ValueDecl *decl) {
+    return externallyVisible.count(decl) != 0;
+  }
+
   using sil_global_iterator = GlobalListType::iterator;
   using sil_global_const_iterator = GlobalListType::const_iterator;
   GlobalListType &getSILGlobalList() { return silGlobals; }
@@ -513,6 +525,13 @@ public:
   /// Attempt to deserialize the SILFunction. Returns true if deserialization
   /// succeeded, false otherwise.
   bool loadFunction(SILFunction *F);
+
+  /// Update the linkage of the SILFunction with the linkage of the serialized
+  /// function.
+  ///
+  /// The serialized SILLinkage can differ from the linkage derived from the
+  /// AST, e.g. cross-module-optimization can change the SIL linkages.
+  void updateFunctionLinkage(SILFunction *F);
 
   /// Attempt to link the SILFunction. Returns true if linking succeeded, false
   /// otherwise.
@@ -598,7 +617,8 @@ public:
 
   /// Can value operations (copies and destroys) on the given lowered type
   /// be performed in this module?
-  bool isTypeABIAccessible(SILType type);
+  bool isTypeABIAccessible(SILType type,
+                           TypeExpansionContext forExpansion);
 
   /// Can type metadata for the given formal type be fetched in
   /// the given module?

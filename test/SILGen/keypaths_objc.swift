@@ -96,3 +96,20 @@ func externalObjCProperty() {
   // CHECK-NOT: external #NSObject.description
   _ = \NSObject.description
 }
+
+func sharedCProperty() {
+  // CHECK:  keypath $WritableKeyPath<c_union, some_struct>
+  // CHECK-NOT: external #c_union.some_field
+  let dataKeyPath: WritableKeyPath<c_union, some_struct>? = \c_union.some_field
+}
+
+class OverrideFrameworkObjCProperty: A {
+  override var counter: Int32 {
+    get { return 0 }
+    set { }
+  }
+}
+
+func overrideFrameworkObjCProperty() {
+  let _ = \OverrideFrameworkObjCProperty.counter
+}

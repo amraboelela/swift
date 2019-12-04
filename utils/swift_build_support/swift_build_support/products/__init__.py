@@ -10,6 +10,7 @@
 #
 # ----------------------------------------------------------------------------
 
+from .benchmarks import Benchmarks
 from .cmark import CMark
 from .foundation import Foundation
 from .indexstoredb import IndexStoreDB
@@ -26,6 +27,7 @@ from .swift import Swift
 from .swiftevolve import SwiftEvolve
 from .swiftpm import SwiftPM
 from .swiftsyntax import SwiftSyntax
+from .tsan_libdispatch import TSanLibDispatch
 from .xctest import XCTest
 
 __all__ = [
@@ -47,4 +49,6 @@ __all__ = [
     'SwiftEvolve',
     'IndexStoreDB',
     'SourceKitLSP',
+    'Benchmarks',
+    'TSanLibDispatch',
 ]

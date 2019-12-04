@@ -87,8 +87,17 @@ public:
     Immediate,
   };
 
+  enum class MSVCRuntime {
+    MultiThreaded,
+    MultiThreadedDebug,
+    MultiThreadedDLL,
+    MultiThreadedDebugDLL,
+  };
+
   /// The mode in which the driver should invoke the frontend.
   Mode CompilerMode = Mode::StandardCompile;
+
+  Optional<MSVCRuntime> RuntimeVariant = llvm::None;
 
   /// The output type which should be used for compile actions.
   file_types::ID CompilerOutputType = file_types::ID::TY_INVALID;
@@ -149,7 +158,7 @@ public:
     Interactive,     // swift
     Batch,           // swiftc
     AutolinkExtract, // swift-autolink-extract
-    SwiftFormat      // swift-format
+    SwiftIndent      // swift-indent
   };
 
   class InputInfoMap;
@@ -164,6 +173,9 @@ private:
 
   /// The original path to the executable.
   std::string DriverExecutable;
+
+  // Extra args to pass to the driver executable
+  SmallVector<std::string, 2> DriverExecutableArgs;
 
   DriverKind driverKind = DriverKind::Interactive;
 
@@ -191,7 +203,11 @@ public:
   const std::string &getSwiftProgramPath() const {
     return DriverExecutable;
   }
-  
+
+  ArrayRef<std::string> getSwiftProgramArgs() const {
+    return DriverExecutableArgs;
+  }
+
   DriverKind getDriverKind() const { return driverKind; }
   
   ArrayRef<const char *> getArgsWithoutProgramNameAndDriverMode(
@@ -281,7 +297,8 @@ public:
   /// Construct the OutputFileMap for the driver from the given arguments.
   Optional<OutputFileMap>
   buildOutputFileMap(const llvm::opt::DerivedArgList &Args,
-                     StringRef workingDirectory) const;
+                     StringRef workingDirectory,
+                     bool addEntriesForSourceRangeDependencies) const;
 
   /// Add top-level Jobs to Compilation \p C for the given \p Actions and
   /// OutputInfo.
@@ -338,10 +355,15 @@ private:
                                       StringRef workingDirectory,
                                       CommandOutput *Output) const;
 
-  void chooseParseableInterfacePath(Compilation &C, const JobAction *JA,
-                                    StringRef workingDirectory,
-                                    llvm::SmallString<128> &buffer,
-                                    CommandOutput *output) const;
+  void chooseSwiftSourceInfoOutputPath(Compilation &C,
+                                       const TypeToPathMap *OutputMap,
+                                       StringRef workingDirectory,
+                                       CommandOutput *Output) const;
+
+  void chooseModuleInterfacePath(Compilation &C, const JobAction *JA,
+                                 StringRef workingDirectory,
+                                 llvm::SmallString<128> &buffer,
+                                 CommandOutput *output) const;
 
   void chooseRemappingOutputPath(Compilation &C, const TypeToPathMap *OutputMap,
                                  CommandOutput *Output) const;

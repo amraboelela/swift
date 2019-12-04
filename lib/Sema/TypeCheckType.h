@@ -94,10 +94,6 @@ enum class TypeResolverContext : uint8_t {
   /// tuple return values. See also: TypeResolutionFlags::Direct
   FunctionResult,
 
-  /// Whether we are in the result type of a function body that is
-  /// known to produce dynamic Self.
-  DynamicSelfResult,
-
   /// Whether we are in a protocol's where clause
   ProtocolWhereClause,
 
@@ -211,7 +207,6 @@ public:
     case Context::FunctionInput:
     case Context::VariadicFunctionInput:
     case Context::FunctionResult:
-    case Context::DynamicSelfResult:
     case Context::ProtocolWhereClause:
     case Context::ExtensionBinding:
     case Context::SubscriptDecl:
@@ -286,7 +281,7 @@ class TypeResolution {
     /// The generic signature
     struct {
       /// The generic signature to use for type resolution.
-      GenericSignature *genericSig;
+      GenericSignature genericSig;
 
       /// The generic signature builder that will answer queries about
       /// generic types.
@@ -312,7 +307,7 @@ public:
   /// Form a type resolution for an interface type, which is a complete
   /// description of the type using generic parameters.
   static TypeResolution forInterface(DeclContext *dc,
-                                     GenericSignature *genericSig);
+                                     GenericSignature genericSig);
 
   /// Form a type resolution for a contextual type, which is a complete
   /// description of the type using the archetypes of the given declaration
@@ -337,7 +332,7 @@ public:
 
   /// Retrieves the generic signature for the context, or NULL if there is
   /// no generic signature to resolve types.
-  GenericSignature *getGenericSignature() const;
+  GenericSignature getGenericSignature() const;
 
   /// Resolves a TypeRepr to a type.
   ///
@@ -372,6 +367,21 @@ public:
   /// type resolution context.
   bool areSameType(Type type1, Type type2) const;
 };
+
+/// Kinds of types for CustomAttr.
+enum class CustomAttrTypeKind {
+  /// The type is required to not be expressed in terms of
+  /// any contextual type parameters.
+  NonGeneric,
+
+  /// Property delegates have some funky rules, like allowing
+  /// unbound generic types.
+  PropertyDelegate,
+};
+
+/// Attempt to resolve a concrete type for a custom attribute.
+Type resolveCustomAttrType(CustomAttr *attr, DeclContext *dc,
+                           CustomAttrTypeKind typeKind);
 
 } // end namespace swift
 

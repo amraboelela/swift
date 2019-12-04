@@ -289,17 +289,14 @@ void Lexer::formToken(tok Kind, const char *TokStart) {
       return isCommentTriviaKind(Piece.getKind());
     });
     for (auto End = LeadingTrivia.end(); Iter != End; Iter++) {
-      if (Iter->getKind() == TriviaKind::Backtick)
-        // Since Token::getCommentRange() doesn't take backtick into account,
-        // we cannot include length of backtick.
-        break;
       CommentLength += Iter->getLength();
     }
   }
 
   StringRef TokenText { TokStart, static_cast<size_t>(CurPtr - TokStart) };
 
-  if (TriviaRetention == TriviaRetentionMode::WithTrivia) {
+  if (TriviaRetention == TriviaRetentionMode::WithTrivia && Kind != tok::eof) {
+    assert(TrailingTrivia.empty() && "TrailingTrivia is empty here");
     lexTrivia(TrailingTrivia, /* IsForTrailingTrivia */ true);
   }
 
@@ -310,10 +307,6 @@ void Lexer::formEscapedIdentifierToken(const char *TokStart) {
   assert(CurPtr - TokStart >= 3 && "escaped identifier must be longer than or equal 3 bytes");
   assert(TokStart[0] == '`' && "escaped identifier starts with backtick");
   assert(CurPtr[-1] == '`' && "escaped identifier ends with backtick");
-
-  LeadingTrivia.push_back(TriviaKind::Backtick, 1);
-  assert(TrailingTrivia.empty() && "TrailingTrivia is empty here");
-  TrailingTrivia.push_back(TriviaKind::Backtick, 1);
 
   formToken(tok::identifier, TokStart);
   // If this token is at ArtificialEOF, it's forced to be tok::eof. Don't mark
@@ -945,16 +938,7 @@ void Lexer::lexDollarIdent() {
     return formToken(tok::identifier, tokStart);
   }
 
-  // We reserve $nonNumeric for persistent bindings in the debugger and implicit
-  // variables, like storage for lazy properties.
   if (!isAllDigits) {
-    if (!LangOpts.EnableDollarIdentifiers && !InSILBody &&
-        LexMode != LexerMode::SwiftInterface)
-      diagnose(tokStart, diag::expected_dollar_numeric);
-
-    // Even if we diagnose, we go ahead and form an identifier token,
-    // in part to ensure that the basic behavior of the lexer is
-    // independent of language mode.
     return formToken(tok::identifier, tokStart);
   } else {
     return formToken(tok::dollarident, tokStart);

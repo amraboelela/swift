@@ -258,6 +258,11 @@ TypeRepr *CloneVisitor::visitSILBoxTypeRepr(SILBoxTypeRepr *type) {
                                 type->getArgumentRAngleLoc());
 }
 
+TypeRepr *CloneVisitor::visitOpaqueReturnTypeRepr(OpaqueReturnTypeRepr *type) {
+  return new (Ctx) OpaqueReturnTypeRepr(type->getOpaqueLoc(),
+                                        visit(type->getConstraint()));
+}
+
 TypeRepr *TypeRepr::clone(const ASTContext &ctx) const {
   CloneVisitor visitor(ctx);
   return visitor.visit(const_cast<TypeRepr *>(this));
@@ -293,6 +298,14 @@ void AttributedTypeRepr::printAttrs(ASTPrinter &Printer,
     Printer.printSimpleAttr("@autoclosure") << " ";
   if (hasAttr(TAK_escaping))
     Printer.printSimpleAttr("@escaping") << " ";
+
+  if (hasAttr(TAK_differentiable)) {
+    if (Attrs.isLinear()) {
+      Printer.printSimpleAttr("@differentiable(linear)") << " ";
+    } else {
+      Printer.printSimpleAttr("@differentiable") << " ";
+    }
+  }
 
   if (hasAttr(TAK_thin))
     Printer.printSimpleAttr("@thin") << " ";
@@ -548,6 +561,11 @@ void ProtocolTypeRepr::printImpl(ASTPrinter &Printer,
   Printer << ".Protocol";
 }
 
+void OpaqueReturnTypeRepr::printImpl(ASTPrinter &Printer,
+                                     const PrintOptions &Opts) const {
+  Printer.printKeyword("some", Opts, /*Suffix=*/" ");
+  printTypeRepr(Constraint, Printer, Opts);
+}
 
 void SpecifierTypeRepr::printImpl(ASTPrinter &Printer,
                                   const PrintOptions &Opts) const {

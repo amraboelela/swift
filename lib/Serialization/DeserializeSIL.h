@@ -11,8 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "SILFormat.h"
+#include "ModuleFile.h"
 #include "swift/SIL/SILModule.h"
-#include "swift/Serialization/ModuleFile.h"
 #include "swift/Serialization/SerializedSILLoader.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -65,7 +65,9 @@ namespace swift {
     /// Data structures used to perform name lookup for local values.
     llvm::DenseMap<uint32_t, ValueBase*> LocalValues;
     llvm::DenseMap<uint32_t, ValueBase*> ForwardLocalValues;
-    serialization::ValueID LastValueID = 0;
+
+    /// The first two local values are reserved for SILUndef.
+    serialization::ValueID LastValueID = 1;
 
     /// Data structures used to perform lookup of basic blocks.
     llvm::DenseMap<unsigned, SILBasicBlock*> BlocksByID;
@@ -108,6 +110,9 @@ namespace swift {
     SILValue getLocalValue(serialization::ValueID Id,
                            SILType Type);
 
+    SILType getSILType(Type ty, SILValueCategory category,
+                       SILFunction *inContext);
+
     SILFunction *getFuncForReference(StringRef Name, SILType Ty);
     SILFunction *getFuncForReference(StringRef Name);
     SILVTable *readVTable(serialization::DeclID);
@@ -135,11 +140,11 @@ public:
     FileUnit *getFile() const {
       return MF->getFile();
     }
-    SILFunction *lookupSILFunction(SILFunction *InFunc);
+    SILFunction *lookupSILFunction(SILFunction *InFunc, bool onlyUpdateLinkage);
     SILFunction *lookupSILFunction(StringRef Name,
                                    bool declarationOnly = false);
     bool hasSILFunction(StringRef Name, Optional<SILLinkage> Linkage = None);
-    SILVTable *lookupVTable(Identifier Name);
+    SILVTable *lookupVTable(StringRef MangledClassName);
     SILWitnessTable *lookupWitnessTable(SILWitnessTable *wt);
     SILDefaultWitnessTable *
     lookupDefaultWitnessTable(SILDefaultWitnessTable *wt);

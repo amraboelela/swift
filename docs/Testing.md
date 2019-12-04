@@ -27,7 +27,7 @@ We use multiple approaches to test the Swift toolchain.
 
 ### Testsuite subsets
 
-The testsuite is split into four subsets:
+The testsuite is split into five subsets:
 
 * Primary testsuite, located under ``swift/test``.
 * Validation testsuite, located under ``swift/validation-test``.
@@ -59,7 +59,7 @@ configured to use your local build directory. For example:
     % ${LLVM_SOURCE_ROOT}/utils/lit/lit.py -sv ${SWIFT_BUILD_DIR}/test-macosx-x86_64/Parse/
 ```
 
-This runs the tests in the 'test/Parse/' directory targeting 64-bit macOS. 
+This runs the tests in the 'test/Parse/' directory targeting 64-bit macOS.
 The ``-sv`` options give you a nice progress bar and only show you
 output from the tests that fail.
 
@@ -113,6 +113,8 @@ out with ``lit.py -h``. We document some of the more useful ones below:
 * ``--param swift_test_mode=<MODE>`` drives the various suffix variations
   mentioned above. Again, it's best to get the invocation from the existing
   build system targets and modify it rather than constructing it yourself.
+* ``--param use_os_stdlib`` will run all tests with the standard libraries
+  coming from the OS.
 
 ##### Remote testing options
 
@@ -230,7 +232,7 @@ code for the target that is not the build machine:
 
 * ``%target-typecheck-verify-swift``: parse and type check the current Swift file
   for the target platform and verify diagnostics, like ``swift -frontend -typecheck -verify
-  %s``.
+  %s``. For further explanation of `-verify` mode, see [Diagnostics.md](Diagnostics.md).
 
   Use this substitution for testing semantic analysis in the compiler.
 

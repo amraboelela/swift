@@ -33,7 +33,7 @@ swift::_buildDemanglingForContext(const ContextDescriptor *context,
   NodePointer node = nullptr;
 
   // Walk up the context tree.
-  std::vector<const ContextDescriptor *> descriptorPath;
+  SmallVector<const ContextDescriptor *, 8> descriptorPath;
   {
     const ContextDescriptor *parent = context;
     while (parent) {
@@ -68,7 +68,7 @@ swift::_buildDemanglingForContext(const ContextDescriptor *context,
       return genericArgsList;
     };
   
-  for (auto component : reversed(descriptorPath)) {
+  for (auto component : llvm::reverse(descriptorPath)) {
     switch (auto kind = component->getKind()) {
     case ContextDescriptorKind::Module: {
       assert(node == nullptr && "module should be top level");
@@ -80,7 +80,8 @@ swift::_buildDemanglingForContext(const ContextDescriptor *context,
     case ContextDescriptorKind::Extension: {
       auto extension = llvm::cast<ExtensionContextDescriptor>(component);
       // Demangle the extension self type.
-      auto selfType = Dem.demangleType(extension->getMangledExtendedContext());
+      auto selfType = Dem.demangleType(extension->getMangledExtendedContext(),
+                                       ResolveToDemanglingForContext(Dem));
       if (selfType->getKind() == Node::Kind::Type)
         selfType = selfType->getChild(0);
       
@@ -169,8 +170,10 @@ swift::_buildDemanglingForContext(const ContextDescriptor *context,
         auto nameNode = Dem.createNode(Node::Kind::Identifier,
                                        identity.getABIName());
         if (identity.isAnyRelatedEntity()) {
-          auto relatedName = Dem.createNode(Node::Kind::RelatedEntityDeclName,
-                                            identity.getRelatedEntityName());
+          auto kindNode = Dem.createNode(Node::Kind::Identifier,
+                                     identity.getRelatedEntityName());
+          auto relatedName = Dem.createNode(Node::Kind::RelatedEntityDeclName);
+          relatedName->addChild(kindNode, Dem);
           relatedName->addChild(nameNode, Dem);
           nameNode = relatedName;
         }
@@ -281,11 +284,11 @@ _buildDemanglingForNominalType(const Metadata *type, Demangle::Demangler &Dem) {
 
   // Gather the complete set of generic arguments that must be written to
   // form this type.
-  std::vector<const Metadata *> allGenericArgs;
-  gatherWrittenGenericArgs(type, description, allGenericArgs);
+  SmallVector<const Metadata *, 8> allGenericArgs;
+  gatherWrittenGenericArgs(type, description, allGenericArgs, Dem);
 
   // Demangle the generic arguments.
-  std::vector<NodePointer> demangledGenerics;
+  SmallVector<NodePointer, 8> demangledGenerics;
   for (auto genericArg : allGenericArgs) {
     // When there is no generic argument, put in a placeholder.
     if (!genericArg) {
@@ -466,7 +469,7 @@ swift::_swift_buildDemanglingForMetadata(const Metadata *type,
       break;
     }
 
-    std::vector<std::pair<NodePointer, bool>> inputs;
+    SmallVector<std::pair<NodePointer, bool>, 8> inputs;
     for (unsigned i = 0, e = func->getNumParameters(); i < e; ++i) {
       auto param = func->getParameter(i);
       auto flags = func->getParameterFlags(i);
@@ -664,13 +667,14 @@ char *swift_demangle(const char *mangledName,
     return strdup(result.c_str());
   }
 
-  // Indicate a failure if the result does not fit and will be truncated
-  // and set the required outputBufferSize.
+  // Copy into the provided buffer.
+  _swift_strlcpy(outputBuffer, result.c_str(), *outputBufferSize);
+
+  // Indicate a failure if the result did not fit and was truncated
+  // by setting the required outputBufferSize.
   if (*outputBufferSize < result.length() + 1) {
     *outputBufferSize = result.length() + 1;
   }
 
-  // Copy into the provided buffer.
-  _swift_strlcpy(outputBuffer, result.c_str(), *outputBufferSize);
   return outputBuffer;
 }

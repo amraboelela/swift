@@ -43,11 +43,9 @@ func TopLevelGenericFunc2<T : TopLevelGenericFunc2>(x: T) -> T { return x} // ex
 var TopLevelVar: TopLevelVar? { return nil } // expected-error {{use of undeclared type 'TopLevelVar'}}
 
 
-// FIXME: The first error is redundant and isn't correct in what it states.
 protocol AProtocol {
   associatedtype e : e
   // expected-error@-1 {{type 'Self.e' constrained to non-protocol, non-class type 'Self.e'}}
-  // expected-error@-2 {{inheritance from non-protocol, non-class type 'Self.e'}}
 }
 
 
@@ -68,7 +66,6 @@ class X {
 struct SomeStruct<A> {
   typealias A = A // this is OK now -- the underlying type is the generic parameter 'A'
   typealias B = B // expected-error {{type alias 'B' references itself}}
-  // expected-note@-1 {{type declared here}}
 }
 
 // <rdar://problem/27680407> Infinite recursion when using fully-qualified associatedtype name that has not been defined with typealias

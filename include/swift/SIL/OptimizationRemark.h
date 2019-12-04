@@ -50,7 +50,8 @@ struct Argument {
   Argument(StringRef Key, unsigned long long N);
 
   Argument(StringRef Key, SILFunction *F);
-  Argument(StringRef Key, SILType *Ty);
+  Argument(StringRef Key, SILType Ty);
+  Argument(StringRef Key, CanType Ty);
 };
 
 /// Shorthand to insert named-value pairs.
@@ -156,9 +157,9 @@ public:
     using RemarkT = decltype(RemarkBuilder());
     // Avoid building the remark unless remarks are enabled.
     if (isEnabled<RemarkT>() || Module.getOptRecordStream()) {
-      auto R = RemarkBuilder();
-      R.setPassName(PassName);
-      emit(R);
+      auto rb = RemarkBuilder();
+      rb.setPassName(PassName);
+      emit(rb);
     }
   }
 

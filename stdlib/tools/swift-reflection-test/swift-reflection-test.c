@@ -34,6 +34,14 @@
 #include <fcntl.h>
 #endif
 
+#if defined(__clang__) || defined(__GNUC__)
+#define NORETURN __attribute__((noreturn))
+#elif defined(_MSC_VER)
+#define NORETURN __declspec(noreturn)
+#else
+#define NORETURN
+#endif
+
 typedef struct PipeMemoryReader {
   int to_child[2];
   int from_child[2];
@@ -56,15 +64,25 @@ typedef struct RemoteReflectionInfo {
   size_t TotalSize;
 } RemoteReflectionInfo;
 
+NORETURN
 static void errorAndExit(const char *message) {
   fprintf(stderr, "%s\n", message);
   abort();
 }
 
+NORETURN
 static void errnoAndExit(const char *message) {
   fprintf(stderr, "%s: %s\n", message, strerror(errno));
   abort();
 }
+
+#if 0
+#include <inttypes.h>
+#define DEBUG_LOG(fmt, ...) fprintf(stderr, "%s: " fmt "\n",\
+                                    __func__, __VA_ARGS__)
+#else
+#define DEBUG_LOG(fmt, ...) (void)0
+#endif
 
 static const size_t ReadEnd = 0;
 static const size_t WriteEnd = 1;
@@ -143,6 +161,8 @@ const void *PipeMemoryReader_readBytes(void *Context, swift_addr_t Address,
   const PipeMemoryReader *Reader = (const PipeMemoryReader *)Context;
   uintptr_t TargetAddress = Address;
   size_t TargetSize = (size_t)Size;
+  DEBUG_LOG("Requesting read of %zu bytes from 0x%" PRIxPTR,
+            TargetSize, TargetAddress);
   int WriteFD = PipeMemoryReader_getParentWriteFD(Reader);
   write(WriteFD, REQUEST_READ_BYTES, 2);
   write(WriteFD, &TargetAddress, sizeof(TargetAddress));
@@ -162,12 +182,14 @@ swift_addr_t PipeMemoryReader_getSymbolAddress(void *Context,
                                                uint64_t Length) {
   const PipeMemoryReader *Reader = (const PipeMemoryReader *)Context;
   uintptr_t Address = 0;
+  DEBUG_LOG("Requesting address of symbol %s", SymbolName);
   int WriteFD = PipeMemoryReader_getParentWriteFD(Reader);
   write(WriteFD, REQUEST_SYMBOL_ADDRESS, 2);
   write(WriteFD, SymbolName, Length);
   write(WriteFD, "\n", 1);
   PipeMemoryReader_collectBytesFromPipe(Reader, (uint8_t*)&Address,
                                         sizeof(Address));
+  DEBUG_LOG("Address of %s is 0x%" PRIxPTR, SymbolName, Address);
   return (uintptr_t)Address;
 }
 
@@ -177,6 +199,7 @@ PipeMemoryReader_receiveInstanceKind(const PipeMemoryReader *Reader) {
   write(WriteFD, REQUEST_INSTANCE_KIND, 2);
   uint8_t KindValue = 0;
   PipeMemoryReader_collectBytesFromPipe(Reader, &KindValue, sizeof(KindValue));
+  DEBUG_LOG("Requested instance kind is %u", KindValue);
   return KindValue;
 }
 
@@ -187,6 +210,7 @@ PipeMemoryReader_receiveInstanceAddress(const PipeMemoryReader *Reader) {
   uintptr_t InstanceAddress = 0;
   PipeMemoryReader_collectBytesFromPipe(Reader, (uint8_t *)&InstanceAddress,
                                         sizeof(InstanceAddress));
+  DEBUG_LOG("Requested instance address is 0x%" PRIxPTR, InstanceAddress);
   return InstanceAddress;
 }
 
@@ -222,6 +246,7 @@ PipeMemoryReader_receiveImages(SwiftReflectionContextRef RC,
   size_t NumReflectionInfos;
   PipeMemoryReader_collectBytesFromPipe(Reader, &NumReflectionInfos,
                                         sizeof(NumReflectionInfos));
+  DEBUG_LOG("Receiving %z images from child", NumReflectionInfos);
 
   if (NumReflectionInfos == 0)
     return;
@@ -232,6 +257,7 @@ PipeMemoryReader_receiveImages(SwiftReflectionContextRef RC,
                                         NumReflectionInfos * sizeof(*Images));
   
   for (size_t i = 0; i < NumReflectionInfos; ++i) {
+    DEBUG_LOG("Adding image at 0x%" PRIxPTR, Images[i].Start);
     swift_reflection_addImage(RC, Images[i].Start);
   }
   
@@ -535,6 +561,20 @@ int doDumpHeapInstance(const char *BinaryFilename) {
   return EXIT_SUCCESS;
 }
 
+#if defined(__APPLE__) && defined(__MACH__)
+#include <dlfcn.h>
+static unsigned long long computeClassIsSwiftMask(void) {
+  uintptr_t *objc_debug_swift_stable_abi_bit_ptr =
+    (uintptr_t *)dlsym(RTLD_DEFAULT, "objc_debug_swift_stable_abi_bit");
+  return objc_debug_swift_stable_abi_bit_ptr ?
+           *objc_debug_swift_stable_abi_bit_ptr : 1;
+}
+#else
+static unsigned long long computeClassIsSwiftMask(void) {
+  return 1;
+}
+#endif
+
 void printUsageAndExit() {
   fprintf(stderr, "swift-reflection-test <binary filename>\n");
   exit(EXIT_FAILURE);
@@ -545,6 +585,16 @@ int main(int argc, char *argv[]) {
     printUsageAndExit();
 
   const char *BinaryFilename = argv[1];
+
+#if defined(_WIN32)
+  // FIXME(compnerd) weak linking is not permitted on PE/COFF, we should fall
+  // back to GetProcAddress to see if the symbol is present.
+#else
+  // swift_reflection_classIsSwiftMask is weak linked so we can work
+  // with older Remote Mirror dylibs.
+  if (&swift_reflection_classIsSwiftMask != NULL)
+    swift_reflection_classIsSwiftMask = computeClassIsSwiftMask();
+#endif
 
   uint16_t Version = swift_reflection_getSupportedMetadataVersion();
   printf("Metadata version: %u\n", Version);

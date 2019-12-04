@@ -36,6 +36,7 @@ namespace swift {
   class ValueDecl;
   class SourceLoc;
   enum class tok;
+  enum class AccessorKind;
 
 /// Describes the context in which a name is being printed, which
 /// affects the keywords that need to be escaped.
@@ -44,6 +45,8 @@ enum class PrintNameContext {
   Normal,
   /// Keyword context, where no keywords are escaped.
   Keyword,
+  /// Type member context, e.g. properties or enum cases.
+  TypeMember,
   /// Generic parameter context, where 'Self' is not escaped.
   GenericParameter,
   /// Class method return type, where 'Self' is not escaped.
@@ -118,6 +121,10 @@ public:
   /// Callers should use callPrintDeclPost().
   virtual void printDeclPost(const Decl *D, Optional<BracketOptions> Bracket) {}
 
+  /// Called before printing the result type of the declaration. Printer can
+  /// replace \p TL to customize the input.
+  virtual void printDeclResultTypePre(ValueDecl *VD, TypeLoc &TL) {}
+
   /// Called before printing a type.
   virtual void printTypePre(const TypeLoc &TL) {}
   /// Called after printing a type.
@@ -129,7 +136,11 @@ public:
   /// \param T the original \c Type being referenced. May be null.
   /// \param RefTo the \c TypeDecl this is considered a reference to.
   /// \param Name the name to be printed.
-  virtual void printTypeRef(Type T, const TypeDecl *RefTo, Identifier Name);
+  /// \param NameContext the \c PrintNameContext which this type is being
+  ///                    printed in, used to determine how to escape type names.
+  virtual void printTypeRef(
+      Type T, const TypeDecl *RefTo, Identifier Name,
+      PrintNameContext NameContext = PrintNameContext::Normal);
 
   /// Called when printing the referenced name of a module.
   virtual void printModuleRef(ModuleEntity Mod, Identifier Name);
@@ -280,7 +291,6 @@ public:
 
   /// To sanitize a malformed utf8 string to a well-formed one.
   static std::string sanitizeUtf8(StringRef Text);
-  static ValueDecl* findConformancesWithDocComment(ValueDecl *VD);
 
 private:
   virtual void anchor();
@@ -331,10 +341,10 @@ void printEnumElementsAsCases(
     llvm::DenseSet<EnumElementDecl *> &UnhandledElements,
     llvm::raw_ostream &OS);
 
-void getInheritedForPrinting(const Decl *decl,
-                             llvm::function_ref<bool(const Decl*)> shouldPrint,
+void getInheritedForPrinting(const Decl *decl, const PrintOptions &options,
                              llvm::SmallVectorImpl<TypeLoc> &Results);
 
+StringRef getAccessorKindString(AccessorKind value);
 } // namespace swift
 
 #endif // LLVM_SWIFT_AST_ASTPRINTER_H
