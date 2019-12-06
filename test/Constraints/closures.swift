@@ -484,7 +484,7 @@ let _ = { $0 = $0 = 42 } // expected-error {{assigning a variable to itself}}
 let mismatchInClosureResultType : (String) -> ((Int) -> Void) = {
   (String) -> ((Int) -> Void) in
     return { }
-    // expected-error@-1 {{contextual type for closure argument list expects 1 argument, which cannot be implicitly ignored}}
+    // expected-error@-1 {{contextual type for closure argument list expects 1 argument, which cannot be implicitly ignored}} {{13-13= _ in}}
 }
 
 // SR-3520: Generic function taking closure with inout parameter can result in a variety of compiler errors or EXC_BAD_ACCESS
@@ -763,6 +763,7 @@ overloaded { print("hi"); print("bye") } // multiple expression closure without 
 // expected-error@-1 {{ambiguous use of 'overloaded'}}
 
 func not_overloaded(_ handler: () -> Int) {}
+// expected-note@-1 {{'not_overloaded' declared here}}
 
 not_overloaded { } // empty body
 // expected-error@-1 {{cannot convert value of type '()' to closure result type 'Int'}}
